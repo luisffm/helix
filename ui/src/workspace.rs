@@ -105,6 +105,34 @@ impl TabItem {
     }
   }
 
+  fn snapshot(&self, cx: &App) -> Option<helix_state::config::TabSnapshot> {
+    use helix_state::config::{DiffBaseSnapshot, TabSnapshot};
+    match &self.content {
+      TabContent::Terminal(view) => Some(match view.read(cx).kind {
+        SessionKind::Terminal => TabSnapshot::Terminal,
+        SessionKind::ClaudeCode => TabSnapshot::Claude,
+      }),
+      TabContent::Editor(view) => Some(TabSnapshot::Editor {
+        path: view.read(cx).path.clone(),
+      }),
+      TabContent::Diff(view) => {
+        let view = view.read(cx);
+        // A branch diff is pinned to specific oids, so it is stale the moment a
+        // commit lands. Not worth reopening.
+        let base = match view.base {
+          DiffBase::Unstaged => DiffBaseSnapshot::Unstaged,
+          DiffBase::Staged => DiffBaseSnapshot::Staged,
+          DiffBase::Head => DiffBaseSnapshot::Head,
+          DiffBase::Branch { .. } => return None,
+        };
+        Some(TabSnapshot::Diff {
+          relative: view.relative.clone(),
+          base,
+        })
+      }
+    }
+  }
+
   fn is_editor_for(&self, path: &PathBuf, cx: &App) -> bool {
     self
       .editor()
@@ -133,6 +161,7 @@ pub struct Workspace {
   next_session: u64,
   terminal_count: usize,
   claude_count: usize,
+  restoring: bool,
 }
 
 impl EventEmitter<WorkspaceEvent> for Workspace {}
@@ -149,9 +178,61 @@ impl Workspace {
       next_session: 0,
       terminal_count: 0,
       claude_count: 0,
+      restoring: false,
     };
-    workspace.open_tab(SessionKind::Terminal, window, cx);
+    workspace.restore(window, cx);
     workspace
+  }
+
+  fn restore(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    use helix_state::config::{DiffBaseSnapshot, TabSnapshot};
+    let Some(session) = helix_state::config::workspace_session(&self.project_root)
+      .filter(|session| !session.tabs.is_empty())
+    else {
+      self.open_tab(SessionKind::Terminal, window, cx);
+      return;
+    };
+
+    self.restoring = true;
+    for tab in session.tabs {
+      match tab {
+        TabSnapshot::Terminal => self.open_tab(SessionKind::Terminal, window, cx),
+        TabSnapshot::Claude => self.open_tab(SessionKind::ClaudeCode, window, cx),
+        TabSnapshot::Editor { path } => {
+          if path.exists() {
+            self.open_file(path, false, window, cx);
+          }
+        }
+        TabSnapshot::Diff { relative, base } => {
+          let base = match base {
+            DiffBaseSnapshot::Unstaged => DiffBase::Unstaged,
+            DiffBaseSnapshot::Staged => DiffBase::Staged,
+            DiffBaseSnapshot::Head => DiffBase::Head,
+          };
+          let root = self.project_root.clone();
+          self.open_diff(root, relative, base, window, cx);
+        }
+      }
+    }
+    self.restoring = false;
+
+    if self.tabs.is_empty() {
+      self.open_tab(SessionKind::Terminal, window, cx);
+    } else {
+      self.activate(session.active.min(self.tabs.len() - 1), window, cx);
+    }
+  }
+
+  fn persist(&self, cx: &App) {
+    if self.restoring {
+      return;
+    }
+    let tabs: Vec<helix_state::config::TabSnapshot> = self
+      .tabs
+      .iter()
+      .filter_map(|tab| tab.snapshot(cx))
+      .collect();
+    helix_state::config::set_workspace_session(&self.project_root, tabs, self.active);
   }
 
   pub fn terminals<'a>(&'a self) -> impl Iterator<Item = (usize, &'a Entity<TerminalView>)> + 'a {
@@ -221,6 +302,7 @@ impl Workspace {
       Some(ix) => {
         self.tabs[ix] = tab;
         self.activate(ix, window, cx);
+        self.persist(cx);
       }
       None => self.push_tab(tab, window, cx),
     }
@@ -264,6 +346,7 @@ impl Workspace {
     self.tabs.push(tab);
     self.active = self.tabs.len() - 1;
     self.focus_active(window, cx);
+    self.persist(cx);
     cx.notify();
   }
 
@@ -331,6 +414,7 @@ impl Workspace {
       self.active = self.tabs.len() - 1;
     }
     self.focus_active(window, cx);
+    self.persist(cx);
     cx.emit(WorkspaceEvent::SessionsChanged);
     cx.notify();
   }
@@ -343,6 +427,7 @@ impl Workspace {
     if ix < self.tabs.len() {
       self.active = ix;
       self.focus_active(window, cx);
+      self.persist(cx);
       cx.notify();
     }
   }

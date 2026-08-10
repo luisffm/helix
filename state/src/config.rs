@@ -85,6 +85,70 @@ pub struct HelixConfig {
   pub terminal_font_size: Option<f32>,
   #[serde(default, skip_serializing_if = "Option::is_none")]
   pub blur_level: Option<String>,
+  #[serde(default, skip_serializing_if = "Vec::is_empty")]
+  pub sessions: Vec<WorkspaceSession>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DiffBaseSnapshot {
+  Unstaged,
+  Staged,
+  Head,
+}
+
+/// A tab worth reopening. Terminal and Claude carry no payload: the PTY and its
+/// child process die with the app, so reopening means a fresh process, not a
+/// resumed one.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum TabSnapshot {
+  Terminal,
+  Claude,
+  Editor {
+    path: PathBuf,
+  },
+  Diff {
+    relative: String,
+    base: DiffBaseSnapshot,
+  },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkspaceSession {
+  pub root: PathBuf,
+  #[serde(default)]
+  pub tabs: Vec<TabSnapshot>,
+  #[serde(default)]
+  pub active: usize,
+}
+
+pub fn workspace_session(root: &Path) -> Option<WorkspaceSession> {
+  load().sessions.into_iter().find(|s| s.root == root)
+}
+
+pub fn set_workspace_session(root: &Path, tabs: Vec<TabSnapshot>, active: usize) {
+  let mut config = load();
+  let session = WorkspaceSession {
+    root: root.to_path_buf(),
+    tabs,
+    active,
+  };
+  match config.sessions.iter_mut().find(|s| s.root == root) {
+    Some(existing) => {
+      if *existing == session {
+        return;
+      }
+      *existing = session;
+    }
+    None => {
+      if session.tabs.is_empty() {
+        return;
+      }
+      config.sessions.push(session);
+    }
+  }
+  save(&config);
 }
 
 pub fn set_terminal_font(font: Option<String>) {
@@ -106,6 +170,10 @@ pub fn set_blur_level(level: &str) {
 }
 
 pub fn app_dir() -> Option<PathBuf> {
+  // Overridable so tests (and throwaway runs) never touch the real config.
+  if let Some(dir) = std::env::var_os("HELIX_CONFIG_DIR").filter(|dir| !dir.is_empty()) {
+    return Some(PathBuf::from(dir));
+  }
   Some(dirs::config_dir()?.join("helix"))
 }
 
