@@ -10,10 +10,13 @@ use gpui::{
 };
 use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::{Icon, IconName, Sizable};
+use helix_git::IgnoreProbe;
 use helix_github::{BlockedReason, Eligibility, HostedReview, NextAction, ReviewLookupOutcome};
 use helix_models::{DiffBase, GitFileKind, GitFileStatus, GitSnapshot};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
+use std::time::Duration;
 
 const ROW_HEIGHT: f32 = 24.0;
 const INDENT: f32 = 16.0;
@@ -22,13 +25,16 @@ const MAX_ROWS: usize = 2000;
 const MAX_DEPTH: usize = 16;
 const FILTER_MAX_MATCHES: usize = 300;
 const FILTER_MAX_DIRS: usize = 4000;
+const FILTER_DEBOUNCE: Duration = Duration::from_millis(100);
 const IGNORED_RANK_PENALTY: u8 = 3;
 
 /// `needle` must already be lowercase. `by_path` widens the match to the
 /// workspace-relative path, which only helps once the query has a separator.
 pub fn match_rank(name: &str, relative: &str, needle: &str, by_path: bool) -> Option<u8> {
-  let name = name.to_lowercase();
+  rank_lowered(&name.to_lowercase(), relative, needle, by_path)
+}
 
+fn rank_lowered(name: &str, relative: &str, needle: &str, by_path: bool) -> Option<u8> {
   if name.starts_with(needle) {
     return Some(0);
   }
@@ -135,15 +141,110 @@ fn perform_remote(
 struct FileNode {
   path: PathBuf,
   name: String,
+  lower: String,
   is_dir: bool,
   ignored: bool,
+}
+
+fn name_cmp(a: &FileNode, b: &FileNode) -> std::cmp::Ordering {
+  a.lower.cmp(&b.lower).then_with(|| a.name.cmp(&b.name))
+}
+
+fn scan_dir(dir: &Path, show_dotfiles: bool, probe: Option<&IgnoreProbe>) -> Vec<FileNode> {
+  let mut nodes: Vec<FileNode> = std::fs::read_dir(dir)
+    .into_iter()
+    .flatten()
+    .flatten()
+    .filter_map(|entry| {
+      let name = entry.file_name().to_string_lossy().to_string();
+
+      if name == ".git" || name == "node_modules" {
+        return None;
+      }
+
+      if !show_dotfiles && name.starts_with('.') {
+        return None;
+      }
+
+      let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
+      let path = entry.path();
+      let ignored = probe.is_some_and(|probe| probe.is_ignored(&path));
+
+      Some(FileNode {
+        lower: name.to_lowercase(),
+        path,
+        name,
+        is_dir,
+        ignored,
+      })
+    })
+    .collect();
+
+  nodes.sort_by(|a, b| b.is_dir.cmp(&a.is_dir).then_with(|| name_cmp(a, b)));
+
+  nodes
+}
+
+fn scan_matches(root: &Path, needle: &str, by_path: bool, show_dotfiles: bool) -> Vec<FileNode> {
+  let probe = IgnoreProbe::open(root);
+
+  let mut ranked: Vec<(u8, FileNode)> = Vec::new();
+  let mut queue = std::collections::VecDeque::from([root.to_path_buf()]);
+  let mut dirs = 0usize;
+
+  while let Some(dir) = queue.pop_front() {
+    if dirs >= FILTER_MAX_DIRS || ranked.len() >= FILTER_MAX_MATCHES {
+      break;
+    }
+
+    dirs += 1;
+
+    for node in scan_dir(&dir, show_dotfiles, probe.as_ref()) {
+      if node.is_dir {
+        if !node.ignored {
+          queue.push_back(node.path.clone());
+        }
+
+        continue;
+      }
+
+      let relative = node
+        .path
+        .strip_prefix(root)
+        .unwrap_or(&node.path)
+        .to_string_lossy()
+        .to_string();
+
+      let Some(mut rank) = rank_lowered(&node.lower, &relative, needle, by_path) else {
+        continue;
+      };
+
+      if node.ignored {
+        rank += IGNORED_RANK_PENALTY;
+      }
+
+      ranked.push((rank, node));
+    }
+  }
+
+  ranked.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| name_cmp(&a.1, &b.1)));
+
+  ranked.into_iter().map(|(_, node)| node).collect()
 }
 
 pub struct ContextPanel {
   root: PathBuf,
   active: RightTab,
   expanded: HashSet<PathBuf>,
-  dir_cache: BTreeMap<PathBuf, Vec<FileNode>>,
+  dir_cache: BTreeMap<PathBuf, Vec<Rc<FileNode>>>,
+  scanning: HashSet<PathBuf>,
+  scan_token: u64,
+  generation: u64,
+  rows_generation: u64,
+  rows: Vec<(Rc<FileNode>, usize)>,
+  matches: Vec<Rc<FileNode>>,
+  filter_token: u64,
+  filtering: bool,
   git: Option<GitSnapshot>,
   file_status: HashMap<PathBuf, GitFileKind>,
   dir_status: HashMap<PathBuf, GitFileKind>,
@@ -185,9 +286,9 @@ impl ContextPanel {
 
     let file_filter = cx.new(|cx| InputState::new(window, cx).placeholder("Find files"));
 
-    cx.subscribe(&file_filter, |_, _, event: &InputEvent, cx| {
+    cx.subscribe(&file_filter, |panel, _, event: &InputEvent, cx| {
       if matches!(event, InputEvent::Change) {
-        cx.notify();
+        panel.schedule_filter(cx);
       }
     })
     .detach();
@@ -197,6 +298,14 @@ impl ContextPanel {
       active: RightTab::Files,
       expanded: HashSet::new(),
       dir_cache: BTreeMap::new(),
+      scanning: HashSet::new(),
+      scan_token: 0,
+      generation: 0,
+      rows_generation: u64::MAX,
+      rows: Vec::new(),
+      matches: Vec::new(),
+      filter_token: 0,
+      filtering: false,
       git: None,
       file_status: HashMap::new(),
       dir_status: HashMap::new(),
@@ -590,8 +699,33 @@ impl ContextPanel {
     cx.notify();
   }
 
-  pub fn refresh_files(&mut self, cx: &mut Context<Self>) {
-    self.dir_cache.clear();
+  pub fn refresh_files(&mut self, changed: Option<&[PathBuf]>, cx: &mut Context<Self>) {
+    match changed {
+      Some(paths) => {
+        let mut invalidated = false;
+
+        for path in paths {
+          let dirs = [Some(path.as_path()), path.parent()];
+
+          for dir in dirs.into_iter().flatten() {
+            invalidated |= self.dir_cache.remove(dir).is_some();
+          }
+        }
+
+        if !invalidated {
+          return;
+        }
+      }
+      None => {
+        if self.dir_cache.is_empty() {
+          return;
+        }
+
+        self.dir_cache.clear();
+      }
+    }
+
+    self.invalidate_rows();
 
     cx.notify();
   }
@@ -599,13 +733,27 @@ impl ContextPanel {
   pub fn set_root(&mut self, root: PathBuf, cx: &mut Context<Self>) {
     self.root = root;
     self.expanded.clear();
-    self.dir_cache.clear();
     self.git = None;
     self.file_status.clear();
     self.dir_status.clear();
     self.selected = None;
 
+    self.reset_scans();
+
     cx.notify();
+  }
+
+  fn reset_scans(&mut self) {
+    self.dir_cache.clear();
+    self.scanning.clear();
+    self.matches.clear();
+    self.scan_token = self.scan_token.wrapping_add(1);
+
+    self.invalidate_rows();
+  }
+
+  fn invalidate_rows(&mut self) {
+    self.generation = self.generation.wrapping_add(1);
   }
 
   pub fn set_selected(&mut self, path: Option<PathBuf>, cx: &mut Context<Self>) {
@@ -666,122 +814,139 @@ impl ContextPanel {
     }
   }
 
-  fn children_of(&mut self, dir: &Path) -> Vec<FileNode> {
-    if let Some(children) = self.dir_cache.get(dir) {
-      return children.clone();
+  fn request_scan(&mut self, dir: PathBuf, cx: &mut Context<Self>) {
+    if self.dir_cache.contains_key(&dir) || !self.scanning.insert(dir.clone()) {
+      return;
     }
 
     let show_dotfiles = self.show_dotfiles;
+    let root = self.root.clone();
+    let token = self.scan_token;
+    let target = dir.clone();
 
-    let mut nodes: Vec<FileNode> = std::fs::read_dir(dir)
-      .into_iter()
-      .flatten()
-      .flatten()
-      .filter_map(|entry| {
-        let name = entry.file_name().to_string_lossy().to_string();
+    let task = cx.background_executor().spawn(async move {
+      let probe = IgnoreProbe::open(&root);
 
-        if name == ".git" || name == "node_modules" {
-          return None;
-        }
-
-        if !show_dotfiles && name.starts_with('.') {
-          return None;
-        }
-
-        let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
-
-        Some(FileNode {
-          path: entry.path(),
-          name,
-          is_dir,
-          ignored: false,
-        })
-      })
-      .collect();
-
-    let candidates: Vec<PathBuf> = nodes.iter().map(|node| node.path.clone()).collect();
-    let ignored = helix_git::ignored_paths(&self.root, &candidates);
-
-    for node in &mut nodes {
-      node.ignored = ignored.contains(&node.path);
-    }
-
-    nodes.sort_by(|a, b| {
-      b.is_dir
-        .cmp(&a.is_dir)
-        .then_with(|| natural_cmp(&a.name, &b.name))
+      scan_dir(&target, show_dotfiles, probe.as_ref())
     });
 
-    self.dir_cache.insert(dir.to_path_buf(), nodes.clone());
+    cx.spawn(async move |this, cx| {
+      let nodes = task.await;
 
-    nodes
-  }
-
-  fn filter_matches(&mut self, query: &str) -> Vec<FileNode> {
-    let needle = query.to_lowercase();
-    let by_path = needle.contains('/');
-
-    let mut ranked: Vec<(u8, FileNode)> = Vec::new();
-    let mut queue = std::collections::VecDeque::from([self.root.clone()]);
-    let mut dirs = 0usize;
-
-    while let Some(dir) = queue.pop_front() {
-      if dirs >= FILTER_MAX_DIRS || ranked.len() >= FILTER_MAX_MATCHES {
-        break;
-      }
-
-      dirs += 1;
-
-      for node in self.children_of(&dir) {
-        if node.is_dir {
-          if !node.ignored {
-            queue.push_back(node.path.clone());
+      this
+        .update(cx, |panel, cx| {
+          if panel.scan_token != token {
+            return;
           }
 
-          continue;
-        }
+          panel.scanning.remove(&dir);
+          panel
+            .dir_cache
+            .insert(dir.clone(), nodes.into_iter().map(Rc::new).collect());
 
-        let relative = node
-          .path
-          .strip_prefix(&self.root)
-          .unwrap_or(&node.path)
-          .to_string_lossy()
-          .to_string();
-        let Some(mut rank) = match_rank(&node.name, &relative, &needle, by_path) else {
-          continue;
-        };
+          panel.invalidate_rows();
 
-        if node.ignored {
-          rank += IGNORED_RANK_PENALTY;
-        }
-
-        ranked.push((rank, node));
-      }
-    }
-
-    ranked.sort_by(|a, b| {
-      a.0
-        .cmp(&b.0)
-        .then_with(|| natural_cmp(&a.1.name, &b.1.name))
-    });
-
-    ranked.into_iter().map(|(_, node)| node).collect()
+          cx.notify();
+        })
+        .ok();
+    })
+    .detach();
   }
 
-  fn visible_rows(&mut self, dir: PathBuf, depth: usize, out: &mut Vec<(FileNode, usize)>) {
+  fn collect_rows(
+    &self,
+    dir: &Path,
+    depth: usize,
+    out: &mut Vec<(Rc<FileNode>, usize)>,
+    pending: &mut Vec<PathBuf>,
+  ) {
     if depth > MAX_DEPTH || out.len() > MAX_ROWS {
       return;
     }
 
-    for node in self.children_of(&dir) {
+    let Some(children) = self.dir_cache.get(dir) else {
+      pending.push(dir.to_path_buf());
+
+      return;
+    };
+
+    for node in children {
       let expanded = node.is_dir && self.expanded.contains(&node.path);
 
       out.push((node.clone(), depth));
 
       if expanded {
-        self.visible_rows(node.path.clone(), depth + 1, out);
+        self.collect_rows(&node.path, depth + 1, out, pending);
       }
     }
+  }
+
+  fn rebuild_rows(&mut self, cx: &mut Context<Self>) {
+    let mut rows = Vec::new();
+    let mut pending = Vec::new();
+
+    self.collect_rows(&self.root.clone(), 0, &mut rows, &mut pending);
+
+    self.rows = rows;
+    self.rows_generation = self.generation;
+
+    for dir in pending {
+      self.request_scan(dir, cx);
+    }
+  }
+
+  fn schedule_filter(&mut self, cx: &mut Context<Self>) {
+    self.filter_token = self.filter_token.wrapping_add(1);
+
+    let token = self.filter_token;
+    let query = self.file_filter.read(cx).value().trim().to_string();
+
+    if query.is_empty() {
+      self.matches.clear();
+      self.filtering = false;
+
+      cx.notify();
+
+      return;
+    }
+
+    self.filtering = true;
+
+    let root = self.root.clone();
+    let show_dotfiles = self.show_dotfiles;
+
+    cx.spawn(async move |this, cx| {
+      cx.background_executor().timer(FILTER_DEBOUNCE).await;
+
+      if !matches!(this.update(cx, |panel, _| panel.filter_token), Ok(current) if current == token)
+      {
+        return;
+      }
+
+      let found = cx
+        .background_executor()
+        .spawn(async move {
+          let needle = query.to_lowercase();
+          let by_path = needle.contains('/');
+
+          scan_matches(&root, &needle, by_path, show_dotfiles)
+        })
+        .await;
+
+      this
+        .update(cx, |panel, cx| {
+          if panel.filter_token != token {
+            return;
+          }
+
+          panel.matches = found.into_iter().map(Rc::new).collect();
+          panel.filtering = false;
+
+          cx.notify();
+        })
+        .ok();
+    })
+    .detach();
   }
 
   fn render_filter(&self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
@@ -841,10 +1006,12 @@ impl ContextPanel {
     let filter = self.render_filter(theme, cx);
 
     let body = if query.is_empty() {
-      let mut rows = Vec::new();
-      self.visible_rows(self.root.clone(), 0, &mut rows);
-      if rows.is_empty() {
-        self.empty_files("No files in this workspace", theme)
+      if self.rows_generation != self.generation {
+        self.rebuild_rows(cx);
+      }
+
+      if self.rows.is_empty() {
+        self.scanning_or_empty("No files in this workspace", theme)
       } else {
         div()
           .id("files-scroll")
@@ -856,35 +1023,34 @@ impl ContextPanel {
           .flex()
           .flex_col()
           .children(
-            rows
-              .into_iter()
+            self
+              .rows
+              .iter()
               .enumerate()
-              .map(|(ix, (node, depth))| self.render_row(ix, node, depth, theme, cx)),
+              .map(|(ix, (node, depth))| self.render_row(ix, node, *depth, theme, cx)),
           )
           .into_any_element()
       }
+    } else if self.matches.is_empty() {
+      self.scanning_or_empty("No file matches", theme)
     } else {
-      let matches = self.filter_matches(&query);
-      if matches.is_empty() {
-        self.empty_files("No file matches", theme)
-      } else {
-        div()
-          .id("files-matches")
-          .flex_1()
-          .min_h_0()
-          .overflow_y_scroll()
-          .py_2()
-          .px_1()
-          .flex()
-          .flex_col()
-          .children(
-            matches
-              .into_iter()
-              .enumerate()
-              .map(|(ix, node)| self.render_match(ix, node, theme, cx)),
-          )
-          .into_any_element()
-      }
+      div()
+        .id("files-matches")
+        .flex_1()
+        .min_h_0()
+        .overflow_y_scroll()
+        .py_2()
+        .px_1()
+        .flex()
+        .flex_col()
+        .children(
+          self
+            .matches
+            .iter()
+            .enumerate()
+            .map(|(ix, node)| self.render_match(ix, node, theme, cx)),
+        )
+        .into_any_element()
     };
 
     div()
@@ -895,6 +1061,14 @@ impl ContextPanel {
       .child(filter)
       .child(body)
       .into_any_element()
+  }
+
+  fn scanning_or_empty(&self, message: &'static str, theme: &Theme) -> AnyElement {
+    if self.scanning.is_empty() && !self.filtering {
+      self.empty_files(message, theme)
+    } else {
+      div().flex_1().into_any_element()
+    }
   }
 
   fn empty_files(&self, message: &'static str, theme: &Theme) -> AnyElement {
@@ -912,7 +1086,7 @@ impl ContextPanel {
   fn render_match(
     &self,
     ix: usize,
-    node: FileNode,
+    node: &FileNode,
     theme: &Theme,
     cx: &mut Context<Self>,
   ) -> AnyElement {
@@ -1004,7 +1178,7 @@ impl ContextPanel {
   fn render_row(
     &self,
     ix: usize,
-    node: FileNode,
+    node: &FileNode,
     depth: usize,
     theme: &Theme,
     cx: &mut Context<Self>,
@@ -1080,6 +1254,8 @@ impl ContextPanel {
             if !this.expanded.insert(path.clone()) {
               this.expanded.remove(&path);
             }
+
+            this.invalidate_rows();
             cx.notify();
           } else {
             this.selected = Some(path.clone());
@@ -1150,6 +1326,7 @@ impl ContextPanel {
         icon_button("files-collapse", HelixIcon::ListCollapse, theme).on_click(cx.listener(
           |this, _, _, cx| {
             this.expanded.clear();
+            this.invalidate_rows();
             cx.notify();
           },
         )),
@@ -1157,7 +1334,8 @@ impl ContextPanel {
       .child(
         icon_button("files-refresh", HelixIcon::Refresh, theme).on_click(cx.listener(
           |this, _, _, cx| {
-            this.dir_cache.clear();
+            this.reset_scans();
+            this.schedule_filter(cx);
             cx.notify();
           },
         )),
@@ -1166,7 +1344,9 @@ impl ContextPanel {
         icon_button("files-dotfiles", IconName::Eye, theme).on_click(cx.listener(
           |this, _, _, cx| {
             this.show_dotfiles = !this.show_dotfiles;
-            this.dir_cache.clear();
+
+            this.reset_scans();
+            this.schedule_filter(cx);
             cx.notify();
           },
         )),
@@ -2057,16 +2237,6 @@ fn primary_action_label(action: NextAction) -> Option<&'static str> {
     NextAction::Retry => None,
     NextAction::None => None,
   }
-}
-
-fn natural_cmp(a: &str, b: &str) -> std::cmp::Ordering {
-  let lower = a.to_lowercase().cmp(&b.to_lowercase());
-
-  if lower != std::cmp::Ordering::Equal {
-    return lower;
-  }
-
-  a.cmp(b)
 }
 
 impl Render for ContextPanel {

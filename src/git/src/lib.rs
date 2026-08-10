@@ -59,35 +59,50 @@ pub fn snapshot(root: &Path) -> Result<GitSnapshot> {
   Ok(snap)
 }
 
+/// Discovering the repository is the expensive half of an ignore check, so a
+/// caller walking many directories opens one probe and reuses it.
+pub struct IgnoreProbe {
+  repo: Repository,
+  workdir: std::path::PathBuf,
+}
+
+impl IgnoreProbe {
+  pub fn open(root: &Path) -> Option<Self> {
+    let repo = Repository::discover(root).ok()?;
+    let workdir = repo.workdir()?.to_path_buf();
+    let workdir = workdir.canonicalize().unwrap_or(workdir);
+
+    Some(Self { repo, workdir })
+  }
+
+  pub fn is_ignored(&self, path: &Path) -> bool {
+    let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    let relative = canonical.strip_prefix(&self.workdir).unwrap_or(&canonical);
+    let mut probe = relative.to_string_lossy().to_string();
+
+    if probe.is_empty() {
+      return false;
+    }
+
+    if path.is_dir() && !probe.ends_with('/') {
+      probe.push('/');
+    }
+
+    self.repo.is_path_ignored(Path::new(&probe)).unwrap_or(false)
+  }
+}
+
 pub fn ignored_paths(
   root: &Path,
   candidates: &[std::path::PathBuf],
 ) -> HashSet<std::path::PathBuf> {
-  let Ok(repo) = Repository::discover(root) else {
+  let Some(probe) = IgnoreProbe::open(root) else {
     return HashSet::new();
   };
-  let Some(workdir) = repo.workdir().map(|dir| dir.to_path_buf()) else {
-    return HashSet::new();
-  };
-  let workdir = workdir.canonicalize().unwrap_or(workdir);
 
   candidates
     .iter()
-    .filter(|path| {
-      let canonical = path.canonicalize().unwrap_or_else(|_| (*path).clone());
-      let relative = canonical.strip_prefix(&workdir).unwrap_or(&canonical);
-      let mut probe = relative.to_string_lossy().to_string();
-
-      if probe.is_empty() {
-        return false;
-      }
-
-      if path.is_dir() && !probe.ends_with('/') {
-        probe.push('/');
-      }
-
-      repo.is_path_ignored(Path::new(&probe)).unwrap_or(false)
-    })
+    .filter(|path| probe.is_ignored(path))
     .cloned()
     .collect()
 }

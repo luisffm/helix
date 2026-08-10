@@ -271,7 +271,7 @@ impl HelixRoot {
       .spawn(cx, async move |cx| {
         while let Some(batch) = rx.recv().await {
           let updated = this.update_in(cx, |root, window, cx| {
-            root.refresh_git(cx);
+            root.refresh_git_for(Some(batch.clone()), cx);
 
             root.workspace.update(cx, |workspace, cx| {
               workspace.refresh_open_files(&batch, window, cx);
@@ -344,6 +344,10 @@ impl HelixRoot {
   }
 
   fn refresh_git(&mut self, cx: &mut Context<Self>) {
+    self.refresh_git_for(None, cx);
+  }
+
+  fn refresh_git_for(&mut self, changed: Option<Vec<PathBuf>>, cx: &mut Context<Self>) {
     let root = self.project.root.clone();
 
     let task = cx.background_executor().spawn(async move {
@@ -397,7 +401,7 @@ impl HelixRoot {
 
           root_view.context_panel.update(cx, |panel, cx| {
             panel.set_git(snapshot, cx);
-            panel.refresh_files(cx);
+            panel.refresh_files(changed.as_deref(), cx);
           });
 
           cx.notify();
