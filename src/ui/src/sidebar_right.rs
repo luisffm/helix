@@ -146,6 +146,61 @@ struct FileNode {
   ignored: bool,
 }
 
+/// Everything a git file row draws, built once when the snapshot lands so that
+/// render never formats an id or walks a path again.
+struct GitRow {
+  path: String,
+  kind: GitFileKind,
+  name: SharedString,
+  parent: Option<SharedString>,
+  added: Option<SharedString>,
+  removed: Option<SharedString>,
+  group: SharedString,
+  row_id: SharedString,
+  toggle_id: SharedString,
+  discard_id: SharedString,
+}
+
+#[derive(Default)]
+struct GitRows {
+  conflicted: Vec<GitRow>,
+  staged: Vec<GitRow>,
+  unstaged: Vec<GitRow>,
+  untracked: Vec<GitRow>,
+}
+
+fn build_git_rows(files: &[GitFileStatus], prefix: &str) -> Vec<GitRow> {
+  files
+    .iter()
+    .map(|file| {
+      let as_path = Path::new(&file.path);
+
+      let name = as_path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| file.path.clone());
+
+      let parent = as_path
+        .parent()
+        .map(|dir| dir.to_string_lossy().to_string())
+        .filter(|dir| !dir.is_empty());
+
+      GitRow {
+        kind: file.kind,
+        name: name.into(),
+        parent: parent.map(SharedString::from),
+        added: (file.added > 0).then(|| SharedString::from(format!("+{}", file.added))),
+        removed: (file.removed > 0).then(|| SharedString::from(format!("-{}", file.removed))),
+        group: SharedString::from(format!("git-row-{prefix}-{}", file.path)),
+        row_id: SharedString::from(format!("git-{prefix}-{}", file.path)),
+        toggle_id: SharedString::from(format!("git-toggle-{prefix}-{}", file.path)),
+        discard_id: SharedString::from(format!("git-discard-{prefix}-{}", file.path)),
+        path: file.path.clone(),
+      }
+    })
+    .collect()
+}
+
 fn name_cmp(a: &FileNode, b: &FileNode) -> std::cmp::Ordering {
   a.lower.cmp(&b.lower).then_with(|| a.name.cmp(&b.name))
 }
@@ -246,6 +301,7 @@ pub struct ContextPanel {
   filter_token: u64,
   filtering: bool,
   git: Option<GitSnapshot>,
+  git_rows: GitRows,
   file_status: HashMap<PathBuf, GitFileKind>,
   dir_status: HashMap<PathBuf, GitFileKind>,
   selected: Option<PathBuf>,
@@ -307,6 +363,7 @@ impl ContextPanel {
       filter_token: 0,
       filtering: false,
       git: None,
+      git_rows: GitRows::default(),
       file_status: HashMap::new(),
       dir_status: HashMap::new(),
       selected: None,
@@ -693,6 +750,16 @@ impl ContextPanel {
 
   pub fn set_git(&mut self, git: Option<GitSnapshot>, cx: &mut Context<Self>) {
     self.rebuild_status(git.as_ref());
+
+    self.git_rows = match git.as_ref() {
+      Some(git) => GitRows {
+        conflicted: build_git_rows(&git.conflicted, "conflict"),
+        staged: build_git_rows(&git.staged, "staged"),
+        unstaged: build_git_rows(&git.unstaged, "unstaged"),
+        untracked: build_git_rows(&git.untracked, "untracked"),
+      },
+      None => GitRows::default(),
+    };
 
     self.git = git;
 
@@ -1356,33 +1423,23 @@ impl ContextPanel {
 
   fn git_file_rows(
     &self,
-    files: &[GitFileStatus],
+    rows: &[GitRow],
     base: DiffBase,
-    prefix: &'static str,
     staged: bool,
     theme: &Theme,
     cx: &mut Context<Self>,
   ) -> Vec<AnyElement> {
-    files
+    rows
       .iter()
-      .enumerate()
-      .map(|(ix, file)| {
+      .map(|file| {
         let color = file_icons::status_color(file.kind, theme);
-        let group = SharedString::from(format!("git-row-{prefix}-{ix}"));
+        let group = file.group.clone();
         let relative = file.path.clone();
         let toggle_path = file.path.clone();
         let discard_path = file.path.clone();
         let base = base.clone();
         let armed = self.discard_armed.as_deref() == Some(file.path.as_str());
         let as_path = Path::new(&file.path);
-        let name = as_path
-          .file_name()
-          .map(|n| n.to_string_lossy().to_string())
-          .unwrap_or_else(|| file.path.clone());
-        let parent = as_path
-          .parent()
-          .map(|dir| dir.to_string_lossy().to_string())
-          .filter(|dir| !dir.is_empty());
 
         let stat = div()
           .flex_none()
@@ -1390,16 +1447,18 @@ impl ContextPanel {
           .items_center()
           .gap_1()
           .group_hover(group.clone(), |s| s.invisible())
-          .children((file.added > 0).then(|| {
-            div()
-              .text_color(theme.green)
-              .child(format!("+{}", file.added))
-          }))
-          .children((file.removed > 0).then(|| {
-            div()
-              .text_color(theme.red)
-              .child(format!("-{}", file.removed))
-          }))
+          .children(
+            file
+              .added
+              .clone()
+              .map(|added| div().text_color(theme.green).child(added)),
+          )
+          .children(
+            file
+              .removed
+              .clone()
+              .map(|removed| div().text_color(theme.red).child(removed)),
+          )
           .child(
             div()
               .text_color(color)
@@ -1407,7 +1466,7 @@ impl ContextPanel {
           );
 
         let toggle = div()
-          .id(SharedString::from(format!("git-toggle-{prefix}-{ix}")))
+          .id(file.toggle_id.clone())
           .flex_none()
           .size(px(18.0))
           .flex()
@@ -1445,7 +1504,7 @@ impl ContextPanel {
 
         let discard = (!staged).then(|| {
           div()
-            .id(SharedString::from(format!("git-discard-{prefix}-{ix}")))
+            .id(file.discard_id.clone())
             .flex_none()
             .size(px(18.0))
             .flex()
@@ -1483,7 +1542,7 @@ impl ContextPanel {
         });
 
         div()
-          .id(SharedString::from(format!("git-{prefix}-{ix}")))
+          .id(file.row_id.clone())
           .group(group.clone())
           .relative()
           .flex()
@@ -1508,8 +1567,13 @@ impl ContextPanel {
               .text_color(theme.text_dim)
               .child(file_icons::icon(as_path).size_3()),
           )
-          .child(div().flex_none().text_color(theme.text).child(name))
-          .children(parent.map(|parent| {
+          .child(
+            div()
+              .flex_none()
+              .text_color(theme.text)
+              .child(file.name.clone()),
+          )
+          .children(file.parent.clone().map(|parent| {
             div()
               .flex_1()
               .min_w_0()
@@ -1815,7 +1879,7 @@ impl ContextPanel {
   }
 
   fn render_git(&mut self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
-    let Some(git) = self.git.clone() else {
+    let Some(git) = self.git.as_ref() else {
       return div()
         .p_3()
         .text_xs()
@@ -1824,7 +1888,7 @@ impl ContextPanel {
         .into_any_element();
     };
 
-    let commit_box = self.render_commit_box(&git, theme, cx);
+    let commit_box = self.render_commit_box(git, theme, cx);
     let mut content = div()
       .id("git-scroll")
       .flex_1()
@@ -1853,9 +1917,8 @@ impl ContextPanel {
           theme,
         ))
         .children(self.git_file_rows(
-          &git.conflicted,
+          &self.git_rows.conflicted,
           DiffBase::Unstaged,
-          "conflict",
           false,
           theme,
           cx,
@@ -1863,24 +1926,16 @@ impl ContextPanel {
     }
 
     let staged = if self.is_open(GitSection::Staged) {
-      self.git_file_rows(&git.staged, DiffBase::Staged, "staged", true, theme, cx)
+      self.git_file_rows(&self.git_rows.staged, DiffBase::Staged, true, theme, cx)
     } else {
       Vec::new()
     };
     let (unstaged, untracked) = if self.is_open(GitSection::Changes) {
       (
+        self.git_file_rows(&self.git_rows.unstaged, DiffBase::Unstaged, false, theme, cx),
         self.git_file_rows(
-          &git.unstaged,
+          &self.git_rows.untracked,
           DiffBase::Unstaged,
-          "unstaged",
-          false,
-          theme,
-          cx,
-        ),
-        self.git_file_rows(
-          &git.untracked,
-          DiffBase::Unstaged,
-          "untracked",
           false,
           theme,
           cx,
@@ -1889,10 +1944,10 @@ impl ContextPanel {
     } else {
       (Vec::new(), Vec::new())
     };
-    let commits: Vec<helix_models::CommitInfo> = if self.is_open(GitSection::Commits) {
-      git.recent_commits.clone()
+    let commits: &[helix_models::CommitInfo] = if self.is_open(GitSection::Commits) {
+      &git.recent_commits
     } else {
-      Vec::new()
+      &[]
     };
 
     content = content
@@ -1964,7 +2019,7 @@ impl ContextPanel {
         theme,
         cx,
       ))
-      .children(commits.into_iter().map(|commit| {
+      .children(commits.iter().map(|commit| {
         div()
           .flex()
           .flex_col()
