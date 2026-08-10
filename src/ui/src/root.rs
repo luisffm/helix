@@ -23,6 +23,8 @@ use helix_models::{ProjectInfo, SessionKind};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+const RETAINED_WORKSPACES: usize = 4;
+
 fn worktree_rows(project: &helix_state::config::ProjectConfig) -> Vec<WorktreeRow> {
   let mut entries: Vec<WorktreeRow> = Vec::new();
 
@@ -71,6 +73,7 @@ pub struct HelixRoot {
   worktrees: Vec<WorktreeRow>,
   workspace: Entity<Workspace>,
   workspaces: HashMap<PathBuf, Entity<Workspace>>,
+  recent_workspaces: Vec<PathBuf>,
   project_panel: Entity<ProjectPanel>,
   context_panel: Entity<ContextPanel>,
   search: Option<Entity<SearchDialog>>,
@@ -142,6 +145,8 @@ impl HelixRoot {
     let mut workspaces = HashMap::new();
     workspaces.insert(project.root.clone(), workspace.clone());
 
+    let recent_workspaces = vec![project.root.clone()];
+
     let mut root = Self {
       project,
       left_open: true,
@@ -157,6 +162,7 @@ impl HelixRoot {
       worktrees: Vec::new(),
       workspace,
       workspaces,
+      recent_workspaces,
       project_panel,
       context_panel,
       search: None,
@@ -386,6 +392,9 @@ impl HelixRoot {
       panel.set_root(project.root.clone(), cx);
     });
 
+    self.touch_workspace(project.root.clone());
+    self.evict_idle_workspaces(cx);
+
     let workspaces = self.workspaces.clone();
 
     self.project_panel.update(cx, |panel, cx| {
@@ -398,6 +407,38 @@ impl HelixRoot {
     self.refresh_git(cx);
 
     cx.notify();
+  }
+
+  fn touch_workspace(&mut self, root: PathBuf) {
+    self.recent_workspaces.retain(|path| *path != root);
+    self.recent_workspaces.insert(0, root);
+  }
+
+  /// Every project ever visited kept its terminals, editors and diffs alive.
+  /// The recently used ones stay; the rest are dropped, but only once nothing
+  /// in them is still working.
+  fn evict_idle_workspaces(&mut self, cx: &mut Context<Self>) {
+    if self.workspaces.len() <= RETAINED_WORKSPACES {
+      return;
+    }
+
+    let keep: std::collections::HashSet<&PathBuf> = self
+      .recent_workspaces
+      .iter()
+      .take(RETAINED_WORKSPACES)
+      .collect();
+
+    let evictable: Vec<PathBuf> = self
+      .workspaces
+      .iter()
+      .filter(|(root, workspace)| !keep.contains(root) && workspace.read(cx).is_idle(cx))
+      .map(|(root, _)| root.clone())
+      .collect();
+
+    for root in evictable {
+      self.workspaces.remove(&root);
+      self.recent_workspaces.retain(|path| *path != root);
+    }
   }
 
   fn refresh_git(&mut self, cx: &mut Context<Self>) {

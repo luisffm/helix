@@ -11,6 +11,9 @@ use gpui::{
 use gpui_component::{Icon, IconName};
 use helix_models::{AgentStatus, DiffBase, SessionKind};
 use std::path::PathBuf;
+use std::time::Duration;
+
+const IDLE_GRACE: Duration = Duration::from_secs(30 * 60);
 
 pub enum WorkspaceEvent {
   SessionsChanged,
@@ -250,6 +253,19 @@ impl Workspace {
       .collect();
 
     helix_state::config::set_workspace_session(&self.project_root, tabs, self.active);
+  }
+
+  /// A workspace may only be dropped when nothing in it is still working: a
+  /// live agent session is the app's product, and a shell someone used minutes
+  /// ago carries their directory, history and environment.
+  pub fn is_idle(&self, cx: &App) -> bool {
+    !self.terminals().any(|(_, view)| {
+      let view = view.read(cx);
+
+      let live_agent = view.agent_kind() == SessionKind::ClaudeCode && view.exited.is_none();
+
+      live_agent || view.last_activity.elapsed() < IDLE_GRACE
+    })
   }
 
   pub fn terminals<'a>(&'a self) -> impl Iterator<Item = (usize, &'a Entity<TerminalView>)> + 'a {

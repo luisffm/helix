@@ -25,6 +25,7 @@ const MAX_ROWS: usize = 2000;
 const MAX_DEPTH: usize = 16;
 const FILTER_MAX_MATCHES: usize = 300;
 const FILTER_MAX_DIRS: usize = 4000;
+const MAX_CACHED_DIRS: usize = 4096;
 const FILTER_DEBOUNCE: Duration = Duration::from_millis(100);
 const IGNORED_RANK_PENALTY: u8 = 3;
 
@@ -843,6 +844,20 @@ impl ContextPanel {
     self.generation = self.generation.wrapping_add(1);
   }
 
+  /// Only the root and the expanded directories can appear as rows; anything
+  /// else in the cache is a directory the tree walked past once.
+  fn trim_dir_cache(&mut self) {
+    if self.dir_cache.len() <= MAX_CACHED_DIRS {
+      return;
+    }
+
+    let root = self.root.clone();
+
+    self
+      .dir_cache
+      .retain(|dir, _| *dir == root || self.expanded.contains(dir));
+  }
+
   pub fn set_selected(&mut self, path: Option<PathBuf>, cx: &mut Context<Self>) {
     self.selected = path;
 
@@ -931,6 +946,7 @@ impl ContextPanel {
             .dir_cache
             .insert(dir.clone(), nodes.into_iter().map(Rc::new).collect());
 
+          panel.trim_dir_cache();
           panel.invalidate_rows();
 
           cx.notify();
