@@ -1,4 +1,7 @@
 run:
+    cargo run --profile fast -p helix
+
+run-release:
     cargo run --release -p helix
 
 build:

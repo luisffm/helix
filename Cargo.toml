@@ -56,7 +56,18 @@ strip = true
 
 [profile.dev]
 opt-level = 1
-incremental = false
+incremental = true
+debug = "line-tables-only"
 
 [profile.dev.package."*"]
 opt-level = 2
+
+# Release-grade codegen without the fat-LTO relink, so iterating on the app does
+# not pay a whole-program optimization pass per change.
+[profile.fast]
+inherits = "release"
+lto = false
+codegen-units = 16
+strip = false
+debug = "line-tables-only"
+incremental = true

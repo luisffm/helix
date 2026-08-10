@@ -8,18 +8,33 @@ use helix_ui::{HelixRoot, Theme};
 mod assets;
 mod single_instance;
 
+/// A GUI launch inherits `/` as its working directory, so the configured
+/// projects are a better guess than the filesystem root.
+fn startup_path() -> std::path::PathBuf {
+  if let Some(arg) = std::env::args().nth(1) {
+    return std::path::PathBuf::from(arg);
+  }
+
+  if let Some(cwd) = std::env::current_dir()
+    .ok()
+    .filter(|dir| dir.parent().is_some())
+  {
+    return cwd;
+  }
+
+  helix_state::config::visible_projects()
+    .first()
+    .map(|project| project.path.clone())
+    .unwrap_or_else(|| "/".into())
+}
+
 fn main() {
   let Some(_instance_lock) = single_instance::acquire() else {
     eprintln!("helix: another instance is already running");
     return;
   };
 
-  let path = std::env::args()
-    .nth(1)
-    .map(std::path::PathBuf::from)
-    .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| "/".into()));
-
-  let (project, _worktree) = match helix_worktree::open_project(&path) {
+  let (project, _worktree) = match helix_worktree::open_project(&startup_path()) {
     Ok(opened) => opened,
     Err(err) => {
       eprintln!("helix: {err}");

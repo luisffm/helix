@@ -251,6 +251,11 @@ pub fn save(config: &HelixConfig) {
 }
 
 pub fn ensure_project(root: &Path) {
+  // A GUI launch inherits `/` as its working directory, which is never a project.
+  if root.parent().is_none() {
+    return;
+  }
+
   let mut config = load();
 
   if !config.projects.iter().any(|p| p.path == root) {
