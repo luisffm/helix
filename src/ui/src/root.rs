@@ -23,6 +23,33 @@ use helix_models::{ProjectInfo, SessionKind};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+fn worktree_rows(project: &helix_state::config::ProjectConfig) -> Vec<WorktreeRow> {
+  let mut entries: Vec<WorktreeRow> = Vec::new();
+
+  if let Some(entry) = helix_worktree::describe_worktree(&project.path) {
+    entries.push(WorktreeRow::new(entry, None, None, None));
+  }
+
+  for wt in &project.worktrees {
+    let Some(entry) = helix_worktree::describe_worktree(&wt.path) else {
+      continue;
+    };
+
+    if entries.iter().any(|e| e.entry.path == entry.path) {
+      continue;
+    }
+
+    entries.push(WorktreeRow::new(
+      entry,
+      wt.display_name.clone(),
+      wt.issue.clone(),
+      wt.pr.clone(),
+    ));
+  }
+
+  entries
+}
+
 #[derive(Clone, Copy, PartialEq)]
 enum ResizingSide {
   Left,
@@ -153,8 +180,38 @@ impl HelixRoot {
     root.start_watcher(window, cx);
     root.refresh_git(cx);
     root.start_resource_monitor(cx);
+    root.detect_terminal_font(cx);
 
     root
+  }
+
+  /// Probing for a terminal font reads several config files and spawns
+  /// `defaults`, which is not worth delaying the first frame for.
+  fn detect_terminal_font(&mut self, cx: &mut Context<Self>) {
+    let installed = cx.text_system().all_font_names();
+
+    cx.spawn(async move |this, cx| {
+      let detected = cx
+        .background_executor()
+        .spawn(async move { helix_state::terminal_font::detect(&installed) })
+        .await;
+
+      let Some(mono) = detected else { return };
+
+      this
+        .update(cx, |_, cx| {
+          if cx.global::<Theme>().font_mono.as_ref() == mono.as_str() {
+            return;
+          }
+
+          cx.global_mut::<Theme>().font_mono = mono.into();
+
+          crate::theme::sync_component_theme(cx);
+          cx.refresh_windows();
+        })
+        .ok();
+    })
+    .detach();
   }
 
   fn start_resource_monitor(&mut self, cx: &mut Context<Self>) {
@@ -347,56 +404,40 @@ impl HelixRoot {
     self.refresh_git_for(None, cx);
   }
 
+  /// A watcher batch only ever touches the active project, so it rebuilds that
+  /// project's worktree rows. Describing every configured project means a
+  /// canonicalize plus a Repository::open per worktree, which is reserved for
+  /// project-level changes.
   fn refresh_git_for(&mut self, changed: Option<Vec<PathBuf>>, cx: &mut Context<Self>) {
     let root = self.project.root.clone();
+    let every_project = changed.is_none();
 
     let task = cx.background_executor().spawn(async move {
       let snapshot = helix_git::snapshot(&root).ok();
-
-      let mut all_worktrees: HashMap<PathBuf, Vec<WorktreeRow>> = HashMap::new();
-      let config = helix_state::config::load();
-
-      for project in &config.projects {
-        if !project.path.is_dir() {
-          continue;
-        }
-
-        let mut entries: Vec<WorktreeRow> = Vec::new();
-
-        if let Some(entry) = helix_worktree::describe_worktree(&project.path) {
-          entries.push(WorktreeRow::new(entry, None, None, None));
-        }
-
-        for wt in &project.worktrees {
-          if let Some(entry) = helix_worktree::describe_worktree(&wt.path) {
-            if !entries.iter().any(|e| e.entry.path == entry.path) {
-              entries.push(WorktreeRow::new(
-                entry,
-                wt.display_name.clone(),
-                wt.issue.clone(),
-                wt.pr.clone(),
-              ));
-            }
-          }
-        }
-        all_worktrees.insert(project.path.clone(), entries);
-      }
-
       let owner = helix_worktree::primary_root(&root).unwrap_or(root);
 
-      (snapshot, all_worktrees, owner)
+      let worktrees: HashMap<PathBuf, Vec<WorktreeRow>> = helix_state::config::load()
+        .projects
+        .iter()
+        .filter(|project| project.path.is_dir())
+        .filter(|project| every_project || project.path == owner)
+        .map(|project| (project.path.clone(), worktree_rows(project)))
+        .collect();
+
+      (snapshot, worktrees, owner)
     });
 
     cx.spawn(async move |this, cx| {
-      let (snapshot, all_worktrees, owner) = task.await;
+      let (snapshot, worktrees, owner) = task.await;
 
       this
         .update(cx, |root_view, cx| {
           root_view.git = snapshot.clone();
-          root_view.worktrees = all_worktrees.get(&owner).cloned().unwrap_or_default();
+          root_view.worktrees = worktrees.get(&owner).cloned().unwrap_or_default();
 
           root_view.project_panel.update(cx, |panel, cx| {
-            panel.set_state(snapshot.clone(), all_worktrees, cx);
+            panel.set_git(snapshot.clone(), cx);
+            panel.set_worktrees(worktrees, every_project, cx);
           });
 
           root_view.context_panel.update(cx, |panel, cx| {

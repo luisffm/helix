@@ -283,14 +283,23 @@ impl ProjectPanel {
     cx.notify();
   }
 
-  pub fn set_state(
+  pub fn set_git(&mut self, git: Option<GitSnapshot>, cx: &mut Context<Self>) {
+    self.git = git;
+
+    cx.notify();
+  }
+
+  pub fn set_worktrees(
     &mut self,
-    git: Option<GitSnapshot>,
     worktrees: HashMap<PathBuf, Vec<WorktreeRow>>,
+    every_project: bool,
     cx: &mut Context<Self>,
   ) {
-    self.git = git;
-    self.worktrees = worktrees;
+    if every_project {
+      self.worktrees = worktrees;
+    } else {
+      self.worktrees.extend(worktrees);
+    }
 
     cx.notify();
   }
