@@ -69,7 +69,9 @@ impl EditorView {
       save_error: None,
       focus_handle: cx.focus_handle(),
     };
+
     view.load(window, cx);
+
     view
   }
 
@@ -83,9 +85,11 @@ impl EditorView {
 
   fn load(&mut self, window: &mut Window, cx: &mut Context<Self>) {
     let language = helix_buffer::language::of(&self.path);
+
     match helix_buffer::read(&self.path) {
       Ok(FileContent::Text { text, signature }) => {
         self.disk_signature = Some(signature);
+
         match &self.body {
           Body::Text(state) => {
             state.update(cx, |state, cx| state.set_value(text, window, cx));
@@ -95,10 +99,14 @@ impl EditorView {
               let mut state = InputState::new(window, cx)
                 .code_editor(language)
                 .soft_wrap(false);
+
               state.set_value(text, window, cx);
+
               state
             });
+
             cx.subscribe(&state, Self::handle_input_event).detach();
+
             self.body = Body::Text(state);
           }
         }
@@ -112,9 +120,11 @@ impl EditorView {
       Ok(FileContent::TooLarge { bytes }) => self.body = Body::TooLarge { bytes },
       Err(err) => self.body = Body::Error(err.to_string()),
     }
+
     self.dirty = false;
     self.external = None;
     self.save_error = None;
+
     cx.notify();
   }
 
@@ -127,11 +137,14 @@ impl EditorView {
     if !matches!(event, InputEvent::Change) {
       return;
     }
+
     let dirty = self.buffer_signature(cx) != self.disk_signature;
+
     if dirty != self.dirty {
       self.dirty = dirty;
       cx.emit(EditorViewEvent::DirtyChanged);
     }
+
     cx.notify();
   }
 
@@ -146,18 +159,22 @@ impl EditorView {
     let Body::Text(state) = &self.body else {
       return;
     };
+
     let text = state.read(cx).value().to_string();
+
     match helix_buffer::write(&self.path, &text) {
       Ok(signature) => {
         self.disk_signature = Some(signature);
         self.dirty = false;
         self.external = None;
         self.save_error = None;
+
         cx.emit(EditorViewEvent::Saved);
         cx.emit(EditorViewEvent::DirtyChanged);
       }
       Err(err) => self.save_error = Some(err.to_string()),
     }
+
     cx.notify();
   }
 
@@ -167,6 +184,7 @@ impl EditorView {
         self.external = Some(ExternalMutation::Deleted);
         cx.notify();
       }
+
       return;
     }
 
@@ -174,6 +192,7 @@ impl EditorView {
       Ok(FileContent::Text { signature, .. }) => Some(signature),
       _ => None,
     };
+
     if disk.is_some() && disk == self.disk_signature {
       return;
     }
@@ -195,12 +214,15 @@ impl EditorView {
       self.disk_signature = Some(signature);
       self.dirty = self.buffer_signature(cx) != self.disk_signature;
     }
+
     self.external = None;
+
     cx.notify();
   }
 
   fn render_banner(&self, theme: &Theme, cx: &mut Context<Self>) -> Option<AnyElement> {
     let mutation = self.external?;
+
     let (message, color) = match mutation {
       ExternalMutation::Changed => ("Changed on disk while you had unsaved edits.", theme.yellow),
       ExternalMutation::Deleted => (
@@ -208,6 +230,7 @@ impl EditorView {
         theme.red,
       ),
     };
+
     let mut banner = div()
       .flex()
       .flex_none()

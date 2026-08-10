@@ -170,6 +170,7 @@ mod tests {
   #[test]
   fn clean_branch_can_create() {
     let result = evaluate(&ready(), ReviewLookupOutcome::NotFound, None);
+
     assert!(result.can_create);
     assert_eq!(result.next_action, NextAction::CreateReview);
   }
@@ -177,6 +178,7 @@ mod tests {
   #[test]
   fn unavailable_lookup_never_creates() {
     let result = evaluate(&ready(), ReviewLookupOutcome::Unavailable, None);
+
     assert!(!result.can_create);
     assert_eq!(
       result.blocked_reason,
@@ -189,7 +191,9 @@ mod tests {
   fn dirty_tree_asks_for_commit() {
     let mut state = ready();
     state.dirty_count = 2;
+
     let result = evaluate(&state, ReviewLookupOutcome::NotFound, None);
+
     assert_eq!(result.blocked_reason, Some(BlockedReason::Dirty));
     assert_eq!(result.next_action, NextAction::Commit);
   }
@@ -198,7 +202,9 @@ mod tests {
   fn unpushed_commits_ask_for_push() {
     let mut state = ready();
     state.ahead = 2;
+
     let result = evaluate(&state, ReviewLookupOutcome::NotFound, None);
+
     assert_eq!(result.next_action, NextAction::Push);
   }
 
@@ -206,7 +212,9 @@ mod tests {
   fn missing_upstream_asks_for_publish() {
     let mut state = ready();
     state.has_upstream = false;
+
     let result = evaluate(&state, ReviewLookupOutcome::NotFound, None);
+
     assert_eq!(result.next_action, NextAction::Publish);
   }
 
@@ -215,7 +223,9 @@ mod tests {
     let mut state = ready();
     state.ahead = 1;
     state.behind = 1;
+
     let result = evaluate(&state, ReviewLookupOutcome::NotFound, None);
+
     assert_eq!(result.blocked_reason, Some(BlockedReason::Diverged));
     assert_eq!(result.next_action, NextAction::None);
   }
@@ -225,7 +235,9 @@ mod tests {
     let mut state = ready();
     state.authenticated = false;
     state.dirty_count = 5;
+
     let result = evaluate(&state, ReviewLookupOutcome::Unavailable, None);
+
     assert_eq!(result.next_action, NextAction::Authenticate);
   }
 
@@ -233,7 +245,9 @@ mod tests {
   fn base_branch_is_blocked() {
     let mut state = ready();
     state.branch = "main".to_string();
+
     let result = evaluate(&state, ReviewLookupOutcome::NotFound, None);
+
     assert_eq!(result.blocked_reason, Some(BlockedReason::DefaultBranch));
   }
 }

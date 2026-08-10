@@ -83,7 +83,9 @@ pub fn derive_check_status(checks: &[RawCheck]) -> CheckStatus {
   if checks.is_empty() {
     return CheckStatus::None;
   }
+
   let mut pending = false;
+
   for check in checks {
     let verdict = check
       .conclusion
@@ -108,6 +110,7 @@ pub fn derive_check_status(checks: &[RawCheck]) -> CheckStatus {
       }
     }
   }
+
   if pending {
     CheckStatus::Pending
   } else {
@@ -122,8 +125,10 @@ fn map(raw: RawReview) -> HostedReview {
     _ if raw.is_draft => ReviewState::Draft,
     _ => ReviewState::Open,
   };
+
   let conflicting = raw.mergeable.as_deref() == Some("CONFLICTING")
     || raw.merge_state_status.as_deref() == Some("DIRTY");
+
   HostedReview {
     number: raw.number,
     title: raw.title,
@@ -153,7 +158,9 @@ pub fn for_branch(cwd: &Path, branch: &str) -> Result<Option<HostedReview>> {
       LOOKUP_FIELDS,
     ],
   )?;
+
   let raws: Vec<RawReview> = serde_json::from_str(output.trim())?;
+
   Ok(raws.into_iter().next().map(map))
 }
 
@@ -166,8 +173,10 @@ pub fn create(
 ) -> Result<HostedReview> {
   let dir = std::env::temp_dir().join(format!("helix-pr-body-{}", std::process::id()));
   std::fs::create_dir_all(&dir)?;
+
   let body_path = dir.join("body.md");
   std::fs::write(&body_path, body)?;
+
   let body_arg = body_path.to_string_lossy().to_string();
 
   let mut args = vec![
@@ -183,8 +192,10 @@ pub fn create(
   if draft {
     args.push("--draft");
   }
+
   let result = gh::run(cwd, &args);
   let _ = std::fs::remove_dir_all(&dir);
+
   result?;
 
   let branch = current_branch(cwd)?;
@@ -202,6 +213,7 @@ fn current_branch(cwd: &Path) -> Result<String> {
     .args(["branch", "--show-current"])
     .current_dir(cwd)
     .output()?;
+
   Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
@@ -228,12 +240,14 @@ mod tests {
       check(Some("COMPLETED"), Some("SUCCESS")),
       check(Some("COMPLETED"), Some("FAILURE")),
     ];
+
     assert_eq!(derive_check_status(&checks), CheckStatus::Failing);
   }
 
   #[test]
   fn in_progress_is_pending() {
     let checks = [check(Some("IN_PROGRESS"), None)];
+
     assert_eq!(derive_check_status(&checks), CheckStatus::Pending);
   }
 
@@ -243,6 +257,7 @@ mod tests {
       check(Some("COMPLETED"), Some("SUCCESS")),
       check(Some("COMPLETED"), Some("SKIPPED")),
     ];
+
     assert_eq!(derive_check_status(&checks), CheckStatus::Passing);
   }
 }

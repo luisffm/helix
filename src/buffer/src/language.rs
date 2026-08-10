@@ -60,10 +60,13 @@ pub fn of(path: &Path) -> &'static str {
       return language;
     }
   }
+
   let Some(ext) = path.extension().and_then(|e| e.to_str()) else {
     return "text";
   };
+
   let ext = ext.to_ascii_lowercase();
+
   BY_EXTENSION
     .iter()
     .find(|(candidate, _)| *candidate == ext)

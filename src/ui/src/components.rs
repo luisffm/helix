@@ -63,9 +63,11 @@ pub fn project_icon(name: &str) -> Option<IconName> {
 
 pub fn sparkline(values: &[f32], color: Hsla) -> impl IntoElement {
   let max = values.iter().copied().fold(1.0_f32, f32::max);
+
   div().flex().items_end().gap(px(1.0)).h(px(16.0)).children(
     values.iter().rev().take(24).rev().map(move |value| {
       let ratio = (value / max).clamp(0.05, 1.0);
+
       div()
         .w(px(2.0))
         .h(px(2.0 + 14.0 * ratio))
@@ -118,7 +120,9 @@ pub fn ago(epoch_seconds: i64) -> String {
     .duration_since(std::time::UNIX_EPOCH)
     .map(|d| d.as_secs() as i64)
     .unwrap_or(0);
+
   let delta = (now - epoch_seconds).max(0);
+
   match delta {
     0..=59 => format!("{delta}s"),
     60..=3599 => format!("{}m", delta / 60),

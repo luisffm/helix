@@ -17,12 +17,14 @@ pub fn watch(root: &Path, tx: UnboundedSender<Vec<PathBuf>>) -> notify::Result<F
     .name("helix-fs-debounce".into())
     .spawn(move || {
       let mut pending: Vec<PathBuf> = Vec::new();
+
       loop {
         let timeout = if pending.is_empty() {
           Duration::from_secs(3600)
         } else {
           Duration::from_millis(180)
         };
+
         match raw_rx.recv_timeout(timeout) {
           Ok(Ok(event)) => {
             for path in event.paths {
@@ -48,11 +50,14 @@ pub fn watch(root: &Path, tx: UnboundedSender<Vec<PathBuf>>) -> notify::Result<F
 
 fn is_relevant(path: &Path) -> bool {
   let s = path.to_string_lossy();
+
   if s.contains("/.git/") {
     return s.ends_with("/HEAD") || s.ends_with("/index") || s.contains("/refs/");
   }
+
   if s.contains("/target/") || s.contains("/node_modules/") || s.ends_with(".DS_Store") {
     return false;
   }
+
   true
 }

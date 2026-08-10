@@ -10,7 +10,9 @@ pub struct InstanceLock {
 pub fn acquire() -> Option<InstanceLock> {
   let dir = helix_state::config::app_dir()?;
   std::fs::create_dir_all(&dir).ok()?;
+
   let path = dir.join("helix.lock");
+
   let mut file = OpenOptions::new()
     .read(true)
     .write(true)
@@ -23,12 +25,15 @@ pub fn acquire() -> Option<InstanceLock> {
   {
     use std::os::unix::io::AsRawFd;
     let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+
     if rc != 0 {
       let mut pid_text = String::new();
       let _ = file.read_to_string(&mut pid_text);
+
       if let Ok(pid) = pid_text.trim().parse::<i32>() {
         activate_running_instance(pid);
       }
+
       return None;
     }
   }
@@ -37,6 +42,7 @@ pub fn acquire() -> Option<InstanceLock> {
   let _ = file.rewind();
   let _ = write!(file, "{}", std::process::id());
   let _ = file.flush();
+
   Some(InstanceLock { _file: file })
 }
 
@@ -50,6 +56,7 @@ fn activate_running_instance(pid: i32) {
         class!(NSRunningApplication),
         runningApplicationWithProcessIdentifier: pid
     ];
+
     if !app.is_null() {
       let _: bool = msg_send![app, activateWithOptions: ACTIVATE_IGNORING_OTHER_APPS];
     }

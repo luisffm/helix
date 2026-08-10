@@ -35,6 +35,7 @@ where
   D: serde::Deserializer<'de>,
 {
   let raw: Vec<WorktreeConfigCompat> = Vec::deserialize(deserializer)?;
+
   Ok(
     raw
       .into_iter()
@@ -134,20 +135,24 @@ pub fn set_workspace_session(root: &Path, tabs: Vec<TabSnapshot>, active: usize)
     tabs,
     active,
   };
+
   match config.sessions.iter_mut().find(|s| s.root == root) {
     Some(existing) => {
       if *existing == session {
         return;
       }
+
       *existing = session;
     }
     None => {
       if session.tabs.is_empty() {
         return;
       }
+
       config.sessions.push(session);
     }
   }
+
   save(&config);
 }
 
@@ -174,6 +179,7 @@ pub fn app_dir() -> Option<PathBuf> {
   if let Some(dir) = std::env::var_os("HELIX_CONFIG_DIR").filter(|dir| !dir.is_empty()) {
     return Some(PathBuf::from(dir));
   }
+
   Some(dirs::config_dir()?.join("helix"))
 }
 
@@ -185,6 +191,7 @@ pub fn load() -> HelixConfig {
   let Some(path) = config_path() else {
     return HelixConfig::default();
   };
+
   std::fs::read_to_string(path)
     .ok()
     .and_then(|content| serde_json::from_str(&content).ok())
@@ -193,9 +200,11 @@ pub fn load() -> HelixConfig {
 
 pub fn save(config: &HelixConfig) {
   let Some(path) = config_path() else { return };
+
   if let Some(parent) = path.parent() {
     let _ = std::fs::create_dir_all(parent);
   }
+
   if let Ok(json) = serde_json::to_string_pretty(config) {
     let _ = std::fs::write(path, json);
   }
@@ -203,6 +212,7 @@ pub fn save(config: &HelixConfig) {
 
 pub fn ensure_project(root: &Path) {
   let mut config = load();
+
   if !config.projects.iter().any(|p| p.path == root) {
     config.projects.push(ProjectConfig::new(root.to_path_buf()));
     save(&config);
@@ -239,6 +249,7 @@ pub fn set_worktree_meta(
         project.worktrees.last_mut().unwrap()
       }
     };
+
     entry.display_name = display_name.filter(|v| !v.trim().is_empty());
     entry.issue = issue.filter(|v| !v.trim().is_empty());
     entry.pr = pr.filter(|v| !v.trim().is_empty());
@@ -257,14 +268,17 @@ pub fn project_for(root: &Path) -> Option<ProjectConfig> {
 
 fn update_project(root: &Path, apply: impl FnOnce(&mut ProjectConfig)) {
   let mut config = load();
+
   match config.projects.iter_mut().find(|p| p.path == root) {
     Some(project) => apply(project),
     None => {
       let mut project = ProjectConfig::new(root.to_path_buf());
+
       apply(&mut project);
       config.projects.push(project);
     }
   }
+
   save(&config);
 }
 

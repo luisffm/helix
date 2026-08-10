@@ -38,17 +38,20 @@ pub fn sample(targets: UsageTargets) -> UsageSnapshot {
   else {
     return UsageSnapshot::default();
   };
+
   let text = String::from_utf8_lossy(&output.stdout);
 
   let mut info: HashMap<u32, (f32, f32)> = HashMap::new();
   let mut children: HashMap<u32, Vec<u32>> = HashMap::new();
   for line in text.lines() {
     let mut parts = line.split_whitespace();
+
     let (Some(pid), Some(ppid), Some(rss), Some(cpu)) =
       (parts.next(), parts.next(), parts.next(), parts.next())
     else {
       continue;
     };
+
     let (Ok(pid), Ok(ppid), Ok(rss), Ok(cpu)) = (
       pid.parse::<u32>(),
       ppid.parse::<u32>(),
@@ -57,6 +60,7 @@ pub fn sample(targets: UsageTargets) -> UsageSnapshot {
     ) else {
       continue;
     };
+
     info.insert(pid, (rss, cpu));
     children.entry(ppid).or_default().push(pid);
   }
@@ -66,25 +70,31 @@ pub fn sample(targets: UsageTargets) -> UsageSnapshot {
     let mut cpu = 0.0;
     let mut queue = vec![start];
     let mut visited = 0;
+
     while let Some(pid) = queue.pop() {
       visited += 1;
+
       if visited > 512 {
         break;
       }
+
       if let Some((r, c)) = info.get(&pid) {
         rss += r;
         cpu += c;
       }
+
       if let Some(kids) = children.get(&pid) {
         queue.extend(kids.iter().copied());
       }
     }
+
     (rss / 1024.0, cpu)
   };
 
   let mut projects = Vec::new();
   let mut total_rss = 0.0;
   let mut total_cpu = 0.0;
+
   for (name, root, sessions) in targets {
     let mut project = ProjectUsage {
       name,
@@ -93,10 +103,13 @@ pub fn sample(targets: UsageTargets) -> UsageSnapshot {
       rss_mb: 0.0,
       sessions: Vec::new(),
     };
+
     for (title, kind, pid) in sessions {
       let (rss_mb, cpu) = subtree(pid);
+
       project.cpu += cpu;
       project.rss_mb += rss_mb;
+
       project.sessions.push(SessionUsage {
         title,
         kind,
@@ -105,13 +118,17 @@ pub fn sample(targets: UsageTargets) -> UsageSnapshot {
         rss_mb,
       });
     }
+
     total_rss += project.rss_mb;
     total_cpu += project.cpu;
+
     projects.push(project);
   }
+
   projects.sort_by(|a, b| b.rss_mb.total_cmp(&a.rss_mb));
 
   let app_pid = std::process::id();
+
   let (app_rss_mb, app_cpu) = info
     .get(&app_pid)
     .map(|(rss, cpu)| (rss / 1024.0, *cpu))

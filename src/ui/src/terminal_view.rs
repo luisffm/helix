@@ -63,7 +63,9 @@ fn is_claude_process(pgid: i32) -> bool {
   else {
     return false;
   };
+
   let text = String::from_utf8_lossy(&output.stdout).to_lowercase();
+
   text
     .split_whitespace()
     .take(4)
@@ -101,6 +103,7 @@ impl TerminalView {
   ) -> Self {
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
     let spec = launch_spec(kind);
+
     let (backend, spawn_error) = match TerminalBackend::spawn(
       SpawnOptions {
         program: spec.program,
@@ -137,6 +140,7 @@ impl TerminalView {
       .terminal_font_size
       .unwrap_or(13.0)
       .clamp(9.0, 22.0);
+
     Self {
       id,
       kind,
@@ -185,22 +189,28 @@ impl TerminalView {
         cx.background_executor()
           .timer(std::time::Duration::from_millis(1500))
           .await;
+
         let Ok((alive, probe)) = this.update(cx, |view, _| {
           if view.exited.is_some() {
             return (false, None);
           }
+
           let probe = view.backend.as_ref().and_then(|backend| {
             let pgid = backend.foreground_pgid()?;
             let shell_pid = backend.shell_pid()?;
+
             (pgid as u32 != shell_pid).then_some(pgid)
           });
+
           (true, probe)
         }) else {
           break;
         };
+
         if !alive {
           break;
         }
+
         let detected = match probe {
           None => false,
           Some(pgid) => {
@@ -209,10 +219,12 @@ impl TerminalView {
               .await
           }
         };
+
         if this
           .update(cx, |view, cx| {
             if view.claude_detected != detected {
               view.claude_detected = detected;
+
               cx.emit(TerminalViewEvent::Activity);
               cx.notify();
             }
@@ -228,6 +240,7 @@ impl TerminalView {
 
   pub fn activity_ago(&self) -> String {
     let secs = self.last_activity.elapsed().as_secs();
+
     match secs {
       0..=9 => "now".to_string(),
       10..=59 => format!("{secs}s"),
@@ -256,7 +269,9 @@ impl TerminalView {
       }
       AlacEvent::ChildExit(status) => {
         let code = status.code().unwrap_or(-1);
+
         self.exited = Some(code);
+
         cx.emit(TerminalViewEvent::Exited(code));
         cx.notify();
       }
@@ -269,10 +284,12 @@ impl TerminalView {
           .read_from_clipboard()
           .and_then(|item| item.text())
           .unwrap_or_default();
+
         self.write_bytes(format(&text).into_bytes());
       }
       AlacEvent::ColorRequest(index, format) => {
         let rgb = ansi_colors::color_for_osc_index(index, Theme::of(cx));
+
         self.write_bytes(format(rgb).into_bytes());
       }
       _ => {}
@@ -283,12 +300,16 @@ impl TerminalView {
     let Some(backend) = self.backend.clone() else {
       return;
     };
+
     let mode = backend.mode();
+
     if let Some(bytes) = to_pty_bytes(&event.keystroke, mode) {
       backend.clear_selection();
       backend.scroll_to_bottom();
       backend.write(bytes);
+
       self.last_activity = Instant::now();
+
       cx.notify();
       cx.stop_propagation();
     }
@@ -306,16 +327,20 @@ impl TerminalView {
     let Some(backend) = self.backend.clone() else {
       return;
     };
+
     let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) else {
       return;
     };
+
     let payload = if backend.mode().contains(TermMode::BRACKETED_PASTE) {
       format!("\x1b[200~{}\x1b[201~", text.replace('\x1b', ""))
     } else {
       text.replace("\r\n", "\r").replace('\n', "\r")
     };
+
     backend.scroll_to_bottom();
     backend.write(payload.into_bytes());
+
     cx.notify();
   }
 
@@ -325,24 +350,30 @@ impl TerminalView {
     let col_f = x / self.cell_width;
     let col = (col_f as usize).min(self.cols.saturating_sub(1) as usize);
     let row = ((y / self.line_height) as i32).min(self.rows as i32 - 1);
+
     let side = if col_f.fract() > 0.5 {
       Side::Right
     } else {
       Side::Left
     };
+
     (col, row, side)
   }
 
   fn on_mouse_down(&mut self, event: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
     window.focus(&self.focus_handle);
+
     let Some(backend) = self.backend.clone() else {
       return;
     };
+
     let (col, row, side) = self.grid_position(event.position);
     let grid_point = backend.viewport_to_point(col, row);
+
     match event.click_count {
       1 => {
         backend.clear_selection();
+
         self.select_anchor = Some((col, row));
         self.selecting = true;
       }
@@ -355,6 +386,7 @@ impl TerminalView {
         self.selecting = true;
       }
     }
+
     cx.notify();
   }
 
@@ -367,27 +399,35 @@ impl TerminalView {
     if !self.selecting || event.pressed_button != Some(MouseButton::Left) {
       return;
     }
+
     let Some(backend) = self.backend.clone() else {
       return;
     };
+
     let (col, row, side) = self.grid_position(event.position);
     let grid_point = backend.viewport_to_point(col, row);
+
     if !backend.has_selection() {
       if let Some((anchor_col, anchor_row)) = self.select_anchor {
         if (anchor_col, anchor_row) == (col, row) {
           return;
         }
+
         let anchor_point = backend.viewport_to_point(anchor_col, anchor_row);
+
         backend.start_selection(anchor_point, Side::Left, SelectionType::Simple);
       }
     }
+
     backend.update_selection(grid_point, side);
+
     cx.notify();
   }
 
   fn on_mouse_up(&mut self, _: &MouseUpEvent, _window: &mut Window, cx: &mut Context<Self>) {
     self.selecting = false;
     self.select_anchor = None;
+
     cx.notify();
   }
 
@@ -400,11 +440,16 @@ impl TerminalView {
     let Some(backend) = self.backend.clone() else {
       return;
     };
+
     let delta = event.delta.pixel_delta(self.line_height).y / self.line_height;
+
     self.scroll_accum += delta;
+
     let lines = self.scroll_accum as i32;
+
     if lines != 0 {
       self.scroll_accum -= lines as f32;
+
       backend.scroll_lines(lines);
       cx.notify();
     }
@@ -417,11 +462,14 @@ impl TerminalView {
     cx: &mut Context<Self>,
   ) {
     self.origin = origin;
+
     let cols = (size.width / self.cell_width) as u16;
     let rows = (size.height / self.line_height) as u16;
+
     if (cols, rows) != (self.cols, self.rows) && cols >= 2 && rows >= 2 {
       self.cols = cols;
       self.rows = rows;
+
       if let Some(backend) = &self.backend {
         backend.resize(
           cols,
@@ -430,47 +478,58 @@ impl TerminalView {
           f32::from(self.line_height) as u16,
         );
       }
+
       cx.notify();
     }
   }
 
   fn base_font(&self, theme: &Theme) -> Font {
     let mut base = font(theme.font_mono.clone());
+
     base.fallbacks = Some(FontFallbacks::from_fonts(vec![
       "Symbols Nerd Font Mono".to_string(),
       "Apple Color Emoji".to_string(),
       "Apple Symbols".to_string(),
     ]));
+
     base
   }
 
   fn build_frame(&self, theme: &Theme) -> Option<Frame> {
     let backend = self.backend.as_ref()?;
     let base_font = self.base_font(theme);
+
     Some(backend.with_term(|term| {
       let content = term.renderable_content();
       let display_offset = content.display_offset;
       let selection = content.selection;
+
       let mut lines: Vec<LineFrame> = Vec::new();
       let mut current_row: Option<i32> = None;
 
       for indexed in content.display_iter {
         let row = indexed.point.line.0 + display_offset as i32;
+
         if current_row != Some(row) {
           current_row = Some(row);
           lines.push(LineFrame { runs: Vec::new() });
         }
+
         let line = lines.last_mut().unwrap();
         let cell = &indexed.cell;
+
         if cell.flags.contains(Flags::WIDE_CHAR_SPACER) {
           continue;
         }
+
         let col = indexed.point.column.0;
+
         let width = if cell.flags.contains(Flags::WIDE_CHAR) {
           2
         } else {
           1
         };
+
         let ch = if cell.flags.contains(Flags::HIDDEN) {
           ' '
         } else {
@@ -482,25 +541,32 @@ impl TerminalView {
           AnsiColor::Named(NamedColor::Background) => None,
           other => Some(ansi_colors::to_hsla(other, content.colors, theme)),
         };
+
         if cell.flags.contains(Flags::INVERSE) {
           let old_fg = fg;
+
           fg = bg.unwrap_or(theme.bg);
           bg = Some(old_fg);
         }
+
         if selection.map_or(false, |range| range.contains(indexed.point)) {
           bg = Some(theme.term.selection);
         }
+
         if cell.flags.contains(Flags::DIM) {
           fg.a *= 0.6;
         }
 
         let mut run_font = base_font.clone();
+
         if cell.flags.contains(Flags::BOLD) {
           run_font.weight = FontWeight::BOLD;
         }
+
         if cell.flags.contains(Flags::ITALIC) {
           run_font.style = FontStyle::Italic;
         }
+
         let underline = if cell.flags.intersects(Flags::ALL_UNDERLINES) {
           Some(UnderlineStyle {
             thickness: px(1.0),
@@ -512,6 +578,7 @@ impl TerminalView {
         };
 
         let mergeable = width == 1;
+
         match line.runs.last_mut() {
           Some(run)
             if run.mergeable
@@ -542,6 +609,7 @@ impl TerminalView {
         None
       } else {
         let row = content.cursor.point.line.0 + display_offset as i32;
+
         if row >= 0 && row < self.rows as i32 {
           Some((row, content.cursor.point.column.0))
         } else {
@@ -570,6 +638,7 @@ impl Render for TerminalView {
       underline: None,
       strikethrough: None,
     };
+
     self.cell_width = window
       .text_system()
       .shape_line("M".into(), self.font_size, &[measure_run], None)
@@ -598,6 +667,7 @@ impl Render for TerminalView {
     if let Some(frame) = frame {
       let line_height = self.line_height;
       let cell_width = self.cell_width;
+
       content = content.child(
         div()
           .flex()
@@ -613,9 +683,11 @@ impl Render for TerminalView {
                 if !visible {
                   return None;
                 }
+
                 let x = cell_width * run.start_col as f32;
                 let width = cell_width * run.cols as f32;
                 let len = run.text.len();
+
                 let styled = StyledText::new(run.text).with_runs(vec![TextRun {
                   len,
                   font: run.font,
@@ -624,6 +696,7 @@ impl Render for TerminalView {
                   underline: run.underline,
                   strikethrough: None,
                 }]);
+
                 Some(
                   div()
                     .absolute()
@@ -638,10 +711,12 @@ impl Render for TerminalView {
               }))
           })),
       );
+
       if let Some((row, col)) = frame.cursor {
         if frame.display_offset == 0 {
           let mut cursor_color = theme.term.cursor;
           cursor_color.a = if focused { 0.55 } else { 0.25 };
+
           content = content.child(
             div()
               .absolute()

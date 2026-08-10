@@ -14,6 +14,7 @@ pub fn restore_and_autosave(name: &str) -> bool {
     let app: *mut Object = msg_send![class!(NSApplication), sharedApplication];
     let windows: *mut Object = msg_send![app, windows];
     let count: usize = msg_send![windows, count];
+
     let Some(window) = (0..count)
       .map(|ix| -> *mut Object { msg_send![windows, objectAtIndex: ix] })
       .find(|window| !window.is_null())
@@ -31,6 +32,7 @@ pub fn restore_and_autosave(name: &str) -> bool {
 
     let restored: BOOL = msg_send![window, setFrameUsingName: autosave_name];
     let _: BOOL = msg_send![window, setFrameAutosaveName: autosave_name];
+
     restored == YES
   }
 }

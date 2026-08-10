@@ -12,6 +12,7 @@ pub struct LaunchSpec {
 
 pub fn launch_spec(kind: SessionKind) -> LaunchSpec {
   let shell = default_shell();
+
   match kind {
     SessionKind::Terminal => LaunchSpec {
       program: shell,
@@ -34,16 +35,21 @@ pub fn default_shell() -> String {
 fn user_login_shell() -> Option<String> {
   unsafe {
     let passwd = libc::getpwuid(libc::getuid());
+
     if passwd.is_null() {
       return None;
     }
+
     let shell = (*passwd).pw_shell;
+
     if shell.is_null() {
       return None;
     }
+
     let shell = std::ffi::CStr::from_ptr(shell)
       .to_string_lossy()
       .to_string();
+
     (!shell.is_empty()).then_some(shell)
   }
 }

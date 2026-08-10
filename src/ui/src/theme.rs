@@ -58,38 +58,49 @@ pub fn apply_blur_level(theme: &mut Theme, level: &str) {
 pub fn sync_component_theme(cx: &mut App) {
   use gpui_component::theme::{Theme as ComponentTheme, ThemeMode};
   use std::sync::Arc;
+
   ComponentTheme::change(ThemeMode::Dark, None, cx);
+
   let ours = Theme::of(cx).clone();
   let component = ComponentTheme::global_mut(cx);
+
   let mut highlight = (*component.highlight_theme).clone();
   highlight.style.editor_background = Some(Hsla::transparent_black());
   highlight.style.editor_line_number = Some(ours.text_dim);
   highlight.style.editor_active_line_number = Some(ours.text_muted);
+
   component.highlight_theme = Arc::new(highlight);
   component.font_family = ours.font_ui.clone();
   component.mono_font_family = ours.font_mono.clone();
   component.radius = gpui::px(6.0);
   component.radius_lg = gpui::px(10.0);
+
   let colors = &mut component.colors;
+
   colors.background = ours.bg;
   colors.foreground = ours.text;
   colors.popover = ca(0x1a1a1af8);
   colors.popover_foreground = ours.text;
+
   colors.border = ours.panel_border;
   colors.input = ours.panel_border;
   colors.ring = ours.active;
+
   colors.muted = ours.elevated;
   colors.muted_foreground = ours.text_dim;
   colors.accent = ours.hover;
   colors.accent_foreground = ours.text;
+
   colors.primary = ours.accent;
   colors.primary_hover = ours.accent;
   colors.primary_active = ours.accent;
   colors.primary_foreground = ca(0x161616ff);
+
   colors.secondary = ours.elevated;
   colors.secondary_hover = ours.hover;
   colors.secondary_active = ours.active;
   colors.secondary_foreground = ours.text;
+
   colors.list_hover = ours.hover;
   colors.list_active = ours.active;
 }

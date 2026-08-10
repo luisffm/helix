@@ -47,6 +47,7 @@ pub fn image_mime(path: &Path) -> Option<&'static str> {
 pub fn read(path: &Path) -> Result<FileContent> {
   let metadata = std::fs::metadata(path)?;
   let len = metadata.len();
+
   if len > MAX_TEXT_FILE_BYTES {
     return Ok(FileContent::TooLarge { bytes: len });
   }
@@ -55,6 +56,7 @@ pub fn read(path: &Path) -> Result<FileContent> {
     if mime == "image/svg+xml" {
       return read_text_or_binary(path, len);
     }
+
     return Ok(FileContent::Image {
       bytes: std::fs::read(path)?,
       mime,
@@ -71,6 +73,7 @@ pub fn read(path: &Path) -> Result<FileContent> {
 fn read_text_or_binary(path: &Path, len: u64) -> Result<FileContent> {
   let bytes = std::fs::read(path)?;
   let _ = len;
+
   Ok(from_bytes(bytes))
 }
 
@@ -78,6 +81,7 @@ pub fn from_bytes(bytes: Vec<u8>) -> FileContent {
   if looks_binary(&bytes) {
     return FileContent::Binary;
   }
+
   match String::from_utf8(bytes) {
     Ok(text) => {
       let signature = signature::of(&text);
@@ -91,12 +95,15 @@ fn probe_is_binary(path: &Path) -> Result<bool> {
   let mut file = std::fs::File::open(path)?;
   let mut probe = vec![0u8; BINARY_PROBE_BYTES];
   let read = file.read(&mut probe)?;
+
   probe.truncate(read);
+
   Ok(looks_binary(&probe))
 }
 
 fn looks_binary(bytes: &[u8]) -> bool {
   let window = &bytes[..bytes.len().min(BINARY_PROBE_BYTES)];
+
   window.contains(&0)
 }
 

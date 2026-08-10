@@ -9,6 +9,7 @@ pub fn icon(path: &Path) -> Icon {
   if helix_buffer::image_mime(path).is_some() {
     return Icon::new(HelixIcon::FileImage);
   }
+
   let svg = match helix_buffer::language::of(path) {
     "rust" | "typescript" | "tsx" | "javascript" | "python" | "go" | "ruby" | "java" | "c"
     | "cpp" | "c_sharp" | "swift" | "scala" | "zig" | "elixir" | "html" | "css" | "sequel"
@@ -18,6 +19,7 @@ pub fn icon(path: &Path) -> Icon {
     "markdown" => HelixIcon::FileText,
     _ => return Icon::new(IconName::File),
   };
+
   Icon::new(svg)
 }
 

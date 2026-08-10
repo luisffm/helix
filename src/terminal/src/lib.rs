@@ -53,6 +53,7 @@ impl TerminalBackend {
       env,
       ..Default::default()
     };
+
     let window_size = WindowSize {
       num_lines: opts.rows.max(2),
       num_cols: opts.cols.max(2),
@@ -66,12 +67,15 @@ impl TerminalBackend {
       &TermSize::new(opts.cols.max(2) as usize, opts.rows.max(2) as usize),
       proxy.clone(),
     )));
+
     let pty = tty::new(&pty_options, window_size, 0)?;
     let shell_pid = Some(pty.child().id());
     #[cfg(unix)]
     let master = pty.file().try_clone().ok();
+
     let event_loop = EventLoop::new(Arc::clone(&term), proxy, pty, false, false)?;
     let notifier = Notifier(event_loop.channel());
+
     event_loop.spawn();
 
     Ok(Self {
@@ -92,6 +96,7 @@ impl TerminalBackend {
     use std::os::unix::io::AsRawFd;
     let fd = self.master.as_ref()?.as_raw_fd();
     let pgid = unsafe { libc::tcgetpgrp(fd) };
+
     (pgid > 0).then_some(pgid)
   }
 
@@ -110,15 +115,18 @@ impl TerminalBackend {
     if cols < 2 || rows < 2 {
       return;
     }
+
     let window_size = WindowSize {
       num_lines: rows,
       num_cols: cols,
       cell_width,
       cell_height,
     };
+
     if let Ok(mut notifier) = self.notifier.lock() {
       notifier.on_resize(window_size);
     }
+
     self
       .term
       .lock()
@@ -174,6 +182,7 @@ impl TerminalBackend {
     let last_column = grid.columns().saturating_sub(1);
     let clamped_row = row.clamp(0, grid.screen_lines() as i32 - 1);
     let line = (clamped_row - display_offset).max(-(grid.history_size() as i32));
+
     GridPoint::new(Line(line), Column(col.min(last_column)))
   }
 }

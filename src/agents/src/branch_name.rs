@@ -30,12 +30,15 @@ pub fn generate(cwd: &Path, context: &str, model: Option<&str>) -> Result<String
   if context.trim().is_empty() {
     return Err(anyhow!("describe the work first"));
   }
+
   let spec = claude_cli::print_mode(build_prompt(context), model);
   let raw = claude_cli::run(cwd, &spec)?;
   let name = sanitize(&raw);
+
   if name.is_empty() {
     return Err(anyhow!("model returned an unusable branch name"));
   }
+
   Ok(name)
 }
 
@@ -74,20 +77,25 @@ pub fn sanitize(raw: &str) -> String {
   }
 
   let mut name = format!("{kind}/{summary}");
+
   if name.len() > MAX_LEN {
     name.truncate(MAX_LEN);
   }
+
   name.trim_end_matches('-').to_string()
 }
 
 fn collapse(value: &str) -> String {
   let mut out = String::with_capacity(value.len());
+
   for ch in value.chars() {
     if ch == '-' && out.ends_with('-') {
       continue;
     }
+
     out.push(ch);
   }
+
   out.trim_matches('-').to_string()
 }
 
@@ -161,6 +169,7 @@ mod tests {
   fn truncates_without_leaving_a_trailing_hyphen() {
     let long = format!("feat/{}", "very-long-summary-".repeat(6));
     let name = sanitize(&long);
+
     assert!(name.len() <= MAX_LEN);
     assert!(!name.ends_with('-'));
   }
@@ -188,6 +197,7 @@ mod tests {
   #[test]
   fn prompt_carries_the_context() {
     let prompt = build_prompt("  refatorar o parser de diff  ");
+
     assert!(prompt.contains("refatorar o parser de diff"));
     assert!(prompt.contains("English only"));
   }

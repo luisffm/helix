@@ -8,6 +8,7 @@ fn git(cwd: &Path, args: &[&str]) {
     .current_dir(cwd)
     .output()
     .unwrap();
+
   assert!(
     output.status.success(),
     "git {args:?} failed: {}",
@@ -20,7 +21,9 @@ fn git(cwd: &Path, args: &[&str]) {
 fn generates_a_message_from_a_real_staged_diff() {
   let path: PathBuf = std::env::temp_dir().join(format!("helix-commit-msg-{}", std::process::id()));
   let _ = std::fs::remove_dir_all(&path);
+
   std::fs::create_dir_all(&path).unwrap();
+
   git(&path, &["init", "--initial-branch=main"]);
   git(&path, &["config", "user.name", "Helix Test"]);
   git(&path, &["config", "user.email", "test@helix.local"]);
@@ -30,6 +33,7 @@ fn generates_a_message_from_a_real_staged_diff() {
     "pub fn wait(secs: u64) -> bool {\n    secs < 30\n}\n",
   )
   .unwrap();
+
   git(&path, &["add", "-A"]);
   git(&path, &["commit", "-m", "initial"]);
 
@@ -38,6 +42,7 @@ fn generates_a_message_from_a_real_staged_diff() {
     "pub fn wait(secs: u64) -> bool {\n    secs <= 30\n}\n",
   )
   .unwrap();
+
   git(&path, &["add", "-A"]);
 
   let context = Context {
@@ -51,10 +56,13 @@ fn generates_a_message_from_a_real_staged_diff() {
   let message = generate(&path, &spec).unwrap();
 
   println!("--- generated ---\n{message}\n---");
+
   assert!(!message.is_empty());
   assert!(!message.contains("```"));
   assert!(!message.to_lowercase().contains("co-authored-by"));
+
   let subject = message.lines().next().unwrap();
+
   assert!(
     subject.len() <= 72,
     "subject too long ({}): {subject}",

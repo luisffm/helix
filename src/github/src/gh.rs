@@ -31,6 +31,7 @@ impl std::error::Error for GhError {}
 
 pub fn classify(stderr: &str) -> GhErrorKind {
   let lower = stderr.to_lowercase();
+
   if lower.contains("gh auth login")
     || lower.contains("not logged into")
     || lower.contains("authentication required")
@@ -38,15 +39,19 @@ pub fn classify(stderr: &str) -> GhErrorKind {
   {
     return GhErrorKind::AuthRequired;
   }
+
   if lower.contains("already exists") || lower.contains("a pull request already exists") {
     return GhErrorKind::AlreadyExists;
   }
+
   if lower.contains("could not resolve to") || lower.contains("no pull requests found") {
     return GhErrorKind::NotFound;
   }
+
   if lower.contains("validation failed") || lower.contains("unprocessable") {
     return GhErrorKind::Validation;
   }
+
   GhErrorKind::Unknown
 }
 
@@ -75,6 +80,7 @@ pub fn run(cwd: &Path, args: &[&str]) -> Result<String> {
   } else {
     stderr
   };
+
   Err(anyhow!(GhError {
     kind: classify(&message),
     message: message.trim().to_string(),

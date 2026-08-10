@@ -78,7 +78,9 @@ impl SearchDialog {
     if self.query.is_empty() {
       return self.items.clone();
     }
+
     let query = self.query.to_lowercase();
+
     self
       .items
       .iter()
@@ -93,6 +95,7 @@ impl SearchDialog {
 
   fn on_key_down(&mut self, event: &KeyDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
     let count = self.filtered().len();
+
     match event.keystroke.key.as_str() {
       "escape" => {
         cx.emit(SearchEvent::Dismissed);
@@ -102,34 +105,44 @@ impl SearchDialog {
         if let Some(item) = self.filtered().get(self.selected) {
           cx.emit(SearchEvent::Selected(item.target.clone()));
         }
+
         return;
       }
       "up" => {
         if count > 0 {
           self.selected = (self.selected + count - 1) % count;
         }
+
         cx.notify();
+
         return;
       }
       "down" => {
         if count > 0 {
           self.selected = (self.selected + 1) % count;
         }
+
         cx.notify();
+
         return;
       }
       "backspace" => {
         self.query.pop();
         self.selected = 0;
+
         cx.notify();
+
         return;
       }
       _ => {}
     }
+
     let mods = event.keystroke.modifiers;
+
     if mods.platform || mods.control || mods.function {
       return;
     }
+
     if let Some(text) = &event.keystroke.key_char {
       self.query.push_str(text);
       self.selected = 0;
@@ -184,8 +197,10 @@ impl Render for SearchDialog {
     let mut last_section = "";
     for (ix, item) in filtered.iter().enumerate() {
       let section = item.target.section();
+
       if section != last_section {
         last_section = section;
+
         list = list.child(
           div()
             .px_3()
@@ -196,8 +211,10 @@ impl Render for SearchDialog {
             .child(SharedString::from(section.to_string())),
         );
       }
+
       let is_selected = ix == selected;
       let target = item.target.clone();
+
       list = list.child(
         div()
           .id(SharedString::from(format!("search-item-{ix}")))

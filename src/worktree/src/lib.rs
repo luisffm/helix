@@ -48,6 +48,7 @@ pub fn list_worktrees(root: &Path) -> Vec<WorktreeEntry> {
   let Ok(repo) = git2::Repository::discover(root) else {
     return Vec::new();
   };
+
   let main_repo = if repo.is_worktree() {
     match repo
       .path()
@@ -63,6 +64,7 @@ pub fn list_worktrees(root: &Path) -> Vec<WorktreeEntry> {
   };
 
   let mut entries = Vec::new();
+
   if let Some(workdir) = main_repo.workdir() {
     entries.push(WorktreeEntry {
       name: workdir
@@ -74,6 +76,7 @@ pub fn list_worktrees(root: &Path) -> Vec<WorktreeEntry> {
       is_primary: true,
     });
   }
+
   if let Ok(names) = main_repo.worktrees() {
     for name in names.iter().filter_map(|n| n.ok().flatten()) {
       if let Ok(wt) = main_repo.find_worktree(name) {
@@ -81,6 +84,7 @@ pub fn list_worktrees(root: &Path) -> Vec<WorktreeEntry> {
         let branch = git2::Repository::open(&path)
           .map(|r| branch_of(&r))
           .unwrap_or_else(|_| name.to_string());
+
         entries.push(WorktreeEntry {
           name: name.to_string(),
           path,
@@ -90,12 +94,14 @@ pub fn list_worktrees(root: &Path) -> Vec<WorktreeEntry> {
       }
     }
   }
+
   entries
 }
 
 pub fn describe_worktree(path: &Path) -> Option<WorktreeEntry> {
   let canonical = path.canonicalize().ok()?;
   let repo = git2::Repository::open(&canonical).ok()?;
+
   Some(WorktreeEntry {
     name: canonical
       .file_name()
@@ -109,8 +115,10 @@ pub fn describe_worktree(path: &Path) -> Option<WorktreeEntry> {
 
 pub fn primary_root(path: &Path) -> Option<PathBuf> {
   let repo = git2::Repository::discover(path).ok()?;
+
   if repo.is_worktree() {
     let main = repo.path().ancestors().nth(3)?;
+
     git2::Repository::open(main)
       .ok()?
       .workdir()
@@ -128,12 +136,14 @@ pub fn delete_worktree(repo_root: &Path, worktree: &Path) -> Result<()> {
     .arg(worktree)
     .output()
     .context("failed to run git")?;
+
   if !output.status.success() {
     anyhow::bail!(
       "git worktree remove failed: {}",
       String::from_utf8_lossy(&output.stderr).trim()
     );
   }
+
   Ok(())
 }
 
@@ -141,25 +151,31 @@ pub fn delete_worktree(repo_root: &Path, worktree: &Path) -> Result<()> {
 /// create; when omitted the worktree name doubles as the branch name.
 pub fn create_worktree(repo_root: &Path, name: &str, branch: Option<&str>) -> Result<PathBuf> {
   let slug = slugify(name);
+
   if slug.is_empty() {
     anyhow::bail!("worktree name is empty");
   }
+
   let branch: String = match branch.map(str::trim).filter(|value| !value.is_empty()) {
     Some(branch) => slugify(branch),
     None => slug.clone(),
   };
+
   if branch.is_empty() {
     anyhow::bail!("branch name is empty");
   }
+
   let root_name = repo_root
     .file_name()
     .map(|n| n.to_string_lossy().to_string())
     .unwrap_or_else(|| "worktree".to_string());
   let dir_name = format!("{root_name}-{}", slug.replace('/', "-"));
+
   let parent = repo_root
     .parent()
     .context("project root has no parent directory")?;
   let dest = parent.join(dir_name);
+
   if dest.exists() {
     anyhow::bail!("destination already exists: {}", dest.display());
   }
@@ -172,6 +188,7 @@ pub fn create_worktree(repo_root: &Path, name: &str, branch: Option<&str>) -> Re
     .args(["-b", &branch])
     .output()
     .context("failed to run git")?;
+
   if !created.status.success() {
     let retry = std::process::Command::new("git")
       .arg("-C")
@@ -181,6 +198,7 @@ pub fn create_worktree(repo_root: &Path, name: &str, branch: Option<&str>) -> Re
       .arg(&branch)
       .output()
       .context("failed to run git")?;
+
     if !retry.status.success() {
       anyhow::bail!(
         "git worktree add failed: {}",
@@ -188,6 +206,7 @@ pub fn create_worktree(repo_root: &Path, name: &str, branch: Option<&str>) -> Re
       );
     }
   }
+
   Ok(dest)
 }
 
@@ -219,6 +238,7 @@ fn branch_of(repo: &git2::Repository) -> String {
 fn unborn_branch_name(repo: &git2::Repository) -> Option<String> {
   let head = repo.find_reference("HEAD").ok()?;
   let target = head.symbolic_target().ok().flatten()?;
+
   Some(
     target
       .strip_prefix("refs/heads/")
@@ -231,6 +251,7 @@ pub fn list_linked_worktrees(root: &Path) -> Vec<String> {
   let Ok(repo) = git2::Repository::discover(root) else {
     return Vec::new();
   };
+
   repo
     .worktrees()
     .map(|names| {

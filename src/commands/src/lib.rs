@@ -104,8 +104,10 @@ pub fn default_bindings() -> Vec<KeyBinding> {
     KeyBinding::new("cmd-c", TerminalCopy, Some("Terminal")),
     KeyBinding::new("cmd-v", TerminalPaste, Some("Terminal")),
   ];
+
   for slot in 0..SLOTS {
     let digit = slot + 1;
+
     bindings.push(KeyBinding::new(
       &format!("cmd-{digit}"),
       ActivateTab { index: slot },
@@ -117,5 +119,6 @@ pub fn default_bindings() -> Vec<KeyBinding> {
       None,
     ));
   }
+
   bindings
 }

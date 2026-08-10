@@ -3,9 +3,11 @@ use gpui::Keystroke;
 
 pub fn to_pty_bytes(keystroke: &Keystroke, mode: TermMode) -> Option<Vec<u8>> {
   let mods = keystroke.modifiers;
+
   if mods.platform || mods.function {
     return None;
   }
+
   let app_cursor = mode.contains(TermMode::APP_CURSOR);
   let any_mod = mods.shift || mods.alt || mods.control;
   let code = modifier_code(&keystroke.modifiers);
@@ -19,6 +21,7 @@ pub fn to_pty_bytes(keystroke: &Keystroke, mode: TermMode) -> Option<Vec<u8>> {
       format!("\x1b[{ch}").into_bytes()
     }
   };
+
   let tilde_key = |n: u8| -> Vec<u8> {
     if any_mod {
       format!("\x1b[{n};{code}~").into_bytes()
@@ -45,10 +48,13 @@ pub fn to_pty_bytes(keystroke: &Keystroke, mode: TermMode) -> Option<Vec<u8>> {
     }
     "backspace" => {
       let mut bytes = Vec::new();
+
       if mods.alt {
         bytes.push(0x1b);
       }
+
       bytes.push(if mods.control { 0x08 } else { 0x7f });
+
       return Some(bytes);
     }
     "up" => return Some(cursor_key('A')),
@@ -98,8 +104,10 @@ pub fn to_pty_bytes(keystroke: &Keystroke, mode: TermMode) -> Option<Vec<u8>> {
     } else {
       keystroke.key.as_str()
     };
+
     if key.chars().count() == 1 {
       let ch = key.chars().next().unwrap().to_ascii_lowercase();
+
       let byte = match ch {
         'a'..='z' => Some(ch as u8 - b'a' + 1),
         ' ' | '@' | '2' => Some(0),
@@ -111,15 +119,20 @@ pub fn to_pty_bytes(keystroke: &Keystroke, mode: TermMode) -> Option<Vec<u8>> {
         '?' => Some(0x7f),
         _ => None,
       };
+
       if let Some(byte) = byte {
         let mut bytes = Vec::new();
+
         if mods.alt {
           bytes.push(0x1b);
         }
+
         bytes.push(byte);
+
         return Some(bytes);
       }
     }
+
     return None;
   }
 
@@ -134,15 +147,19 @@ pub fn to_pty_bytes(keystroke: &Keystroke, mode: TermMode) -> Option<Vec<u8>> {
   })?;
 
   let mut bytes = Vec::new();
+
   if mods.alt {
     bytes.push(0x1b);
   }
+
   bytes.extend_from_slice(text.as_bytes());
+
   Some(bytes)
 }
 
 fn fn_key(n: u8, any_mod: bool, code: u8) -> Vec<u8> {
   let ch = [b'P', b'Q', b'R', b'S'][(n - 1) as usize] as char;
+
   if any_mod {
     format!("\x1b[1;{code}{ch}").into_bytes()
   } else {
@@ -152,14 +169,18 @@ fn fn_key(n: u8, any_mod: bool, code: u8) -> Vec<u8> {
 
 fn modifier_code(mods: &gpui::Modifiers) -> u8 {
   let mut code = 1;
+
   if mods.shift {
     code += 1;
   }
+
   if mods.alt {
     code += 2;
   }
+
   if mods.control {
     code += 4;
   }
+
   code
 }

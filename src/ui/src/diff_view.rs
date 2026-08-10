@@ -31,6 +31,7 @@ impl Focusable for DiffView {
 impl DiffView {
   pub fn new(root: PathBuf, relative: String, base: DiffBase, cx: &mut Context<Self>) -> Self {
     let name = relative.rsplit('/').next().unwrap_or(&relative).to_string();
+
     let mut view = Self {
       root,
       relative,
@@ -42,7 +43,9 @@ impl DiffView {
       new_styles: Vec::new(),
       focus_handle: cx.focus_handle(),
     };
+
     view.reload(cx);
+
     view
   }
 
@@ -59,6 +62,7 @@ impl DiffView {
         self.error = Some(err.to_string());
       }
     }
+
     cx.notify();
   }
 
@@ -84,6 +88,7 @@ impl DiffView {
     theme: &Theme,
   ) -> AnyElement {
     let text = diff.line_text(line);
+
     let (bg, marker, marker_color) = match line.kind {
       DiffLineKind::Added => (Some(with_alpha(theme.green, 0.14)), "+", theme.green),
       DiffLineKind::Removed => (Some(with_alpha(theme.red, 0.14)), "-", theme.red),
@@ -149,6 +154,7 @@ impl DiffView {
     if let Some(error) = &self.error {
       return message(format!("Could not diff: {error}"), theme.red);
     }
+
     let Some(diff) = &self.diff else {
       return message("Loading diff…".to_string(), theme.text_dim);
     };
@@ -203,6 +209,7 @@ impl DiffView {
               .count(),
           )),
       );
+
       for line in &hunk.lines {
         body = body.child(self.render_line(diff, line, theme));
       }
@@ -215,6 +222,7 @@ impl DiffView {
 impl Render for DiffView {
   fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
     let theme = Theme::of(cx).clone();
+
     let (added, removed) = self.stats();
     let body = self.render_body(&theme);
 
@@ -272,6 +280,7 @@ fn number(line: Option<u32>) -> String {
 
 fn with_alpha(mut color: Hsla, alpha: f32) -> Hsla {
   color.a = alpha;
+
   color
 }
 
@@ -291,10 +300,14 @@ fn highlight(language: &str, text: &str) -> Vec<(std::ops::Range<usize>, Hsla)> 
   if text.is_empty() {
     return Vec::new();
   }
+
   let rope = Rope::from(text);
   let mut highlighter = SyntaxHighlighter::new(language);
+
   highlighter.update(None, &rope);
+
   let theme = HighlightTheme::default_dark();
+
   highlighter
     .styles(&(0..text.len()), theme.as_ref())
     .into_iter()
@@ -313,6 +326,7 @@ fn text_runs(
     DiffLineKind::Context => theme.text_muted,
     _ => theme.text,
   };
+
   let font = gpui::font(theme.font_mono.clone());
   let mut runs: Vec<TextRun> = Vec::new();
   let mut cursor = 0usize;
@@ -321,6 +335,7 @@ fn text_runs(
     if len == 0 {
       return;
     }
+
     match runs.last_mut() {
       Some(last) if last.color == color => last.len += len,
       _ => runs.push(TextRun {
@@ -338,25 +353,32 @@ fn text_runs(
     if range.end <= offset {
       continue;
     }
+
     if range.start >= offset + text.len() {
       break;
     }
+
     let start = range.start.saturating_sub(offset).min(text.len());
     let end = (range.end - offset).min(text.len());
+
     if start > cursor {
       push(start - cursor, base_color, &mut runs);
       cursor = start;
     }
+
     if end > cursor {
       push(end - cursor, *color, &mut runs);
       cursor = end;
     }
   }
+
   if cursor < text.len() {
     push(text.len() - cursor, base_color, &mut runs);
   }
+
   if runs.is_empty() {
     push(text.len(), base_color, &mut runs);
   }
+
   runs
 }

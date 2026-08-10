@@ -26,15 +26,19 @@ const IGNORED_RANK_PENALTY: u8 = 3;
 /// workspace-relative path, which only helps once the query has a separator.
 pub fn match_rank(name: &str, relative: &str, needle: &str, by_path: bool) -> Option<u8> {
   let name = name.to_lowercase();
+
   if name.starts_with(needle) {
     return Some(0);
   }
+
   if name.contains(needle) {
     return Some(1);
   }
+
   if by_path && relative.to_lowercase().contains(needle) {
     return Some(2);
   }
+
   None
 }
 
@@ -165,13 +169,16 @@ impl ContextPanel {
         .auto_grow(2, 6)
         .placeholder("Commit message")
     });
+
     let file_filter = cx.new(|cx| InputState::new(window, cx).placeholder("Find files"));
+
     cx.subscribe(&file_filter, |_, _, event: &InputEvent, cx| {
       if matches!(event, InputEvent::Change) {
         cx.notify();
       }
     })
     .detach();
+
     Self {
       root,
       active: RightTab::Files,
@@ -204,6 +211,7 @@ impl ContextPanel {
     if !self.collapsed.remove(&section) {
       self.collapsed.insert(section);
     }
+
     cx.notify();
   }
 
@@ -218,6 +226,7 @@ impl ContextPanel {
     cx: &mut Context<Self>,
   ) -> AnyElement {
     let open = self.is_open(section);
+
     div()
       .id(id)
       .group(SharedString::from(id))
@@ -283,29 +292,35 @@ impl ContextPanel {
     self.git_error = helix_git::index::stage(&self.root, &relative)
       .err()
       .map(|err| err.to_string());
+
     cx.emit(ContextPanelEvent::GitChanged);
     cx.notify();
   }
 
   fn run_git_action(&mut self, action: GitAction, window: &mut Window, cx: &mut Context<Self>) {
     self.git_menu_open = false;
+
     if self.git_busy {
       return;
     }
 
     if action.commits() {
       let message = self.commit_message.read(cx).value().to_string();
+
       match helix_git::index::commit(&self.root, &message) {
         Ok(_) => {
           self.git_error = None;
+
           self
             .commit_message
             .update(cx, |state, cx| state.set_value("", window, cx));
         }
         Err(err) => {
           self.git_error = Some(err.to_string());
+
           cx.emit(ContextPanelEvent::GitChanged);
           cx.notify();
+
           return;
         }
       }
@@ -314,6 +329,7 @@ impl ContextPanel {
     let Some(step) = action.remote_step() else {
       cx.emit(ContextPanelEvent::GitChanged);
       cx.notify();
+
       return;
     };
 
@@ -327,23 +343,28 @@ impl ContextPanel {
       .as_ref()
       .map(|git| git.branch.clone())
       .unwrap_or_default();
+
     let upstream = self
       .git
       .as_ref()
       .and_then(|git| git.upstream.clone())
       .unwrap_or_default();
+
     let task = cx
       .background_executor()
       .spawn(async move { perform_remote(step, &root, &branch, &upstream) });
 
     let this = cx.entity().downgrade();
+
     window
       .spawn(cx, async move |cx| {
         let result = task.await;
+
         this
           .update_in(cx, |panel, _, cx| {
             panel.git_busy = false;
             panel.git_error = result.err().map(|err| err.to_string());
+
             cx.emit(ContextPanelEvent::GitChanged);
             cx.notify();
           })
@@ -357,6 +378,7 @@ impl ContextPanel {
     self.git_error = helix_git::index::discard(&self.root, &relative)
       .err()
       .map(|err| err.to_string());
+
     cx.emit(ContextPanelEvent::GitChanged);
     cx.notify();
   }
@@ -365,6 +387,7 @@ impl ContextPanel {
     self.git_error = helix_git::index::unstage(&self.root, &relative)
       .err()
       .map(|err| err.to_string());
+
     cx.emit(ContextPanelEvent::GitChanged);
     cx.notify();
   }
@@ -373,6 +396,7 @@ impl ContextPanel {
     self.git_error = helix_git::index::stage_all(&self.root)
       .err()
       .map(|err| err.to_string());
+
     cx.emit(ContextPanelEvent::GitChanged);
     cx.notify();
   }
@@ -381,6 +405,7 @@ impl ContextPanel {
     self.git_error = helix_git::index::unstage_all(&self.root)
       .err()
       .map(|err| err.to_string());
+
     cx.emit(ContextPanelEvent::GitChanged);
     cx.notify();
   }
@@ -389,18 +414,23 @@ impl ContextPanel {
     if self.generating_message {
       return;
     }
+
     let staged = self
       .git
       .as_ref()
       .map(|git| git.staged.len())
       .unwrap_or_default();
+
     if staged == 0 {
       self.git_error = Some("stage something before writing a message".to_string());
       cx.notify();
+
       return;
     }
+
     self.generating_message = true;
     self.git_error = None;
+
     cx.notify();
 
     let root = self.root.clone();
@@ -420,27 +450,34 @@ impl ContextPanel {
         )
         .unwrap_or_default(),
       };
+
       if context.patch.trim().is_empty() && context.name_status.trim().is_empty() {
         return Err(anyhow::anyhow!("nothing staged to describe"));
       }
+
       let prompt = helix_agents::commit_message::build_prompt(&context, None);
       let spec = helix_agents::commit_message::plan(prompt, None);
+
       helix_agents::commit_message::generate(&root, &spec)
     });
 
     let this = cx.entity().downgrade();
+
     window
       .spawn(cx, async move |cx| {
         let result = task.await;
+
         this
           .update_in(cx, |panel, window, cx| {
             panel.generating_message = false;
+
             match result {
               Ok(message) => panel
                 .commit_message
                 .update(cx, |state, cx| state.set_value(message, window, cx)),
               Err(err) => panel.git_error = Some(err.to_string()),
             }
+
             cx.notify();
           })
           .ok();
@@ -452,11 +489,15 @@ impl ContextPanel {
     if self.pr_busy {
       return;
     }
+
     let Some(git) = self.git.clone() else { return };
+
     if git.detached {
       return;
     }
+
     self.pr_busy = true;
+
     let root = self.root.clone();
     let branch = git.branch.clone();
     let dirty_count = git.dirty_count();
@@ -466,6 +507,7 @@ impl ContextPanel {
     let task = cx.background_executor().spawn(async move {
       let gh_installed = helix_github::gh::is_installed();
       let authenticated = gh_installed && helix_github::gh::is_authenticated();
+
       let (lookup, review) = if authenticated {
         match helix_github::review::for_branch(&root, &branch) {
           Ok(Some(review)) => (ReviewLookupOutcome::Found, Some(review)),
@@ -475,11 +517,14 @@ impl ContextPanel {
       } else {
         (ReviewLookupOutcome::Unavailable, None)
       };
+
       let base_ref = helix_git::diff::default_base_ref(&root);
+
       let commits_ahead_of_base = base_ref
         .as_deref()
         .and_then(|base| helix_git::remote::commits_ahead_of(&root, base).ok())
         .unwrap_or(0);
+
       let has_upstream = ahead > 0 || behind > 0 || commits_ahead_of_base == 0 || {
         std::process::Command::new("git")
           .args(["rev-parse", "--abbrev-ref", "@{upstream}"])
@@ -501,17 +546,21 @@ impl ContextPanel {
         behind,
         commits_ahead_of_base,
       };
+
       let eligibility = helix_github::eligibility::evaluate(&state, lookup, review.clone());
+
       (eligibility, review)
     });
 
     cx.spawn(async move |this, cx| {
       let (eligibility, review) = task.await;
+
       this
         .update(cx, |panel, cx| {
           panel.pr_busy = false;
           panel.pr_eligibility = Some(eligibility);
           panel.pr = review;
+
           cx.notify();
         })
         .ok();
@@ -521,12 +570,15 @@ impl ContextPanel {
 
   pub fn set_git(&mut self, git: Option<GitSnapshot>, cx: &mut Context<Self>) {
     self.rebuild_status(git.as_ref());
+
     self.git = git;
+
     cx.notify();
   }
 
   pub fn refresh_files(&mut self, cx: &mut Context<Self>) {
     self.dir_cache.clear();
+
     cx.notify();
   }
 
@@ -538,11 +590,13 @@ impl ContextPanel {
     self.file_status.clear();
     self.dir_status.clear();
     self.selected = None;
+
     cx.notify();
   }
 
   pub fn set_selected(&mut self, path: Option<PathBuf>, cx: &mut Context<Self>) {
     self.selected = path;
+
     cx.notify();
   }
 
@@ -552,14 +606,17 @@ impl ContextPanel {
     let Some(git) = git else { return };
 
     let groups = [&git.conflicted, &git.staged, &git.unstaged, &git.untracked];
+
     for group in groups {
       for file in group.iter() {
         let path = self.root.join(&file.path);
+
         let replace = self
           .file_status
           .get(&path)
           .map(|existing| file_icons::dominance(file.kind) > file_icons::dominance(*existing))
           .unwrap_or(true);
+
         if replace {
           self.file_status.insert(path, file.kind);
         }
@@ -571,19 +628,23 @@ impl ContextPanel {
       .iter()
       .map(|(path, kind)| (path.clone(), *kind))
       .collect();
+
     for (path, kind) in entries {
       if kind == GitFileKind::Deleted {
         continue;
       }
+
       for ancestor in path.ancestors().skip(1) {
         if !ancestor.starts_with(&self.root) || ancestor == self.root {
           break;
         }
+
         let replace = self
           .dir_status
           .get(ancestor)
           .map(|existing| file_icons::dominance(kind) > file_icons::dominance(*existing))
           .unwrap_or(true);
+
         if replace {
           self.dir_status.insert(ancestor.to_path_buf(), kind);
         }
@@ -595,20 +656,26 @@ impl ContextPanel {
     if let Some(children) = self.dir_cache.get(dir) {
       return children.clone();
     }
+
     let show_dotfiles = self.show_dotfiles;
+
     let mut nodes: Vec<FileNode> = std::fs::read_dir(dir)
       .into_iter()
       .flatten()
       .flatten()
       .filter_map(|entry| {
         let name = entry.file_name().to_string_lossy().to_string();
+
         if name == ".git" || name == "node_modules" {
           return None;
         }
+
         if !show_dotfiles && name.starts_with('.') {
           return None;
         }
+
         let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
+
         Some(FileNode {
           path: entry.path(),
           name,
@@ -620,6 +687,7 @@ impl ContextPanel {
 
     let candidates: Vec<PathBuf> = nodes.iter().map(|node| node.path.clone()).collect();
     let ignored = helix_git::ignored_paths(&self.root, &candidates);
+
     for node in &mut nodes {
       node.ignored = ignored.contains(&node.path);
     }
@@ -629,13 +697,16 @@ impl ContextPanel {
         .cmp(&a.is_dir)
         .then_with(|| natural_cmp(&a.name, &b.name))
     });
+
     self.dir_cache.insert(dir.to_path_buf(), nodes.clone());
+
     nodes
   }
 
   fn filter_matches(&mut self, query: &str) -> Vec<FileNode> {
     let needle = query.to_lowercase();
     let by_path = needle.contains('/');
+
     let mut ranked: Vec<(u8, FileNode)> = Vec::new();
     let mut queue = std::collections::VecDeque::from([self.root.clone()]);
     let mut dirs = 0usize;
@@ -644,14 +715,18 @@ impl ContextPanel {
       if dirs >= FILTER_MAX_DIRS || ranked.len() >= FILTER_MAX_MATCHES {
         break;
       }
+
       dirs += 1;
+
       for node in self.children_of(&dir) {
         if node.is_dir {
           if !node.ignored {
             queue.push_back(node.path.clone());
           }
+
           continue;
         }
+
         let relative = node
           .path
           .strip_prefix(&self.root)
@@ -661,9 +736,11 @@ impl ContextPanel {
         let Some(mut rank) = match_rank(&node.name, &relative, &needle, by_path) else {
           continue;
         };
+
         if node.ignored {
           rank += IGNORED_RANK_PENALTY;
         }
+
         ranked.push((rank, node));
       }
     }
@@ -673,6 +750,7 @@ impl ContextPanel {
         .cmp(&b.0)
         .then_with(|| natural_cmp(&a.1.name, &b.1.name))
     });
+
     ranked.into_iter().map(|(_, node)| node).collect()
   }
 
@@ -680,9 +758,12 @@ impl ContextPanel {
     if depth > MAX_DEPTH || out.len() > MAX_ROWS {
       return;
     }
+
     for node in self.children_of(&dir) {
       let expanded = node.is_dir && self.expanded.contains(&node.path);
+
       out.push((node.clone(), depth));
+
       if expanded {
         self.visible_rows(node.path.clone(), depth + 1, out);
       }
@@ -1909,6 +1990,7 @@ impl ContextPanel {
       NextAction::Sync => helix_git::remote::sync(&root),
       NextAction::Commit => {
         self.active = RightTab::Git;
+
         Ok(())
       }
       NextAction::Retry => Ok(()),
@@ -1916,6 +1998,7 @@ impl ContextPanel {
         if let Some(review) = &self.pr {
           let _ = std::process::Command::new("open").arg(&review.url).spawn();
         }
+
         Ok(())
       }
       NextAction::CreateReview => self.create_pull_request(&root, cx),
@@ -1923,7 +2006,9 @@ impl ContextPanel {
     };
 
     self.git_error = result.err().map(|err| err.to_string());
+
     cx.emit(ContextPanelEvent::GitChanged);
+
     self.refresh_pull_request(cx);
     cx.notify();
   }
@@ -1932,12 +2017,15 @@ impl ContextPanel {
     let base = helix_git::diff::default_base_ref(root)
       .map(|base| base.trim_start_matches("origin/").to_string())
       .unwrap_or_else(|| "main".to_string());
+
     let title = self
       .git
       .as_ref()
       .and_then(|git| git.recent_commits.first().map(|c| c.summary.clone()))
       .unwrap_or_else(|| "Update".to_string());
+
     helix_github::review::create(root, &base, &title, "", false)?;
+
     Ok(())
   }
 }
@@ -1959,9 +2047,11 @@ fn primary_action_label(action: NextAction) -> Option<&'static str> {
 
 fn natural_cmp(a: &str, b: &str) -> std::cmp::Ordering {
   let lower = a.to_lowercase().cmp(&b.to_lowercase());
+
   if lower != std::cmp::Ordering::Equal {
     return lower;
   }
+
   a.cmp(b)
 }
 

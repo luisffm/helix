@@ -200,6 +200,7 @@ impl FileDiff {
       DiffLineKind::Removed => &self.old_text,
       _ => &self.new_text,
     };
+
     source.get(line.range.clone()).unwrap_or_default()
   }
 }

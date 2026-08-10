@@ -10,11 +10,14 @@ impl TempRepo {
   fn new(name: &str) -> Self {
     let path = std::env::temp_dir().join(format!("helix-git-test-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&path);
+
     std::fs::create_dir_all(&path).unwrap();
+
     git(&path, &["init", "--initial-branch=main"]);
     git(&path, &["config", "user.name", "Helix Test"]);
     git(&path, &["config", "user.email", "test@helix.local"]);
     git(&path, &["config", "commit.gpgsign", "false"]);
+
     Self { path }
   }
 
@@ -40,6 +43,7 @@ fn git(cwd: &Path, args: &[&str]) {
     .current_dir(cwd)
     .output()
     .unwrap();
+
   assert!(
     output.status.success(),
     "git {args:?} failed: {}",
@@ -60,6 +64,7 @@ fn unstaged_diff_matches_working_tree_edit() {
   assert_eq!(diff.language, "rust");
 
   let lines = &diff.hunks[0].lines;
+
   let removed = lines
     .iter()
     .find(|line| line.kind == DiffLineKind::Removed)
@@ -68,6 +73,7 @@ fn unstaged_diff_matches_working_tree_edit() {
     .iter()
     .find(|line| line.kind == DiffLineKind::Added)
     .unwrap();
+
   assert_eq!(diff.line_text(removed), "    one();");
   assert_eq!(diff.line_text(added), "    uno();");
   assert_eq!(removed.old_line, Some(2));
@@ -389,12 +395,15 @@ fn snapshot_counts_staged_lines_separately_from_the_worktree() {
     .iter()
     .find(|file| file.path == "a.txt")
     .expect("a.txt should be staged");
+
   assert_eq!((staged.added, staged.removed), (1, 0), "index vs HEAD");
+
   let unstaged = snap
     .unstaged
     .iter()
     .find(|file| file.path == "a.txt")
     .expect("a.txt should also be unstaged");
+
   assert_eq!(
     (unstaged.added, unstaged.removed),
     (1, 0),
@@ -484,13 +493,16 @@ fn fetch_and_fast_forward_move_the_branch() {
 
   let other = std::env::temp_dir().join(format!("helix-clone-{}", std::process::id()));
   let _ = std::fs::remove_dir_all(&other);
+
   git(
     &std::env::temp_dir(),
     &["clone", remote.to_str().unwrap(), other.to_str().unwrap()],
   );
   git(&other, &["config", "user.name", "Other"]);
   git(&other, &["config", "user.email", "other@helix.local"]);
+
   std::fs::write(other.join("b.txt"), "two\n").unwrap();
+
   git(&other, &["add", "-A"]);
   git(&other, &["commit", "-m", "from elsewhere"]);
   git(&other, &["push"]);
@@ -503,7 +515,9 @@ fn fetch_and_fast_forward_move_the_branch() {
   );
 
   helix_git::remote::fast_forward(&repo.path).unwrap();
+
   let snap = helix_git::snapshot(&repo.path).unwrap();
+
   assert_eq!((snap.ahead, snap.behind), (0, 0));
   assert!(repo.path.join("b.txt").exists());
 
@@ -517,13 +531,16 @@ fn fast_forward_refuses_to_merge_divergent_history() {
 
   let other = std::env::temp_dir().join(format!("helix-clone-div-{}", std::process::id()));
   let _ = std::fs::remove_dir_all(&other);
+
   git(
     &std::env::temp_dir(),
     &["clone", remote.to_str().unwrap(), other.to_str().unwrap()],
   );
   git(&other, &["config", "user.name", "Other"]);
   git(&other, &["config", "user.email", "other@helix.local"]);
+
   std::fs::write(other.join("b.txt"), "theirs\n").unwrap();
+
   git(&other, &["add", "-A"]);
   git(&other, &["commit", "-m", "theirs"]);
   git(&other, &["push"]);

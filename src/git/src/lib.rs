@@ -77,12 +77,15 @@ pub fn ignored_paths(
       let canonical = path.canonicalize().unwrap_or_else(|_| (*path).clone());
       let relative = canonical.strip_prefix(&workdir).unwrap_or(&canonical);
       let mut probe = relative.to_string_lossy().to_string();
+
       if probe.is_empty() {
         return false;
       }
+
       if path.is_dir() && !probe.ends_with('/') {
         probe.push('/');
       }
+
       repo.is_path_ignored(Path::new(&probe)).unwrap_or(false)
     })
     .cloned()
@@ -96,23 +99,28 @@ fn collect_statuses(repo: &Repository, snap: &mut GitSnapshot) {
     .recurse_untracked_dirs(true)
     .renames_head_to_index(true)
     .exclude_submodules(true);
+
   let Ok(statuses) = repo.statuses(Some(&mut opts)) else {
     return;
   };
+
   for entry in statuses.iter() {
     let st = entry.status();
     let path = entry.path().unwrap_or_default().to_string();
+
     if st.contains(Status::CONFLICTED) {
       snap
         .conflicted
         .push(GitFileStatus::new(path, GitFileKind::Conflicted));
       continue;
     }
+
     if st.contains(Status::WT_NEW) {
       snap
         .untracked
         .push(GitFileStatus::new(path.clone(), GitFileKind::Untracked));
     }
+
     for (bit, kind) in [
       (Status::INDEX_NEW, GitFileKind::Added),
       (Status::INDEX_MODIFIED, GitFileKind::Modified),
@@ -124,6 +132,7 @@ fn collect_statuses(repo: &Repository, snap: &mut GitSnapshot) {
         snap.staged.push(GitFileStatus::new(path.clone(), kind));
       }
     }
+
     for (bit, kind) in [
       (Status::WT_MODIFIED, GitFileKind::Modified),
       (Status::WT_DELETED, GitFileKind::Deleted),
@@ -141,12 +150,14 @@ const MAX_COUNTED_DELTAS: usize = 500;
 
 fn line_counts(repo: &Repository, staged: bool) -> HashMap<String, (usize, usize)> {
   let mut out = HashMap::new();
+
   let mut opts = git2::DiffOptions::new();
   opts
     .include_untracked(true)
     .recurse_untracked_dirs(true)
     .show_untracked_content(true)
     .include_typechange(true);
+
   let diff = if staged {
     let tree = repo.head().and_then(|head| head.peel_to_tree()).ok();
     repo.diff_tree_to_index(tree.as_ref(), None, Some(&mut opts))
@@ -167,6 +178,7 @@ fn line_counts(repo: &Repository, staged: bool) -> HashMap<String, (usize, usize
     };
     out.insert(path.to_string_lossy().to_string(), (added, removed));
   }
+
   out
 }
 
@@ -180,6 +192,7 @@ fn apply_line_counts(repo: &Repository, snap: &mut GitSnapshot) {
       file.removed = *removed;
     }
   }
+
   for file in snap
     .unstaged
     .iter_mut()
@@ -197,9 +210,11 @@ fn collect_commits(repo: &Repository, snap: &mut GitSnapshot) {
   let Ok(mut walk) = repo.revwalk() else {
     return;
   };
+
   if walk.push_head().is_err() {
     return;
   }
+
   for oid in walk.take(15).flatten() {
     if let Ok(commit) = repo.find_commit(oid) {
       snap.recent_commits.push(CommitInfo {
@@ -219,9 +234,11 @@ fn collect_commits(repo: &Repository, snap: &mut GitSnapshot) {
 
 fn collect_ahead_behind(repo: &Repository, snap: &mut GitSnapshot) {
   let Ok(head) = repo.head() else { return };
+
   if !head.is_branch() {
     return;
   }
+
   let Ok(name) = head.shorthand() else { return };
   let Ok(branch) = repo.find_branch(name, git2::BranchType::Local) else {
     return;
@@ -229,10 +246,13 @@ fn collect_ahead_behind(repo: &Repository, snap: &mut GitSnapshot) {
   let Ok(upstream) = branch.upstream() else {
     return;
   };
+
   snap.upstream = upstream.name().ok().flatten().map(|name| name.to_string());
+
   let (Some(local), Some(remote)) = (head.target(), upstream.get().target()) else {
     return;
   };
+
   if let Ok((ahead, behind)) = repo.graph_ahead_behind(local, remote) {
     snap.ahead = ahead;
     snap.behind = behind;

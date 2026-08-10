@@ -69,6 +69,7 @@ impl HelixRoot {
         ContextPanelEvent::OpenFile { path, preview } => {
           let path = path.clone();
           let preview = *preview;
+
           this.workspace.update(cx, |workspace, cx| {
             workspace.open_file(path, preview, window, cx);
           });
@@ -77,6 +78,7 @@ impl HelixRoot {
           let root = this.project.root.clone();
           let relative = relative.clone();
           let base = base.clone();
+
           this.workspace.update(cx, |workspace, cx| {
             workspace.open_diff(root, relative, base, window, cx);
           });
@@ -85,6 +87,7 @@ impl HelixRoot {
           this.refresh_git(cx);
         }
       }
+
       cx.notify();
     })
     .detach();
@@ -140,13 +143,17 @@ impl HelixRoot {
       focus_handle: cx.focus_handle(),
       _watcher: None,
     };
+
     let workspaces = root.workspaces.clone();
+
     root.project_panel.update(cx, |panel, cx| {
       panel.set_workspaces(workspaces, cx);
     });
+
     root.start_watcher(window, cx);
     root.refresh_git(cx);
     root.start_resource_monitor(cx);
+
     root
   }
 
@@ -156,13 +163,16 @@ impl HelixRoot {
         cx.background_executor()
           .timer(std::time::Duration::from_millis(2500))
           .await;
+
         let Ok(targets) = this.update(cx, |root, cx| root.usage_targets(cx)) else {
           break;
         };
+
         let snapshot = cx
           .background_executor()
           .spawn(async move { crate::resources::sample(targets) })
           .await;
+
         if this
           .update(cx, |root, cx| {
             for project in &snapshot.projects {
@@ -170,12 +180,16 @@ impl HelixRoot {
                 .resources_history
                 .entry(project.root.clone())
                 .or_default();
+
               history.push(project.rss_mb);
+
               if history.len() > 40 {
                 history.remove(0);
               }
             }
+
             root.resources = snapshot.clone();
+
             cx.notify();
           })
           .is_err()
@@ -200,11 +214,13 @@ impl HelixRoot {
               .map(|n| n.to_string_lossy().to_string())
               .unwrap_or_default()
           });
+
         let sessions = workspace
           .read(cx)
           .terminals()
           .filter_map(|(_, view)| {
             let view = view.read(cx);
+
             view.shell_pid().map(|pid| {
               (
                 view
@@ -217,6 +233,7 @@ impl HelixRoot {
             })
           })
           .collect();
+
         (name, root.clone(), sessions)
       })
       .collect()
@@ -224,17 +241,22 @@ impl HelixRoot {
 
   fn start_watcher(&mut self, window: &mut Window, cx: &mut Context<Self>) {
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Vec<PathBuf>>();
+
     self._watcher = helix_filesystem::watch(&self.project.root, tx).ok();
+
     let this = cx.entity().downgrade();
+
     window
       .spawn(cx, async move |cx| {
         while let Some(batch) = rx.recv().await {
           let updated = this.update_in(cx, |root, window, cx| {
             root.refresh_git(cx);
+
             root.workspace.update(cx, |workspace, cx| {
               workspace.refresh_open_files(&batch, window, cx);
             });
           });
+
           if updated.is_err() {
             break;
           }
@@ -247,12 +269,15 @@ impl HelixRoot {
     let Ok((project, _worktree)) = helix_worktree::open_project(&path) else {
       return;
     };
+
     if project.root == self.project.root {
       return;
     }
+
     self.project = project.clone();
     self.git = None;
     self.worktrees = Vec::new();
+
     self.start_watcher(window, cx);
 
     let left_open = self.left_open;
@@ -261,43 +286,58 @@ impl HelixRoot {
       Some(existing) => existing.clone(),
       None => {
         let created = cx.new(|cx| Workspace::new(project.root.clone(), window, cx));
+
         self
           .workspaces
           .insert(project.root.clone(), created.clone());
+
         created
       }
     };
+
     workspace.update(cx, |workspace, cx| {
       workspace.left_sidebar_open = left_open;
       workspace.right_sidebar_open = right_open;
+
       cx.notify();
     });
+
     self.workspace = workspace.clone();
 
     self.context_panel.update(cx, |panel, cx| {
       panel.set_root(project.root.clone(), cx);
     });
+
     let workspaces = self.workspaces.clone();
+
     self.project_panel.update(cx, |panel, cx| {
       panel.set_workspaces(workspaces, cx);
       panel.set_active_project(project.clone(), cx);
     });
+
     window.set_window_title(&format!("Helix — {}", project.name));
+
     self.refresh_git(cx);
+
     cx.notify();
   }
 
   fn refresh_git(&mut self, cx: &mut Context<Self>) {
     let root = self.project.root.clone();
+
     let task = cx.background_executor().spawn(async move {
       let snapshot = helix_git::snapshot(&root).ok();
+
       let mut all_worktrees: HashMap<PathBuf, Vec<WorktreeRow>> = HashMap::new();
       let config = helix_state::config::load();
+
       for project in &config.projects {
         if !project.path.is_dir() {
           continue;
         }
+
         let mut entries: Vec<WorktreeRow> = Vec::new();
+
         if let Some(entry) = helix_worktree::describe_worktree(&project.path) {
           entries.push(WorktreeRow {
             entry,
@@ -306,6 +346,7 @@ impl HelixRoot {
             pr: None,
           });
         }
+
         for wt in &project.worktrees {
           if let Some(entry) = helix_worktree::describe_worktree(&wt.path) {
             if !entries.iter().any(|e| e.entry.path == entry.path) {
@@ -320,22 +361,29 @@ impl HelixRoot {
         }
         all_worktrees.insert(project.path.clone(), entries);
       }
+
       let owner = helix_worktree::primary_root(&root).unwrap_or(root);
+
       (snapshot, all_worktrees, owner)
     });
+
     cx.spawn(async move |this, cx| {
       let (snapshot, all_worktrees, owner) = task.await;
+
       this
         .update(cx, |root_view, cx| {
           root_view.git = snapshot.clone();
           root_view.worktrees = all_worktrees.get(&owner).cloned().unwrap_or_default();
+
           root_view.project_panel.update(cx, |panel, cx| {
             panel.set_state(snapshot.clone(), all_worktrees, cx);
           });
+
           root_view.context_panel.update(cx, |panel, cx| {
             panel.set_git(snapshot, cx);
             panel.refresh_files(cx);
           });
+
           cx.notify();
         })
         .ok();
@@ -351,6 +399,7 @@ impl HelixRoot {
     cx: &mut Context<Self>,
   ) {
     let meta = helix_state::config::worktree_config_for(&owner, &path);
+
     let branch = helix_worktree::describe_worktree(&path)
       .map(|entry| entry.branch)
       .unwrap_or_else(|| {
@@ -359,6 +408,7 @@ impl HelixRoot {
           .map(|n| n.to_string_lossy().to_string())
           .unwrap_or_default()
       });
+
     let (display_name, issue, pr) = meta
       .map(|m| {
         (
@@ -368,13 +418,16 @@ impl HelixRoot {
         )
       })
       .unwrap_or_default();
+
     let dialog = cx.new(|cx| WorktreeEditDialog::new(branch, display_name, issue, pr, window, cx));
+
     cx.subscribe_in(
       &dialog,
       window,
       move |this, _, event, _window, cx| match event {
         WorktreeEditEvent::Close => {
           this.worktree_edit = None;
+
           cx.notify();
         }
         WorktreeEditEvent::Save {
@@ -389,14 +442,18 @@ impl HelixRoot {
             Some(issue.clone()),
             Some(pr.clone()),
           );
+
           this.worktree_edit = None;
+
           this.refresh_git(cx);
           cx.notify();
         }
       },
     )
     .detach();
+
     self.worktree_edit = Some(dialog);
+
     cx.notify();
   }
 
@@ -410,19 +467,25 @@ impl HelixRoot {
     if path == self.project.root {
       self.switch_project(owner.clone(), window, cx);
     }
+
     let task = cx.background_executor().spawn({
       let owner = owner.clone();
       let path = path.clone();
+
       async move {
         let result = helix_worktree::delete_worktree(&owner, &path);
+
         helix_state::config::remove_worktree(&owner, &path);
+
         result
       }
     });
+
     cx.spawn(async move |this, cx| {
       if let Err(err) = task.await {
         eprintln!("helix: delete worktree failed: {err}");
       }
+
       this
         .update(cx, |root, cx| {
           root.refresh_git(cx);
@@ -442,25 +505,30 @@ impl HelixRoot {
     let Some(workspace) = self.workspaces.get(&root).cloned() else {
       return;
     };
+
     let terminals: Vec<_> = workspace
       .read(cx)
       .terminals()
       .map(|(ix, view)| (ix, view.clone()))
       .collect();
+
     let Some(ix) = terminals
       .into_iter()
       .find_map(|(ix, view)| (view.read(cx).shell_pid() == Some(pid)).then_some(ix))
     else {
       return;
     };
+
     workspace.update(cx, |workspace, cx| {
       workspace.close_tab(ix, window, cx);
     });
+
     for project in &mut self.resources.projects {
       if project.root == root {
         project.sessions.retain(|session| session.pid != pid);
       }
     }
+
     cx.notify();
   }
 
@@ -719,11 +787,13 @@ impl HelixRoot {
     if already {
       return;
     }
+
     cx.spawn(async move |this, cx| {
       loop {
         cx.background_executor()
           .timer(std::time::Duration::from_millis(14))
           .await;
+
         let done = this.update(cx, |root, cx| {
           let (anim, target) = match side {
             ResizingSide::Left => (
@@ -735,7 +805,9 @@ impl HelixRoot {
               if root.right_open { 1.0f32 } else { 0.0 },
             ),
           };
+
           let step = 0.09;
+
           if (*anim - target).abs() <= step {
             *anim = target;
           } else if *anim < target {
@@ -743,9 +815,12 @@ impl HelixRoot {
           } else {
             *anim -= step;
           }
+
           cx.notify();
+
           *anim == target
         });
+
         match done {
           Ok(true) => {
             this
@@ -754,6 +829,7 @@ impl HelixRoot {
                 ResizingSide::Right => root.right_animating = false,
               })
               .ok();
+
             break;
           }
           Ok(false) => {}
@@ -774,10 +850,13 @@ impl HelixRoot {
       Some(root) => (Section::Project, root),
       None => (Section::General, self.project.root.clone()),
     };
+
     let page = cx.new(|cx| SettingsPage::new(section, root, window, cx));
+
     cx.subscribe_in(&page, window, |this, _, event, window, cx| match event {
       SettingsEvent::Close => {
         this.settings = None;
+
         cx.notify();
       }
       SettingsEvent::Changed => {
@@ -785,31 +864,43 @@ impl HelixRoot {
       }
     })
     .detach();
+
     window.focus(&page.read(cx).focus_handle(cx));
+
     self.settings = Some(page);
+
     cx.notify();
   }
 
   fn apply_settings_change(&mut self, window: &mut Window, cx: &mut Context<Self>) {
     let config = helix_state::config::load();
+
     let level = config
       .blur_level
       .clone()
       .unwrap_or_else(|| "medium".to_string());
+
     let mut theme = Theme::dark();
     crate::theme::apply_blur_level(&mut theme, &level);
+
     let fonts = cx.text_system().all_font_names();
+
     if let Some(mono) = helix_state::terminal_font::detect(&fonts) {
       theme.font_mono = mono.into();
     }
+
     cx.set_global(theme);
     crate::theme::sync_component_theme(cx);
+
     window.set_background_appearance(crate::theme::appearance_for_level(&level));
     crate::macos_blur::apply_blur_material();
+
     let project = self.project.clone();
+
     self.project_panel.update(cx, |panel, cx| {
       panel.set_active_project(project, cx);
     });
+
     cx.refresh_windows();
   }
 
@@ -820,52 +911,66 @@ impl HelixRoot {
     cx: &mut Context<Self>,
   ) {
     let active_owner = helix_worktree::primary_root(&self.project.root);
+
     let owner = active_owner
       .clone()
       .unwrap_or_else(|| self.project.root.clone());
+
     let listed: Vec<PathBuf> = self
       .worktrees
       .iter()
       .map(|wt| wt.entry.path.clone())
       .collect();
+
     let existing: Vec<(String, PathBuf)> = helix_worktree::list_worktrees(&owner)
       .into_iter()
       .filter(|wt| {
         let canonical = wt.path.canonicalize().unwrap_or_else(|_| wt.path.clone());
+
         !listed.contains(&canonical) && !wt.is_primary
       })
       .map(|wt| (wt.branch, wt.path))
       .collect();
+
     let mut targets: Vec<(String, PathBuf)> = Vec::new();
+
     for project in helix_state::config::load().projects {
       let Some(primary) = helix_worktree::primary_root(&project.path) else {
         continue;
       };
+
       if targets.iter().any(|(_, path)| *path == primary) {
         continue;
       }
+
       let name = project.display_name.clone().unwrap_or_else(|| {
         primary
           .file_name()
           .map(|n| n.to_string_lossy().to_string())
           .unwrap_or_else(|| primary.display().to_string())
       });
+
       targets.push((name, primary));
     }
+
     if let Some(active_owner) = &active_owner {
       if targets.iter().all(|(_, path)| path != active_owner) {
         let name = active_owner
           .file_name()
           .map(|n| n.to_string_lossy().to_string())
           .unwrap_or_else(|| active_owner.display().to_string());
+
         targets.insert(0, (name, active_owner.clone()));
       }
     }
+
     let active_target = active_owner
       .as_ref()
       .and_then(|owner| targets.iter().position(|(_, path)| path == owner))
       .unwrap_or(0);
+
     let can_worktree = !targets.is_empty();
+
     let dialog = cx.new(|cx| {
       AddDialog::new(
         self.project.root.clone(),
@@ -879,13 +984,16 @@ impl HelixRoot {
         cx,
       )
     });
+
     cx.subscribe_in(&dialog, window, |this, _, event, window, cx| match event {
       AddDialogEvent::Dismissed => {
         this.add_dialog = None;
+
         cx.notify();
       }
       AddDialogEvent::ChooseWorkspace => {
         this.add_dialog = None;
+
         this.pick_workspace(window, cx);
         cx.notify();
       }
@@ -895,21 +1003,29 @@ impl HelixRoot {
         branch,
       } => {
         this.add_dialog = None;
+
         this.create_worktree(owner.clone(), name.clone(), branch.clone(), window, cx);
         cx.notify();
       }
       AddDialogEvent::AddExistingWorktree(path) => {
         this.add_dialog = None;
+
         let owner = helix_worktree::primary_root(path).unwrap_or_else(|| path.clone());
+
         helix_state::config::add_worktree(&owner, path);
+
         this.switch_project(path.clone(), window, cx);
         this.refresh_git(cx);
+
         cx.notify();
       }
     })
     .detach();
+
     window.focus(&dialog.read(cx).focus_handle(cx));
+
     self.add_dialog = Some(dialog);
+
     cx.notify();
   }
 
@@ -920,10 +1036,12 @@ impl HelixRoot {
       multiple: false,
       prompt: Some("Add Workspace".into()),
     });
+
     cx.spawn_in(window, async move |this, cx| {
       if let Ok(Ok(Some(paths))) = receiver.await {
         if let Some(path) = paths.into_iter().next() {
           helix_state::config::ensure_project(&path);
+
           this
             .update_in(cx, |root, window, cx| {
               root.switch_project(path, window, cx);
@@ -946,9 +1064,11 @@ impl HelixRoot {
     let task = cx.background_executor().spawn(async move {
       helix_worktree::create_worktree(&owner, &name, branch.as_deref()).map(|dest| {
         helix_state::config::add_worktree(&owner, &dest);
+
         dest
       })
     });
+
     cx.spawn_in(window, async move |this, cx| match task.await {
       Ok(dest) => {
         this
@@ -960,6 +1080,7 @@ impl HelixRoot {
       }
       Err(err) => {
         eprintln!("helix: create worktree failed: {err}");
+
         this
           .update_in(cx, |root, _, cx| {
             root.refresh_git(cx);
@@ -972,6 +1093,7 @@ impl HelixRoot {
 
   fn open_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
     let mut items = Vec::new();
+
     for row in &self.worktrees {
       items.push(SearchItem {
         label: row
@@ -983,6 +1105,7 @@ impl HelixRoot {
         target: SearchTarget::Worktree(row.entry.path.clone()),
       });
     }
+
     for (ix, tab) in self.workspace.read(cx).tabs.iter().enumerate() {
       items.push(SearchItem {
         label: tab.title(cx),
@@ -991,6 +1114,7 @@ impl HelixRoot {
         target: SearchTarget::Tab(ix),
       });
     }
+
     for project in helix_state::config::load().projects {
       if project.path.is_dir() {
         let name = project
@@ -998,6 +1122,7 @@ impl HelixRoot {
           .file_name()
           .map(|n| n.to_string_lossy().to_string())
           .unwrap_or_default();
+
         items.push(SearchItem {
           label: name,
           detail: project.path.display().to_string(),
@@ -1006,12 +1131,14 @@ impl HelixRoot {
         });
       }
     }
+
     items.push(SearchItem {
       label: "New Terminal".to_string(),
       detail: "⌘T".to_string(),
       badge: "action".to_string(),
       target: SearchTarget::NewTerminal,
     });
+
     items.push(SearchItem {
       label: "New Claude Session".to_string(),
       detail: "⌘⇧T".to_string(),
@@ -1020,20 +1147,26 @@ impl HelixRoot {
     });
 
     let dialog = cx.new(|cx| SearchDialog::new(items, cx));
+
     cx.subscribe_in(&dialog, window, |this, _, event, window, cx| match event {
       SearchEvent::Dismissed => {
         this.search = None;
+
         cx.notify();
       }
       SearchEvent::Selected(target) => {
         this.search = None;
+
         this.activate_target(target.clone(), window, cx);
         cx.notify();
       }
     })
     .detach();
+
     window.focus(&dialog.read(cx).focus_handle(cx));
+
     self.search = Some(dialog);
+
     cx.notify();
   }
 
@@ -1064,9 +1197,11 @@ impl HelixRoot {
     if window.focused(cx).is_some() {
       return;
     }
+
     self.workspace.update(cx, |workspace, cx| {
       workspace.focus_active(window, cx);
     });
+
     if window.focused(cx).is_none() {
       window.focus(&self.focus_handle);
     }

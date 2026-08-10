@@ -56,49 +56,64 @@ impl SettingsPage {
   ) -> Self {
     let config = helix_state::config::load();
     let project = helix_state::config::project_for(&project_root);
+
     let project_dir_name = project_root
       .file_name()
       .map(|n| n.to_string_lossy().to_string())
       .unwrap_or_default();
+
     let (display_name, icon_selected, emoji_selected) = project
       .map(|p| (p.display_name.unwrap_or_default(), p.icon, p.emoji))
       .unwrap_or_default();
+
     let glyph_tab = if icon_selected.is_some() {
       GlyphTab::Icon
     } else {
       GlyphTab::Emoji
     };
+
     let terminal_font = config.terminal_font.unwrap_or_default();
+
     let name_input = cx.new(|cx| {
       let mut state = InputState::new(window, cx).placeholder("Folder name is used when empty");
+
       if !display_name.is_empty() {
         state = state.default_value(display_name);
       }
+
       state
     });
+
     let font_input = cx.new(|cx| {
       let mut state =
         InputState::new(window, cx).placeholder("Auto-detect (terminal config / Nerd Fonts)");
+
       if !terminal_font.is_empty() {
         state = state.default_value(terminal_font);
       }
+
       state
     });
+
     cx.subscribe(&name_input, |this, input, event: &InputEvent, cx| {
       if let InputEvent::Change = event {
         let value = input.read(cx).value().trim().to_string();
+
         this.persist_display_name(value, cx);
       }
     })
     .detach();
+
     cx.subscribe(&font_input, |_, input, event: &InputEvent, cx| {
       if let InputEvent::Change = event {
         let value = input.read(cx).value().trim().to_string();
+
         helix_state::config::set_terminal_font(Some(value));
         cx.emit(SettingsEvent::Changed);
       }
     })
     .detach();
+
     Self {
       section,
       project_root,
@@ -116,11 +131,13 @@ impl SettingsPage {
 
   fn persist_display_name(&self, value: String, cx: &mut Context<Self>) {
     let trimmed = value.trim();
+
     let stored = if trimmed.is_empty() || trimmed == self.project_dir_name {
       None
     } else {
       Some(trimmed.to_string())
     };
+
     helix_state::config::set_display_name(&self.project_root, stored);
     cx.emit(SettingsEvent::Changed);
   }
@@ -158,6 +175,7 @@ impl SettingsPage {
         .children(BLUR_LEVELS.iter().map(|(level_id, label)| {
           let selected = self.blur_level == *level_id;
           let level = level_id.to_string();
+
           div()
             .id(SharedString::from(format!("blur-{level_id}")))
             .px_3()

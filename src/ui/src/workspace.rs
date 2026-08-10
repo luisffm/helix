@@ -77,6 +77,7 @@ impl TabItem {
     match &self.content {
       TabContent::Terminal(view) => {
         let view = view.read(cx);
+
         match view.kind {
           SessionKind::Terminal => (
             Icon::new(IconName::SquareTerminal),
@@ -87,11 +88,13 @@ impl TabItem {
       }
       TabContent::Editor(view) => {
         let view = view.read(cx);
+
         let color = if view.is_dirty() {
           theme.yellow
         } else {
           theme.text_muted
         };
+
         (crate::file_icons::icon(&view.path), color)
       }
       TabContent::Diff(_) => (Icon::new(HelixIcon::GitCompare), theme.purple),
@@ -108,6 +111,7 @@ impl TabItem {
 
   fn snapshot(&self, cx: &App) -> Option<helix_state::config::TabSnapshot> {
     use helix_state::config::{DiffBaseSnapshot, TabSnapshot};
+
     match &self.content {
       TabContent::Terminal(view) => Some(match view.read(cx).kind {
         SessionKind::Terminal => TabSnapshot::Terminal,
@@ -126,6 +130,7 @@ impl TabItem {
           DiffBase::Head => DiffBaseSnapshot::Head,
           DiffBase::Branch { .. } => return None,
         };
+
         Some(TabSnapshot::Diff {
           relative: view.relative.clone(),
           base,
@@ -145,6 +150,7 @@ impl TabItem {
     match &self.content {
       TabContent::Diff(view) => {
         let view = view.read(cx);
+
         view.relative == relative && &view.base == base
       }
       _ => false,
@@ -181,20 +187,25 @@ impl Workspace {
       claude_count: 0,
       restoring: false,
     };
+
     workspace.restore(window, cx);
+
     workspace
   }
 
   fn restore(&mut self, window: &mut Window, cx: &mut Context<Self>) {
     use helix_state::config::{DiffBaseSnapshot, TabSnapshot};
+
     let Some(session) = helix_state::config::workspace_session(&self.project_root)
       .filter(|session| !session.tabs.is_empty())
     else {
       self.open_tab(SessionKind::Terminal, window, cx);
+
       return;
     };
 
     self.restoring = true;
+
     for tab in session.tabs {
       match tab {
         TabSnapshot::Terminal => self.open_tab(SessionKind::Terminal, window, cx),
@@ -210,11 +221,14 @@ impl Workspace {
             DiffBaseSnapshot::Staged => DiffBase::Staged,
             DiffBaseSnapshot::Head => DiffBase::Head,
           };
+
           let root = self.project_root.clone();
+
           self.open_diff(root, relative, base, window, cx);
         }
       }
     }
+
     self.restoring = false;
 
     if self.tabs.is_empty() {
@@ -228,11 +242,13 @@ impl Workspace {
     if self.restoring {
       return;
     }
+
     let tabs: Vec<helix_state::config::TabSnapshot> = self
       .tabs
       .iter()
       .filter_map(|tab| tab.snapshot(cx))
       .collect();
+
     helix_state::config::set_workspace_session(&self.project_root, tabs, self.active);
   }
 
@@ -246,6 +262,7 @@ impl Workspace {
 
   pub fn open_tab(&mut self, kind: SessionKind, window: &mut Window, cx: &mut Context<Self>) {
     self.next_session += 1;
+
     let ordinal = match kind {
       SessionKind::Terminal => {
         self.terminal_count += 1;
@@ -256,11 +273,15 @@ impl Workspace {
         self.claude_count
       }
     };
+
     let title = kind.default_title(ordinal);
     let id = self.next_session;
     let root = self.project_root.clone();
+
     let view = cx.new(|cx| TerminalView::new(id, kind, title, root, cx));
+
     cx.subscribe(&view, Self::handle_terminal_event).detach();
+
     self.push_tab(
       TabItem {
         content: TabContent::Terminal(view),
@@ -287,13 +308,17 @@ impl Workspace {
       if !preview {
         self.tabs[ix].preview = false;
       }
+
       self.activate(ix, window, cx);
+
       return;
     }
 
     let view = cx.new(|cx| EditorView::new(path, window, cx));
+
     cx.subscribe(&view, |_, _, _: &EditorViewEvent, cx| cx.notify())
       .detach();
+
     let tab = TabItem {
       content: TabContent::Editor(view),
       preview,
@@ -302,6 +327,7 @@ impl Workspace {
     match preview.then(|| self.preview_slot(cx)).flatten() {
       Some(ix) => {
         self.tabs[ix] = tab;
+
         self.activate(ix, window, cx);
         self.persist(cx);
       }
@@ -325,10 +351,14 @@ impl Workspace {
       if let TabContent::Diff(view) = &self.tabs[ix].content {
         view.update(cx, |view, cx| view.reload(cx));
       }
+
       self.activate(ix, window, cx);
+
       return;
     }
+
     let view = cx.new(|cx| DiffView::new(root, relative, base, cx));
+
     self.push_tab(
       TabItem {
         content: TabContent::Diff(view),
@@ -346,8 +376,10 @@ impl Workspace {
   fn push_tab(&mut self, tab: TabItem, window: &mut Window, cx: &mut Context<Self>) {
     self.tabs.push(tab);
     self.active = self.tabs.len() - 1;
+
     self.focus_active(window, cx);
     self.persist(cx);
+
     cx.notify();
   }
 
@@ -367,6 +399,7 @@ impl Workspace {
       match &tab.content {
         TabContent::Editor(view) => {
           let path = view.read(cx).path.clone();
+
           if changed.iter().any(|changed| *changed == path) {
             view.update(cx, |view, cx| view.note_external_change(window, cx));
           }
@@ -376,6 +409,7 @@ impl Workspace {
             let view = view.read(cx);
             view.root.join(&view.relative)
           };
+
           if git_moved || changed.iter().any(|changed| *changed == absolute) {
             view.update(cx, |view, cx| view.reload(cx));
           }
@@ -410,12 +444,16 @@ impl Workspace {
     if ix >= self.tabs.len() {
       return;
     }
+
     self.tabs.remove(ix);
+
     if self.active >= self.tabs.len() && !self.tabs.is_empty() {
       self.active = self.tabs.len() - 1;
     }
+
     self.focus_active(window, cx);
     self.persist(cx);
+
     cx.emit(WorkspaceEvent::SessionsChanged);
     cx.notify();
   }
@@ -427,8 +465,10 @@ impl Workspace {
   pub fn activate(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
     if ix < self.tabs.len() {
       self.active = ix;
+
       self.focus_active(window, cx);
       self.persist(cx);
+
       cx.notify();
     }
   }
@@ -504,6 +544,7 @@ impl Render for Workspace {
         let title = tab.title(cx);
         let (kind_icon, icon_color) = tab.icon(cx, &theme);
         let preview = tab.preview;
+
         div()
           .id(SharedString::from(format!("tab-{ix}")))
           .flex()

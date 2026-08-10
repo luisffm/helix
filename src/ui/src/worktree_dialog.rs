@@ -54,17 +54,21 @@ impl WorktreeEditDialog {
     let mut make = |placeholder: &'static str, value: String| {
       cx.new(|cx| {
         let mut state = InputState::new(window, cx).placeholder(placeholder);
+
         if !value.is_empty() {
           state = state.default_value(value);
         }
+
         state
       })
     };
+
     let inputs = [
       make(FIELDS[0].1, display_name),
       make(FIELDS[1].1, issue),
       make(FIELDS[2].1, pr),
     ];
+
     for input in &inputs {
       cx.subscribe(input, |this, _, event: &InputEvent, cx| {
         if let InputEvent::PressEnter { .. } = event {
@@ -73,7 +77,9 @@ impl WorktreeEditDialog {
       })
       .detach();
     }
+
     window.focus(&inputs[0].read(cx).focus_handle(cx));
+
     Self {
       branch,
       inputs,
@@ -94,16 +100,19 @@ impl WorktreeEditDialog {
       "escape" => cx.emit(WorktreeEditEvent::Close),
       "tab" => {
         let focused = window.focused(cx);
+
         let current = self.inputs.iter().position(|input| {
           focused
             .as_ref()
             .is_some_and(|handle| *handle == input.read(cx).focus_handle(cx))
         });
+
         let next = match current {
           Some(ix) if event.keystroke.modifiers.shift => (ix + 2) % 3,
           Some(ix) => (ix + 1) % 3,
           None => 0,
         };
+
         window.focus(&self.inputs[next].read(cx).focus_handle(cx));
         cx.notify();
       }

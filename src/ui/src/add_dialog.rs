@@ -77,12 +77,14 @@ impl AddDialog {
     cx: &mut Context<Self>,
   ) -> Self {
     let titles: Vec<String> = targets.iter().map(|(name, _)| name.clone()).collect();
+
     let target_select =
       cx.new(|cx| SelectState::new(titles, Some(IndexPath::new(active_target)), window, cx));
     let worktree_name = cx.new(|cx| InputState::new(window, cx).placeholder("payments-refactor"));
     let branch_name = cx.new(|cx| InputState::new(window, cx).placeholder("feat/my-feature"));
     let ai_context =
       cx.new(|cx| InputState::new(window, cx).placeholder("what should this branch do?"));
+
     for input in [&worktree_name, &branch_name] {
       cx.subscribe(input, |this, _, event: &InputEvent, cx| {
         if matches!(event, InputEvent::PressEnter { .. }) {
@@ -91,6 +93,7 @@ impl AddDialog {
       })
       .detach();
     }
+
     cx.subscribe_in(
       &ai_context,
       window,
@@ -101,6 +104,7 @@ impl AddDialog {
       },
     )
     .detach();
+
     Self {
       step: Step::Choose,
       selected: 0,
@@ -140,7 +144,9 @@ impl AddDialog {
     if self.existing_query.is_empty() {
       return self.existing.clone();
     }
+
     let query = self.existing_query.to_lowercase();
+
     self
       .existing
       .iter()
@@ -154,18 +160,22 @@ impl AddDialog {
 
   fn confirm_choice(&mut self, window: &mut Window, cx: &mut Context<Self>) {
     let options = self.options();
+
     let Some(option) = options.get(self.selected) else {
       return;
     };
+
     match option {
       AddOption::Workspace => cx.emit(AddDialogEvent::ChooseWorkspace),
       AddOption::NewWorktree if self.can_worktree => {
         self.step = Step::Name;
+
         window.focus(&self.worktree_name.read(cx).focus_handle(cx));
         cx.notify();
       }
       AddOption::ExistingWorktree if !self.existing.is_empty() => {
         self.step = Step::Existing;
+
         cx.notify();
       }
       _ => {}
@@ -179,6 +189,7 @@ impl AddDialog {
       .selected_index(cx)
       .map(|index| index.row)
       .unwrap_or(0);
+
     self.targets.get(row).map(|(_, path)| path.clone())
   }
 
@@ -186,32 +197,45 @@ impl AddDialog {
     let Some(owner) = self.selected_target(cx) else {
       self.error = Some("no git project to create a worktree in".to_string());
       cx.notify();
+
       return;
     };
+
     let name = self.worktree_name.read(cx).value().trim().to_string();
+
     if name.is_empty() {
       self.error = Some("worktree name is required".to_string());
       cx.notify();
+
       return;
     }
+
     let branch = if self.create_branch {
       let branch = self.branch_name.read(cx).value().trim().to_string();
+
       if branch.is_empty() {
         self.error = Some("branch name is required".to_string());
         cx.notify();
+
         return;
       }
+
       Some(branch)
     } else {
       None
     };
+
     let effective = branch.as_deref().unwrap_or(&name);
+
     if !helix_agents::branch_name::is_valid(effective) {
       self.error = Some(format!("git will not accept the branch name `{effective}`"));
       cx.notify();
+
       return;
     }
+
     self.error = None;
+
     cx.emit(AddDialogEvent::CreateWorktree {
       owner,
       name,
@@ -222,10 +246,13 @@ impl AddDialog {
   fn ask_for_a_name(&mut self, window: &mut Window, cx: &mut Context<Self>) {
     if self.describing {
       self.generate_branch_name(window, cx);
+
       return;
     }
+
     self.describing = true;
     self.error = None;
+
     window.focus(&self.ai_context.read(cx).focus_handle(cx));
     cx.notify();
   }
@@ -234,38 +261,50 @@ impl AddDialog {
     if self.generating_branch {
       return;
     }
+
     let context = self.ai_context.read(cx).value().trim().to_string();
+
     if context.is_empty() {
       self.error = Some("describe the work so the model has something to name".to_string());
       cx.notify();
+
       return;
     }
+
     self.generating_branch = true;
     self.error = None;
+
     cx.notify();
 
     let root = self.project_root.clone();
+
     let task = cx
       .background_executor()
       .spawn(async move { helix_agents::branch_name::generate(&root, &context, None) });
 
     let this = cx.entity().downgrade();
+
     window
       .spawn(cx, async move |cx| {
         let result = task.await;
+
         this
           .update_in(cx, |dialog, window, cx| {
             dialog.generating_branch = false;
+
             match result {
               Ok(name) => {
                 dialog.describing = false;
+
                 dialog
                   .branch_name
                   .update(cx, |state, cx| state.set_value(name, window, cx));
+
                 window.focus(&dialog.branch_name.read(cx).focus_handle(cx));
               }
               Err(err) => dialog.error = Some(err.to_string()),
             }
+
             cx.notify();
           })
           .ok();
@@ -280,12 +319,16 @@ impl AddDialog {
         "enter" => self.confirm_choice(window, cx),
         "up" => {
           let count = self.options().len();
+
           self.selected = (self.selected + count - 1) % count;
+
           cx.notify();
         }
         "down" => {
           let count = self.options().len();
+
           self.selected = (self.selected + 1) % count;
+
           cx.notify();
         }
         _ => {}
@@ -295,6 +338,7 @@ impl AddDialog {
           self.step = Step::Choose;
           self.existing_query.clear();
           self.existing_selected = 0;
+
           cx.notify();
         }
         "enter" => {
@@ -304,27 +348,35 @@ impl AddDialog {
         }
         "up" => {
           let count = self.filtered_existing().len().max(1);
+
           self.existing_selected = (self.existing_selected + count - 1) % count;
+
           cx.notify();
         }
         "down" => {
           let count = self.filtered_existing().len().max(1);
+
           self.existing_selected = (self.existing_selected + 1) % count;
+
           cx.notify();
         }
         "backspace" => {
           self.existing_query.pop();
           self.existing_selected = 0;
+
           cx.notify();
         }
         _ => {
           let mods = event.keystroke.modifiers;
+
           if mods.platform || mods.control || mods.function {
             return;
           }
+
           if let Some(text) = &event.keystroke.key_char {
             self.existing_query.push_str(text);
             self.existing_selected = 0;
+
             cx.notify();
           }
         }
@@ -333,6 +385,7 @@ impl AddDialog {
         if event.keystroke.key.as_str() == "escape" {
           self.step = Step::Choose;
           self.error = None;
+
           window.focus(&self.focus_handle);
           cx.notify();
         }

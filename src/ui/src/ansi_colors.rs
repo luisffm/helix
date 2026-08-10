@@ -15,6 +15,7 @@ pub fn rgb_to_hsla(rgb: AnsiRgb) -> Hsla {
 
 pub fn hsla_to_rgb(color: Hsla) -> AnsiRgb {
   let rgba = Rgba::from(color);
+
   AnsiRgb {
     r: (rgba.r * 255.0) as u8,
     g: (rgba.g * 255.0) as u8,
@@ -36,6 +37,7 @@ pub fn to_hsla(color: AnsiColor, overrides: &TermPalette, theme: &Theme) -> Hsla
 
 pub fn named_color(theme: &Theme, named: NamedColor) -> Hsla {
   let p = &theme.term.palette;
+
   match named {
     NamedColor::Black | NamedColor::DimBlack => p[0],
     NamedColor::Red | NamedColor::DimRed => p[1],
@@ -67,6 +69,7 @@ pub fn indexed(theme: &Theme, i: u8) -> Hsla {
       let r = n / 36;
       let g = (n % 36) / 6;
       let b = n % 6;
+
       let level = |v: u8| -> f32 {
         if v == 0 {
           0.0
@@ -74,6 +77,7 @@ pub fn indexed(theme: &Theme, i: u8) -> Hsla {
           (v as f32 * 40.0 + 55.0) / 255.0
         }
       };
+
       Rgba {
         r: level(r),
         g: level(g),
@@ -84,6 +88,7 @@ pub fn indexed(theme: &Theme, i: u8) -> Hsla {
     }
     232..=255 => {
       let v = (8 + 10 * (i - 232) as u16) as f32 / 255.0;
+
       Rgba {
         r: v,
         g: v,

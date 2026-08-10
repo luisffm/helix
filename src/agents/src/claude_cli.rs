@@ -22,10 +22,12 @@ pub fn print_mode(prompt: String, model: Option<&str>) -> Spec {
     "--permission-mode".to_string(),
     "plan".to_string(),
   ];
+
   if let Some(model) = model.map(str::trim).filter(|model| !model.is_empty()) {
     args.push("--model".to_string());
     args.push(model.to_string());
   }
+
   Spec {
     program: "claude".to_string(),
     args,
@@ -51,6 +53,7 @@ pub fn run(cwd: &Path, spec: &Spec) -> Result<String> {
 
   let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
   let pid = child.id();
+
   std::thread::Builder::new()
     .name("helix-claude-cli-timeout".into())
     .spawn(move || {
@@ -72,9 +75,11 @@ pub fn run(cwd: &Path, spec: &Spec) -> Result<String> {
       stderr
     }));
   }
+
   if output.stdout.len() > MAX_OUTPUT_BYTES {
     return Err(anyhow!("model output was unexpectedly large"));
   }
+
   Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
 
@@ -90,12 +95,14 @@ fn kill(_pid: u32) {}
 
 pub fn strip_code_fence(raw: &str) -> Vec<&str> {
   let mut lines: Vec<&str> = raw.lines().collect();
+
   if lines
     .first()
     .map(|line| line.trim_start().starts_with("```"))
     .unwrap_or(false)
   {
     lines.remove(0);
+
     if lines
       .last()
       .map(|line| line.trim() == "```")
@@ -104,6 +111,7 @@ pub fn strip_code_fence(raw: &str) -> Vec<&str> {
       lines.pop();
     }
   }
+
   lines
 }
 
@@ -114,6 +122,7 @@ mod tests {
   #[test]
   fn print_mode_omits_model_when_unset() {
     let spec = print_mode("hi".to_string(), None);
+
     assert!(!spec.args.contains(&"--model".to_string()));
     assert_eq!(spec.stdin, "hi");
   }
@@ -122,18 +131,21 @@ mod tests {
   fn print_mode_passes_model_when_set() {
     let spec = print_mode("hi".to_string(), Some("opus"));
     let at = spec.args.iter().position(|arg| arg == "--model").unwrap();
+
     assert_eq!(spec.args[at + 1], "opus");
   }
 
   #[test]
   fn print_mode_ignores_blank_model() {
     let spec = print_mode("hi".to_string(), Some("  "));
+
     assert!(!spec.args.contains(&"--model".to_string()));
   }
 
   #[test]
   fn print_mode_uses_the_documented_flags() {
     let spec = print_mode("hi".to_string(), None);
+
     assert_eq!(spec.program, "claude");
     assert!(spec.args.contains(&"-p".to_string()));
     assert!(spec.args.contains(&"text".to_string()));

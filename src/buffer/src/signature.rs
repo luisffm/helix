@@ -3,10 +3,12 @@ const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
 
 pub fn of(text: &str) -> u64 {
   let mut hash = FNV_OFFSET;
+
   for byte in text.as_bytes() {
     hash ^= *byte as u64;
     hash = hash.wrapping_mul(FNV_PRIME);
   }
+
   hash ^ (text.len() as u64).rotate_left(32)
 }
 

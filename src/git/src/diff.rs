@@ -47,6 +47,7 @@ pub fn file_diff(root: &Path, relative: &str, base: &DiffBase) -> Result<FileDif
 
   let lines = old_text.lines().count().max(new_text.lines().count());
   let chars = old_text.len() + new_text.len();
+
   if lines > MAX_DIFF_LINES || chars > MAX_DIFF_CHARS {
     return Ok(empty_diff(
       relative,
@@ -71,6 +72,7 @@ pub fn file_diff(root: &Path, relative: &str, base: &DiffBase) -> Result<FileDif
   }
 
   let (hunks, added, removed) = hunks_of(&old_text, &new_text);
+
   Ok(FileDiff {
     path: relative.to_string(),
     base: base.clone(),
@@ -117,11 +119,13 @@ fn hunks_of(old_text: &str, new_text: &str) -> (Vec<DiffHunk>, usize, usize) {
       for change in diff.iter_changes(op) {
         let old_index = change.old_index();
         let new_index = change.new_index();
+
         if !started {
           old_start = old_index.unwrap_or(0) as u32 + 1;
           new_start = new_index.unwrap_or(0) as u32 + 1;
           started = true;
         }
+
         let (kind, range) = match change.tag() {
           ChangeTag::Delete => {
             removed += 1;
@@ -151,6 +155,7 @@ fn hunks_of(old_text: &str, new_text: &str) -> (Vec<DiffHunk>, usize, usize) {
               .unwrap_or(0..0),
           ),
         };
+
         lines.push(DiffLine {
           kind,
           old_line: old_index.map(|i| i as u32 + 1),
@@ -175,19 +180,24 @@ fn hunks_of(old_text: &str, new_text: &str) -> (Vec<DiffHunk>, usize, usize) {
 fn line_offsets(text: &str) -> Vec<std::ops::Range<usize>> {
   let mut ranges = Vec::new();
   let mut start = 0usize;
+
   for (index, byte) in text.bytes().enumerate() {
     if byte == b'\n' {
       let mut end = index;
+
       if end > start && text.as_bytes()[end - 1] == b'\r' {
         end -= 1;
       }
+
       ranges.push(start..end);
       start = index + 1;
     }
   }
+
   if start < text.len() {
     ranges.push(start..text.len());
   }
+
   ranges
 }
 
@@ -218,6 +228,7 @@ fn blob_at_rev(repo: &Repository, rev: &str, relative: &str) -> Result<Side> {
   let blob = object
     .as_blob()
     .ok_or_else(|| anyhow!("{rev}:{relative} is not a blob"))?;
+
   Ok(side_from_bytes(blob.content().to_vec()))
 }
 
@@ -227,14 +238,17 @@ fn blob_at_index(repo: &Repository, relative: &str) -> Result<Side> {
     .get_path(Path::new(relative), 0)
     .ok_or_else(|| anyhow!("{relative} not in index"))?;
   let blob = repo.find_blob(entry.id)?;
+
   Ok(side_from_bytes(blob.content().to_vec()))
 }
 
 fn read_working_tree(workdir: &Path, relative: &str) -> Result<Side> {
   let path = workdir.join(relative);
+
   if !path.exists() {
     return Ok(Side::Missing);
   }
+
   Ok(side_from_bytes(std::fs::read(path)?))
 }
 
@@ -243,16 +257,19 @@ pub fn merge_base(root: &Path, base_ref: &str) -> Result<(String, String)> {
   let head = repo.head()?.peel_to_commit()?.id();
   let base = repo.revparse_single(base_ref)?.peel_to_commit()?.id();
   let merge_base = repo.merge_base(base, head)?;
+
   Ok((merge_base.to_string(), head.to_string()))
 }
 
 pub fn default_base_ref(root: &Path) -> Option<String> {
   let repo = Repository::discover(root).ok()?;
+
   for candidate in ["origin/main", "origin/master", "main", "master"] {
     if repo.revparse_single(candidate).is_ok() {
       return Some(candidate.to_string());
     }
   }
+
   None
 }
 

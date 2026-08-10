@@ -36,14 +36,17 @@ pub fn build_prompt(context: &Context, extra: Option<&str>) -> String {
     prompt.push_str("\n\nBranch:\n");
     prompt.push_str(&context.branch);
   }
+
   if !context.name_status.is_empty() {
     prompt.push_str("\n\nChanged files:\n");
     prompt.push_str(&context.name_status);
   }
+
   if !context.patch.is_empty() {
     prompt.push_str("\n\nStaged diff:\n");
     prompt.push_str(&context.patch);
   }
+
   prompt
 }
 
@@ -53,18 +56,23 @@ pub fn plan(prompt: String, model: Option<&str>) -> Spec {
 
 pub fn generate(cwd: &Path, spec: &Spec) -> Result<String> {
   let message = sanitize(&claude_cli::run(cwd, spec)?);
+
   if message.is_empty() {
     return Err(anyhow!("model returned an empty commit message"));
   }
+
   Ok(message)
 }
 
 pub fn sanitize(raw: &str) -> String {
   let mut lines = claude_cli::strip_code_fence(raw);
+
   lines.retain(|line| {
     let lower = line.trim().to_ascii_lowercase();
+
     !lower.starts_with("co-authored-by:") && !lower.starts_with("generated with")
   });
+
   lines
     .join("\n")
     .trim_matches(|c: char| c == '\n' || c == '\r')
@@ -87,12 +95,14 @@ mod tests {
   #[test]
   fn sanitize_drops_trailers() {
     let raw = "fix: repair parser\n\nBody line.\n\nCo-authored-by: Someone <a@b.c>\n";
+
     assert_eq!(sanitize(raw), "fix: repair parser\n\nBody line.");
   }
 
   #[test]
   fn sanitize_keeps_multiline_body() {
     let raw = "feat: add cache\n\nThe old path re-read the file on every keystroke.\n";
+
     assert_eq!(
       sanitize(raw),
       "feat: add cache\n\nThe old path re-read the file on every keystroke."
@@ -106,7 +116,9 @@ mod tests {
       name_status: "M\tsrc/lib.rs".to_string(),
       patch: "diff --git a/src/lib.rs b/src/lib.rs".to_string(),
     };
+
     let prompt = build_prompt(&context, None);
+
     assert!(prompt.contains("Branch:\nfeature"));
     assert!(prompt.contains("Changed files:\nM\tsrc/lib.rs"));
     assert!(prompt.contains("Staged diff:\ndiff --git"));

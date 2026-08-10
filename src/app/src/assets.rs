@@ -41,16 +41,19 @@ impl AssetSource for HelixAssets {
     if let Some((_, bytes)) = EXTRA_ICONS.iter().find(|(name, _)| *name == path) {
       return Ok(Some(Cow::Borrowed(bytes)));
     }
+
     gpui_component_assets::Assets.load(path)
   }
 
   fn list(&self, path: &str) -> Result<Vec<SharedString>> {
     let mut entries = gpui_component_assets::Assets.list(path)?;
+
     for (name, _) in EXTRA_ICONS {
       if name.starts_with(path) {
         entries.push(name.into());
       }
     }
+
     Ok(entries)
   }
 }

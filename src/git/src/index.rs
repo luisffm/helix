@@ -15,17 +15,20 @@ pub fn discard(root: &Path, relative: &str) -> Result<()> {
 
   if index.get_path(Path::new(relative), 0).is_none() {
     let target = workdir.join(relative);
+
     if target.is_dir() {
       std::fs::remove_dir_all(&target)?;
     } else if target.exists() {
       std::fs::remove_file(&target)?;
     }
+
     return Ok(());
   }
 
   let mut checkout = CheckoutBuilder::new();
   checkout.force().path(relative);
   repo.checkout_index(None, Some(&mut checkout))?;
+
   Ok(())
 }
 
@@ -33,6 +36,7 @@ pub fn stage(root: &Path, relative: &str) -> Result<()> {
   let repo = Repository::discover(root)?;
   let mut index = repo.index()?;
   let path = Path::new(relative);
+
   if repo
     .workdir()
     .map(|workdir| workdir.join(path).exists())
@@ -42,15 +46,19 @@ pub fn stage(root: &Path, relative: &str) -> Result<()> {
   } else {
     index.remove_path(path)?;
   }
+
   index.write()?;
+
   Ok(())
 }
 
 pub fn stage_all(root: &Path) -> Result<()> {
   let repo = Repository::discover(root)?;
   let mut index = repo.index()?;
+
   index.add_all(["*"], IndexAddOption::DEFAULT, None)?;
   index.write()?;
+
   Ok(())
 }
 
@@ -59,6 +67,7 @@ pub fn unstage(root: &Path, relative: &str) -> Result<()> {
   let head = repo.head().and_then(|head| head.peel_to_commit());
   let mut index = repo.index()?;
   let path = Path::new(relative);
+
   match head {
     Ok(commit) => match commit.tree()?.get_path(path) {
       Ok(entry) => {
@@ -89,13 +98,16 @@ pub fn unstage(root: &Path, relative: &str) -> Result<()> {
       index.remove_path(path)?;
     }
   }
+
   index.write()?;
+
   Ok(())
 }
 
 pub fn unstage_all(root: &Path) -> Result<()> {
   let repo = Repository::discover(root)?;
   let mut index = repo.index()?;
+
   match repo
     .head()
     .and_then(|head| head.peel_to_commit())
@@ -104,7 +116,9 @@ pub fn unstage_all(root: &Path) -> Result<()> {
     Ok(tree) => index.read_tree(&tree)?,
     Err(_) => index.clear()?,
   }
+
   index.write()?;
+
   Ok(())
 }
 
@@ -112,11 +126,13 @@ pub fn commit(root: &Path, message: &str) -> Result<String> {
   if message.trim().is_empty() {
     return Err(anyhow!("empty commit message"));
   }
+
   let repo = Repository::discover(root)?;
   let mut index = repo.index()?;
   let tree_id = index.write_tree()?;
   let tree = repo.find_tree(tree_id)?;
   let signature = author(&repo)?;
+
   let parents = match repo.head().and_then(|head| head.peel_to_commit()) {
     Ok(parent) => vec![parent],
     Err(_) => Vec::new(),
@@ -137,6 +153,7 @@ pub fn commit(root: &Path, message: &str) -> Result<String> {
     &tree,
     &parent_refs,
   )?;
+
   Ok(oid.to_string())
 }
 
@@ -148,6 +165,7 @@ fn author(repo: &Repository) -> Result<Signature<'static>> {
   let email = config
     .get_string("user.email")
     .map_err(|_| anyhow!("git user.email is not set"))?;
+
   Ok(Signature::now(&name, &email)?)
 }
 
@@ -158,8 +176,10 @@ pub fn staged_name_status(root: &Path) -> Result<String> {
     .and_then(|head| head.peel_to_commit())
     .and_then(|commit| commit.tree())
     .ok();
+
   let diff = repo.diff_tree_to_index(head_tree.as_ref(), None, None)?;
   let mut lines = Vec::new();
+
   diff.foreach(
     &mut |delta, _| {
       let status = match delta.status() {
@@ -171,19 +191,23 @@ pub fn staged_name_status(root: &Path) -> Result<String> {
         git2::Delta::Typechange => "T",
         _ => "?",
       };
+
       let path = delta
         .new_file()
         .path()
         .or_else(|| delta.old_file().path())
         .map(|path| path.display().to_string())
         .unwrap_or_default();
+
       lines.push(format!("{status}\t{path}"));
+
       true
     },
     None,
     None,
     None,
   )?;
+
   Ok(lines.join("\n"))
 }
 
@@ -194,16 +218,22 @@ pub fn staged_patch(root: &Path, byte_budget: usize) -> Result<String> {
     .and_then(|head| head.peel_to_commit())
     .and_then(|commit| commit.tree())
     .ok();
+
   let diff = repo.diff_tree_to_index(head_tree.as_ref(), None, None)?;
   let mut patch = String::new();
+
   diff.print(git2::DiffFormat::Patch, |_, _, line| {
     let origin = line.origin();
+
     if matches!(origin, '+' | '-' | ' ') {
       patch.push(origin);
     }
+
     patch.push_str(&String::from_utf8_lossy(line.content()));
+
     true
   })?;
+
   Ok(truncate_patch(&patch, byte_budget))
 }
 
@@ -222,11 +252,14 @@ pub fn truncate_patch(patch: &str, byte_budget: usize) -> String {
   for (section, budget) in sections.iter().zip(budgets.drain(..)) {
     let kept = clip_on_line(section, budget);
     out.push_str(kept);
+
     let omitted = section.len() - kept.len();
+
     if omitted > 0 {
       out.push_str(&format!("\n...(diff truncated, {omitted} bytes omitted)\n"));
     }
   }
+
   out
 }
 
@@ -234,6 +267,7 @@ fn split_sections(patch: &str) -> Vec<&str> {
   let marker = "diff --git ";
   let mut sections = Vec::new();
   let mut start = None;
+
   for (index, _) in patch.match_indices(marker) {
     if index == 0 || patch.as_bytes()[index - 1] == b'\n' {
       if let Some(previous) = start {
@@ -242,9 +276,11 @@ fn split_sections(patch: &str) -> Vec<&str> {
       start = Some(index);
     }
   }
+
   if let Some(previous) = start {
     sections.push(&patch[previous..]);
   }
+
   sections
 }
 
@@ -258,10 +294,13 @@ fn water_fill(sections: &[&str], byte_budget: usize) -> Vec<usize> {
     if share == 0 {
       break;
     }
+
     let mut next_unfilled = Vec::new();
     let mut spent = 0usize;
+
     for index in unfilled {
       let need = sections[index].len() - budgets[index];
+
       if need <= share {
         budgets[index] += need;
         spent += need;
@@ -272,11 +311,14 @@ fn water_fill(sections: &[&str], byte_budget: usize) -> Vec<usize> {
       }
     }
     remaining -= spent;
+
     if spent == 0 {
       break;
     }
+
     unfilled = next_unfilled;
   }
+
   budgets
 }
 
@@ -284,6 +326,7 @@ fn clip_on_line(text: &str, budget: usize) -> &str {
   if text.len() <= budget {
     return text;
   }
+
   match text[..budget].rfind('\n') {
     Some(index) => &text[..index],
     None => "",

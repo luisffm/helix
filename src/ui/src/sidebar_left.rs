@@ -45,6 +45,7 @@ pub fn short_ref(value: &str) -> String {
     .chars()
     .rev()
     .collect();
+
   if digits.is_empty() {
     "link".to_string()
   } else {
@@ -110,6 +111,7 @@ fn load_project_entries() -> Vec<ProjectEntry> {
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_else(|| p.path.display().to_string());
+
       let glyph = if let Some(icon) = &p.icon {
         ProjectGlyph::Icon(icon.clone())
       } else if let Some(emoji) = &p.emoji {
@@ -117,6 +119,7 @@ fn load_project_entries() -> Vec<ProjectEntry> {
       } else {
         ProjectGlyph::Icon("folder".to_string())
       };
+
       ProjectEntry {
         info: ProjectInfo {
           name: p.display_name.clone().unwrap_or(dir_name),
@@ -133,16 +136,21 @@ impl ProjectPanel {
     cx.spawn(async move |this, cx| {
       loop {
         cx.background_executor().timer(Duration::from_secs(1)).await;
+
         if this.update(cx, |_, cx| cx.notify()).is_err() {
           break;
         }
       }
     })
     .detach();
+
     helix_state::config::ensure_project(&project.root);
+
     let projects = load_project_entries();
     let mut expanded = HashSet::new();
+
     expanded.insert(project.root.clone());
+
     Self {
       projects,
       active_root: project.root,
@@ -158,10 +166,12 @@ impl ProjectPanel {
   fn toggle_project(&mut self, root: PathBuf, cx: &mut Context<Self>) {
     if self.expanded.remove(&root) {
       self.closing.insert(root.clone());
+
       cx.spawn(async move |this, cx| {
         cx.background_executor()
           .timer(Duration::from_millis(COLLAPSE_MS))
           .await;
+
         this
           .update(cx, |panel, cx| {
             panel.closing.remove(&root);
@@ -174,6 +184,7 @@ impl ProjectPanel {
       self.closing.remove(&root);
       self.expanded.insert(root);
     }
+
     cx.notify();
   }
 
@@ -185,6 +196,7 @@ impl ProjectPanel {
   ) {
     self.git = git;
     self.worktrees = worktrees;
+
     cx.notify();
   }
 
@@ -198,13 +210,16 @@ impl ProjectPanel {
         cx.observe(workspace, |_, _, cx| cx.notify()).detach();
       }
     }
+
     self.workspaces = workspaces;
+
     cx.notify();
   }
 
   pub fn set_active_project(&mut self, project: ProjectInfo, cx: &mut Context<Self>) {
     self.projects = load_project_entries();
     self.active_root = project.root.clone();
+
     let owner = self
       .projects
       .iter()
@@ -216,7 +231,9 @@ impl ProjectPanel {
       })
       .map(|entry| entry.info.root.clone())
       .unwrap_or(project.root);
+
     self.expanded.insert(owner);
+
     cx.notify();
   }
 }

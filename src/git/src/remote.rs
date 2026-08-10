@@ -9,16 +9,20 @@ fn git(root: &Path, args: &[&str]) -> Result<String> {
     .env("GIT_OPTIONAL_LOCKS", "0")
     .env("GIT_TERMINAL_PROMPT", "0")
     .output()?;
+
   if output.status.success() {
     return Ok(String::from_utf8_lossy(&output.stdout).to_string());
   }
+
   let stderr = String::from_utf8_lossy(&output.stderr);
   let stdout = String::from_utf8_lossy(&output.stdout);
+
   let message = if stderr.trim().is_empty() {
     stdout.trim()
   } else {
     stderr.trim()
   };
+
   Err(anyhow!(message.to_string()))
 }
 
