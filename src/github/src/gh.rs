@@ -92,7 +92,9 @@ pub fn run(cwd: &Path, args: &[&str]) -> Result<String> {
 pub fn is_authenticated() -> bool {
   let mut command = Command::new("gh");
 
-  command.args(["auth", "status"]).env("GH_PROMPT_DISABLED", "1");
+  command
+    .args(["auth", "status"])
+    .env("GH_PROMPT_DISABLED", "1");
 
   helix_process::output(command, None, TIMEOUT)
     .map(|output| output.status.success())

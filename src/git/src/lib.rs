@@ -89,7 +89,10 @@ impl IgnoreProbe {
       probe.push('/');
     }
 
-    self.repo.is_path_ignored(Path::new(&probe)).unwrap_or(false)
+    self
+      .repo
+      .is_path_ignored(Path::new(&probe))
+      .unwrap_or(false)
   }
 }
 
@@ -166,7 +169,11 @@ const MAX_COUNTED_DELTAS: usize = 500;
 const MAX_COUNTED_BYTES: u64 = 1024 * 1024;
 const BINARY_SNIFF_BYTES: usize = 8000;
 
-fn line_counts(repo: &Repository, staged: bool, paths: &[String]) -> HashMap<String, (usize, usize)> {
+fn line_counts(
+  repo: &Repository,
+  staged: bool,
+  paths: &[String],
+) -> HashMap<String, (usize, usize)> {
   let mut out: HashMap<String, (usize, usize)> = HashMap::new();
 
   if paths.is_empty() {
