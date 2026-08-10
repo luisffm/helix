@@ -66,6 +66,21 @@ pub fn unstage(root: &Path, relative: &str) -> Result<()> {
   Ok(())
 }
 
+pub fn unstage_all(root: &Path) -> Result<()> {
+  let repo = Repository::discover(root)?;
+  let mut index = repo.index()?;
+  match repo
+    .head()
+    .and_then(|head| head.peel_to_commit())
+    .and_then(|commit| commit.tree())
+  {
+    Ok(tree) => index.read_tree(&tree)?,
+    Err(_) => index.clear()?,
+  }
+  index.write()?;
+  Ok(())
+}
+
 pub fn commit(root: &Path, message: &str) -> Result<String> {
   if message.trim().is_empty() {
     return Err(anyhow!("empty commit message"));

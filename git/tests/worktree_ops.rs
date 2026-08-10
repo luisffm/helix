@@ -176,6 +176,47 @@ fn unstage_returns_file_to_working_tree() {
 }
 
 #[test]
+fn unstage_all_clears_the_index_without_touching_the_working_tree() {
+  let repo = TempRepo::new("unstage-all");
+  repo.write("tracked.txt", "one\n");
+  repo.commit_all("initial");
+
+  repo.write("tracked.txt", "two\n");
+  repo.write("fresh.txt", "new\n");
+  helix_git::index::stage_all(&repo.path).unwrap();
+  assert_eq!(helix_git::snapshot(&repo.path).unwrap().staged.len(), 2);
+
+  helix_git::index::unstage_all(&repo.path).unwrap();
+  let snapshot = helix_git::snapshot(&repo.path).unwrap();
+  assert!(snapshot.staged.is_empty());
+  assert_eq!(snapshot.unstaged.len(), 1);
+  assert_eq!(snapshot.untracked.len(), 1);
+
+  assert_eq!(
+    std::fs::read_to_string(repo.path.join("tracked.txt")).unwrap(),
+    "two\n"
+  );
+  assert!(repo.path.join("fresh.txt").exists());
+}
+
+#[test]
+fn unstage_all_on_a_repo_without_commits_clears_everything() {
+  let path = std::env::temp_dir().join(format!("helix-unstage-empty-{}", std::process::id()));
+  let _ = std::fs::remove_dir_all(&path);
+  std::fs::create_dir_all(&path).unwrap();
+  git(&path, &["init", "--initial-branch=main"]);
+  std::fs::write(path.join("a.txt"), "one\n").unwrap();
+  helix_git::index::stage_all(&path).unwrap();
+  assert_eq!(helix_git::snapshot(&path).unwrap().staged.len(), 1);
+
+  helix_git::index::unstage_all(&path).unwrap();
+  let snapshot = helix_git::snapshot(&path).unwrap();
+  assert!(snapshot.staged.is_empty());
+  assert_eq!(snapshot.untracked.len(), 1);
+  let _ = std::fs::remove_dir_all(&path);
+}
+
+#[test]
 fn commit_with_empty_message_is_rejected() {
   let repo = TempRepo::new("emptymsg");
   repo.write("a.txt", "one\n");

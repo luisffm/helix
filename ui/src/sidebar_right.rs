@@ -1,4 +1,6 @@
-use crate::components::{HEADER_HEIGHT, ago, icon_button, icon_button_path, section_label};
+use crate::components::{
+  HEADER_HEIGHT, ago, icon_button, icon_button_path, section_label, spinner,
+};
 use crate::file_icons;
 use crate::theme::Theme;
 use gpui::{
@@ -113,6 +115,14 @@ impl ContextPanel {
 
   fn stage_all(&mut self, cx: &mut Context<Self>) {
     self.git_error = helix_git::index::stage_all(&self.root)
+      .err()
+      .map(|err| err.to_string());
+    cx.emit(ContextPanelEvent::GitChanged);
+    cx.notify();
+  }
+
+  fn unstage_all(&mut self, cx: &mut Context<Self>) {
+    self.git_error = helix_git::index::unstage_all(&self.root)
       .err()
       .map(|err| err.to_string());
     cx.emit(ContextPanelEvent::GitChanged);
@@ -728,49 +738,35 @@ impl ContextPanel {
               .when(!can_commit, |el| el.text_color(theme.text_dim))
               .child(format!("Commit ({})", git.staged.len())),
           )
-          .when(unstaged_total > 0, |el| {
-            el.child(
-              div()
-                .id("stage-all-button")
-                .h(px(24.0))
-                .px_2()
-                .flex()
-                .items_center()
-                .rounded_md()
-                .text_xs()
-                .text_color(theme.text_muted)
-                .cursor_pointer()
-                .hover(|s| s.bg(theme.hover).text_color(theme.text))
-                .on_click(cx.listener(|this, _, _, cx| this.stage_all(cx)))
-                .child("Stage all"),
+          .child(
+            toolbar_button("stage-all-button", "Stage all", unstaged_total > 0, theme)
+              .when(unstaged_total > 0, |el| {
+                el.on_click(cx.listener(|this, _, _, cx| this.stage_all(cx)))
+              }),
+          )
+          .child(
+            toolbar_button("unstage-all-button", "Unstage all", can_commit, theme)
+              .when(can_commit, |el| {
+                el.on_click(cx.listener(|this, _, _, cx| this.unstage_all(cx)))
+              }),
+          )
+          .child({
+            let can_write = can_commit && !self.generating_message;
+            toolbar_button(
+              "generate-message-button",
+              if self.generating_message {
+                "Writing…"
+              } else {
+                "✦ Write"
+              },
+              can_write,
+              theme,
             )
-          })
-          .when(can_commit, |el| {
-            el.child(
-              div()
-                .id("generate-message-button")
-                .h(px(24.0))
-                .px_2()
-                .flex()
-                .items_center()
-                .gap_1()
-                .rounded_md()
-                .text_xs()
-                .when(self.generating_message, |el| el.text_color(theme.text_dim))
-                .when(!self.generating_message, |el| {
-                  el.text_color(theme.claude)
-                    .cursor_pointer()
-                    .hover(|s| s.bg(theme.hover))
-                    .on_click(
-                      cx.listener(|this, _, window, cx| this.generate_commit_message(window, cx)),
-                    )
-                })
-                .child(if self.generating_message {
-                  "Writing…"
-                } else {
-                  "✦ Write"
-                }),
-            )
+            .when(can_write, |el| {
+              el.text_color(theme.claude).on_click(
+                cx.listener(|this, _, window, cx| this.generate_commit_message(window, cx)),
+              )
+            })
           }),
       )
       .children(
@@ -1022,22 +1018,45 @@ impl ContextPanel {
       }
     }
 
-    panel = panel.child(
-      div()
-        .id("pr-refresh")
-        .h(px(24.0))
-        .px_2()
-        .flex()
-        .items_center()
-        .rounded_md()
-        .text_color(theme.text_dim)
-        .cursor_pointer()
-        .hover(|s| s.bg(theme.hover).text_color(theme.text))
-        .on_click(cx.listener(|this, _, _, cx| this.refresh_pull_request(cx)))
-        .child("Refresh"),
-    );
-
     panel.into_any_element()
+  }
+
+  fn render_pr_toolbar(&self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
+    let label = self
+      .pr
+      .as_ref()
+      .map(|review| format!("#{}", review.number))
+      .unwrap_or_else(|| "Pull request".to_string());
+
+    div()
+      .flex()
+      .flex_none()
+      .items_center()
+      .gap_2()
+      .h(px(32.0))
+      .px_2()
+      .border_b_1()
+      .border_color(theme.panel_border)
+      .child(
+        div()
+          .flex_1()
+          .min_w_0()
+          .overflow_hidden()
+          .whitespace_nowrap()
+          .text_xs()
+          .text_color(theme.text)
+          .child(label),
+      )
+      .when(self.pr_busy, |el| {
+        el.child(spinner("pr-busy", theme.text_dim))
+      })
+      .when(!self.pr_busy, |el| {
+        el.child(
+          icon_button_path("pr-refresh", "icons/refresh.svg", theme)
+            .on_click(cx.listener(|this, _, _, cx| this.refresh_pull_request(cx))),
+        )
+      })
+      .into_any_element()
   }
 
   fn run_primary_action(&mut self, action: NextAction, cx: &mut Context<Self>) {
@@ -1087,6 +1106,30 @@ impl ContextPanel {
   }
 }
 
+fn toolbar_button(
+  id: &'static str,
+  label: &'static str,
+  enabled: bool,
+  theme: &Theme,
+) -> gpui::Stateful<gpui::Div> {
+  div()
+    .id(id)
+    .h(px(24.0))
+    .px_2()
+    .flex()
+    .flex_none()
+    .items_center()
+    .rounded_md()
+    .text_xs()
+    .when(enabled, |el| {
+      el.text_color(theme.text_muted)
+        .cursor_pointer()
+        .hover(|s| s.bg(theme.hover).text_color(theme.text))
+    })
+    .when(!enabled, |el| el.text_color(theme.text_dim))
+    .child(label)
+}
+
 fn primary_action_label(action: NextAction) -> Option<&'static str> {
   match action {
     NextAction::InstallGh => None,
@@ -1097,7 +1140,7 @@ fn primary_action_label(action: NextAction) -> Option<&'static str> {
     NextAction::Sync => Some("Pull (fast-forward)"),
     NextAction::OpenExistingReview => Some("Open pull request"),
     NextAction::CreateReview => Some("Create pull request"),
-    NextAction::Retry => Some("Retry lookup"),
+    NextAction::Retry => None,
     NextAction::None => None,
   }
 }
@@ -1153,7 +1196,11 @@ impl Render for ContextPanel {
           }),
       );
 
-    let toolbar = (active == RightTab::Files).then(|| self.render_files_toolbar(&theme, cx));
+    let toolbar = match active {
+      RightTab::Files => Some(self.render_files_toolbar(&theme, cx)),
+      RightTab::Pr => Some(self.render_pr_toolbar(&theme, cx)),
+      RightTab::Git => None,
+    };
 
     let body = match self.active {
       RightTab::Files => self.render_files(&theme, cx),
