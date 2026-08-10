@@ -18,7 +18,12 @@ use helix_agents::launch_spec;
 use helix_models::{AgentStatus, SessionId, SessionKind};
 use helix_terminal::{SpawnOptions, TerminalBackend};
 use std::sync::Arc;
-use std::time::{Instant, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
+
+const DRAIN_LIMIT: usize = 512;
+const FLUSH_INTERVAL: Duration = Duration::from_millis(16);
+const ACTIVITY_EMIT_INTERVAL: Duration = Duration::from_secs(1);
+const DETECT_INTERVAL: Duration = Duration::from_secs(5);
 
 pub enum TerminalViewEvent {
   Activity,
@@ -35,6 +40,8 @@ pub struct TerminalView {
   pub started_at: SystemTime,
   backend: Option<Arc<TerminalBackend>>,
   claude_detected: bool,
+  flush_pending: bool,
+  last_activity_emit: Instant,
   spawn_error: Option<String>,
   focus_handle: FocusHandle,
   cols: u16,
@@ -122,10 +129,23 @@ impl TerminalView {
 
     cx.spawn(async move |this, cx| {
       while let Some(event) = rx.recv().await {
-        if this
-          .update(cx, |view, cx| view.handle_alac_event(event, cx))
-          .is_err()
-        {
+        let mut batch = vec![event];
+
+        while batch.len() < DRAIN_LIMIT {
+          let Ok(next) = rx.try_recv() else {
+            break;
+          };
+
+          batch.push(next);
+        }
+
+        let applied = this.update(cx, |view, cx| {
+          for event in batch {
+            view.handle_alac_event(event, cx);
+          }
+        });
+
+        if applied.is_err() {
           break;
         }
       }
@@ -150,6 +170,8 @@ impl TerminalView {
       started_at: SystemTime::now(),
       backend,
       claude_detected: false,
+      flush_pending: false,
+      last_activity_emit: Instant::now(),
       spawn_error,
       focus_handle: cx.focus_handle(),
       cols: 80,
@@ -185,10 +207,10 @@ impl TerminalView {
 
   fn spawn_claude_detector(cx: &mut Context<Self>) {
     cx.spawn(async move |this, cx| {
+      let mut probed: Option<i32> = None;
+
       loop {
-        cx.background_executor()
-          .timer(std::time::Duration::from_millis(1500))
-          .await;
+        cx.background_executor().timer(DETECT_INTERVAL).await;
 
         let Ok((alive, probe)) = this.update(cx, |view, _| {
           if view.exited.is_some() {
@@ -210,6 +232,12 @@ impl TerminalView {
         if !alive {
           break;
         }
+
+        if probe == probed {
+          continue;
+        }
+
+        probed = probe;
 
         let detected = match probe {
           None => false,
@@ -255,12 +283,39 @@ impl TerminalView {
     }
   }
 
+  fn schedule_flush(&mut self, cx: &mut Context<Self>) {
+    if self.flush_pending {
+      return;
+    }
+
+    self.flush_pending = true;
+
+    cx.spawn(async move |this, cx| {
+      cx.background_executor().timer(FLUSH_INTERVAL).await;
+
+      this
+        .update(cx, |view, cx| {
+          view.flush_pending = false;
+
+          if view.last_activity_emit.elapsed() >= ACTIVITY_EMIT_INTERVAL {
+            view.last_activity_emit = Instant::now();
+
+            cx.emit(TerminalViewEvent::Activity);
+          }
+
+          cx.notify();
+        })
+        .ok();
+    })
+    .detach();
+  }
+
   fn handle_alac_event(&mut self, event: AlacEvent, cx: &mut Context<Self>) {
     match event {
       AlacEvent::Wakeup => {
         self.last_activity = Instant::now();
-        cx.emit(TerminalViewEvent::Activity);
-        cx.notify();
+
+        self.schedule_flush(cx);
       }
       AlacEvent::Title(title) => {
         self.title = title.into();
