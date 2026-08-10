@@ -60,6 +60,14 @@ impl RightTab {
       RightTab::Pr => "PR",
     }
   }
+
+  fn icon(&self) -> Icon {
+    match self {
+      RightTab::Files => Icon::new(IconName::File),
+      RightTab::Git => Icon::default().path("icons/git-branch.svg"),
+      RightTab::Pr => Icon::default().path("icons/git-compare.svg"),
+    }
+  }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
@@ -1979,16 +1987,22 @@ impl Render for ContextPanel {
           .into_iter()
           .map(|tab| {
             let is_active = tab == active;
+            let label = tab.label();
             div()
-              .id(SharedString::from(format!("right-tab-{}", tab.label())))
-              .px_2()
-              .py_1()
+              .id(SharedString::from(format!("right-tab-{label}")))
+              .size(px(28.0))
+              .flex()
+              .flex_none()
+              .items_center()
+              .justify_center()
               .rounded_md()
-              .text_xs()
               .cursor_pointer()
               .when(is_active, |el| el.bg(theme.elevated).text_color(theme.text))
               .when(!is_active, |el| {
                 el.text_color(theme.text_dim).hover(|s| s.bg(theme.hover))
+              })
+              .tooltip(move |window, cx| {
+                gpui_component::tooltip::Tooltip::new(label).build(window, cx)
               })
               .on_click(cx.listener(move |this, _, _, cx| {
                 this.active = tab;
@@ -1997,7 +2011,7 @@ impl Render for ContextPanel {
                 }
                 cx.notify();
               }))
-              .child(tab.label())
+              .child(tab.icon().size_4())
           }),
       )
       .child(div().flex_1())

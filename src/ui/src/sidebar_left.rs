@@ -483,6 +483,7 @@ impl Render for ProjectPanel {
           .gap_2()
           .px_2()
           .h(px(24.0))
+          .rounded_md()
           .cursor_pointer()
           .when(!is_active_card, |el| el.hover(|s| s.bg(theme.hover)))
           .on_click(cx.listener(move |_, _, _, cx| {
