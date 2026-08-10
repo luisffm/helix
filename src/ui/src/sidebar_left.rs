@@ -308,6 +308,7 @@ impl Render for ProjectPanel {
             == active_canonical
         });
       let expanded = self.expanded.contains(&project_root);
+      let has_worktrees = !worktree_list.is_empty();
 
       let chevron_root = project_root.clone();
       let row_root = project_root.clone();
@@ -338,7 +339,7 @@ impl Render for ProjectPanel {
         .cursor_pointer()
         .hover(|s| s.bg(theme.hover))
         .on_click(cx.listener(move |this, _, _, cx| {
-          if is_active_project {
+          if has_worktrees {
             if !this.expanded.insert(row_root.clone()) {
               this.expanded.remove(&row_root);
             }
