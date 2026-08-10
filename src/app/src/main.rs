@@ -39,12 +39,6 @@ fn main() {
       let mut theme = Theme::dark();
       helix_ui::theme::apply_blur_level(&mut theme, &blur_level);
 
-      let installed_fonts = cx.text_system().all_font_names();
-
-      if let Some(mono) = helix_state::terminal_font::detect(&installed_fonts) {
-        theme.font_mono = mono.into();
-      }
-
       cx.set_global(theme);
       helix_ui::theme::sync_component_theme(cx);
       cx.bind_keys(helix_commands::default_bindings());

@@ -15,6 +15,25 @@ const KNOWN_NERD_FONTS: [&str; 12] = [
   "Symbols Nerd Font Mono",
 ];
 
+/// Reading four terminal config files and shelling out to `defaults` costs
+/// enough to be felt, and none of it depends on Helix's own settings, so the
+/// probe runs once per process.
+fn probed_fonts() -> &'static [String] {
+  static PROBED: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+
+  PROBED.get_or_init(|| {
+    let mut candidates: Vec<String> = Vec::new();
+
+    candidates.extend(ghostty_font());
+    candidates.extend(kitty_font());
+    candidates.extend(alacritty_font());
+    candidates.extend(wezterm_font());
+    candidates.extend(iterm2_font());
+
+    candidates
+  })
+}
+
 pub fn detect(available: &[String]) -> Option<String> {
   let mut candidates: Vec<String> = Vec::new();
 
@@ -22,11 +41,7 @@ pub fn detect(available: &[String]) -> Option<String> {
     candidates.push(configured);
   }
 
-  candidates.extend(ghostty_font());
-  candidates.extend(kitty_font());
-  candidates.extend(alacritty_font());
-  candidates.extend(wezterm_font());
-  candidates.extend(iterm2_font());
+  candidates.extend(probed_fonts().iter().cloned());
   candidates.extend(KNOWN_NERD_FONTS.iter().map(|s| s.to_string()));
 
   candidates
