@@ -623,6 +623,22 @@ impl Render for ProjectPanel {
             .into_any_element()
         };
 
+        let mut card = div()
+          .id(SharedString::from(format!("worktree-{project_ix}-{ix}")))
+          .flex()
+          .flex_col()
+          .ml(px(22.0))
+          .mr_2()
+          .py_0p5()
+          .rounded_lg()
+          .border_1()
+          .when(is_active_card, |el| {
+            el.border_color(theme.active).bg(theme.elevated)
+          })
+          .when(!is_active_card, |el| {
+            el.border_color(gpui::transparent_black())
+          });
+
         let has_agents = workspace.is_some();
         if has_agents {
           let workspace_entity = workspace.clone().unwrap();
@@ -716,29 +732,11 @@ impl Render for ProjectPanel {
             })
             .collect();
 
-          tree = tree.child(
-            div()
-              .id(SharedString::from(format!("worktree-{project_ix}-{ix}")))
-              .flex()
-              .flex_col()
-              .ml(px(22.0))
-              .mr_2()
-              .py_0p5()
-              .rounded_lg()
-              .border_1()
-              .when(is_active_card, |el| {
-                el.border_color(theme.active).bg(theme.elevated)
-              })
-              .when(!is_active_card, |el| {
-                el.border_color(gpui::transparent_black())
-              })
-              .child(branch_element)
-              .children(agent_rows)
-              .pb_0p5(),
-          );
+          card = card.child(branch_element).children(agent_rows).pb_0p5();
         } else {
-          tree = tree.child(div().ml(px(22.0)).mr_2().rounded_md().child(branch_element));
+          card = card.child(branch_element);
         }
+        tree = tree.child(card);
       }
 
       tree = tree.child(div().h(px(8.0)));
