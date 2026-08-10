@@ -240,6 +240,16 @@ impl ContextPanel {
     if self.generating_message {
       return;
     }
+    let staged = self
+      .git
+      .as_ref()
+      .map(|git| git.staged.len())
+      .unwrap_or_default();
+    if staged == 0 {
+      self.git_error = Some("stage something before writing a message".to_string());
+      cx.notify();
+      return;
+    }
     self.generating_message = true;
     self.git_error = None;
     cx.notify();
@@ -786,7 +796,8 @@ impl ContextPanel {
   ) -> AnyElement {
     let can_commit = !git.staged.is_empty();
     let can_write = can_commit && !self.generating_message;
-
+    // Always interactive: gating the handler on `can_write` left a dim glyph with
+    // no click, no tooltip and no way to learn why. It now explains itself.
     let write = div()
       .id("generate-message-button")
       .size(px(20.0))
@@ -795,20 +806,22 @@ impl ContextPanel {
       .items_center()
       .justify_center()
       .rounded_sm()
-      .when(self.generating_message, |el| el.text_color(theme.text_dim))
-      .when(!self.generating_message && !can_write, |el| {
-        el.text_color(theme.text_dim)
+      .cursor_pointer()
+      .text_color(if can_write {
+        theme.claude
+      } else {
+        theme.text_dim
       })
-      .when(can_write, |el| {
-        el.text_color(theme.claude)
-          .cursor_pointer()
-          .hover(|s| s.bg(theme.hover))
-          .tooltip(move |window, cx| {
-            gpui_component::tooltip::Tooltip::new("Write the message from the staged diff")
-              .build(window, cx)
-          })
-          .on_click(cx.listener(|this, _, window, cx| this.generate_commit_message(window, cx)))
+      .hover(|s| s.bg(theme.hover))
+      .tooltip(move |window, cx| {
+        gpui_component::tooltip::Tooltip::new(if can_write {
+          "Write the message from the staged diff"
+        } else {
+          "Stage something first"
+        })
+        .build(window, cx)
       })
+      .on_click(cx.listener(|this, _, window, cx| this.generate_commit_message(window, cx)))
       .child(if self.generating_message {
         "…"
       } else {
@@ -1342,6 +1355,14 @@ impl Render for ContextPanel {
               }))
               .child(tab.label())
           }),
+      )
+      .child(div().flex_1())
+      .child(
+        icon_button("close-right-sidebar", IconName::PanelRightClose, &theme).on_click(
+          |_, window, cx| {
+            window.dispatch_action(Box::new(helix_commands::ToggleRightSidebar), cx);
+          },
+        ),
       );
 
     let toolbar = match active {

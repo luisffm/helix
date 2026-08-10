@@ -253,6 +253,7 @@ impl HelixRoot {
     self.start_watcher(window, cx);
 
     let left_open = self.left_open;
+    let right_open = self.right_open;
     let workspace = match self.workspaces.get(&project.root) {
       Some(existing) => existing.clone(),
       None => {
@@ -265,6 +266,7 @@ impl HelixRoot {
     };
     workspace.update(cx, |workspace, cx| {
       workspace.left_sidebar_open = left_open;
+      workspace.right_sidebar_open = right_open;
       cx.notify();
     });
     self.workspace = workspace.clone();
@@ -1172,6 +1174,11 @@ impl Render for HelixRoot {
       }))
       .on_action(cx.listener(|this, _: &ToggleRightSidebar, _, cx| {
         this.right_open = !this.right_open;
+        let open = this.right_open;
+        this.workspace.update(cx, |workspace, cx| {
+          workspace.right_sidebar_open = open;
+          cx.notify();
+        });
         this.kick_animation(ResizingSide::Right, cx);
         cx.notify();
       }))

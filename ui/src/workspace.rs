@@ -128,6 +128,7 @@ pub struct Workspace {
   pub tabs: Vec<TabItem>,
   pub active: usize,
   pub left_sidebar_open: bool,
+  pub right_sidebar_open: bool,
   new_menu_open: bool,
   next_session: u64,
   terminal_count: usize,
@@ -143,6 +144,7 @@ impl Workspace {
       tabs: Vec::new(),
       active: 0,
       left_sidebar_open: true,
+      right_sidebar_open: false,
       new_menu_open: false,
       next_session: 0,
       terminal_count: 0,
@@ -572,11 +574,15 @@ impl Render for Workspace {
           }),
       )
       .child(div().flex_1())
-      .child(
-        icon_button("toggle-right", IconName::PanelRight, &theme).on_click(|_, window, cx| {
-          window.dispatch_action(Box::new(helix_commands::ToggleRightSidebar), cx);
-        }),
-      );
+      .when(!self.right_sidebar_open, |el| {
+        el.child(
+          icon_button("toggle-right", IconName::PanelRightOpen, &theme).on_click(
+            |_, window, cx| {
+              window.dispatch_action(Box::new(helix_commands::ToggleRightSidebar), cx);
+            },
+          ),
+        )
+      });
 
     let content: AnyElement = if let Some(tab) = self.tabs.get(self.active) {
       div()
