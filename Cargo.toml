@@ -1,0 +1,55 @@
+[workspace]
+resolver = "2"
+members = [
+    "app",
+    "ui",
+    "agents",
+    "buffer",
+    "git",
+    "github",
+    "worktree",
+    "terminal",
+    "filesystem",
+    "events",
+    "models",
+    "state",
+    "commands",
+]
+default-members = ["app"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+
+[workspace.dependencies]
+gpui = { version = "0.2", features = ["runtime_shaders"] }
+gpui-component = { version = "0.5", features = ["tree-sitter-languages"] }
+gpui-component-assets = "0.5"
+alacritty_terminal = "0.26"
+git2 = "0.21"
+notify = "8"
+similar = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["sync", "rt-multi-thread", "time", "macros"] }
+anyhow = "1"
+
+helix-buffer = { path = "buffer" }
+helix-models = { path = "models" }
+helix-events = { path = "events" }
+helix-git = { path = "git" }
+helix-github = { path = "github" }
+helix-worktree = { path = "worktree" }
+helix-terminal = { path = "terminal" }
+helix-filesystem = { path = "filesystem" }
+helix-agents = { path = "agents" }
+helix-state = { path = "state" }
+helix-commands = { path = "commands" }
+helix-ui = { path = "ui" }
+
+[profile.dev]
+opt-level = 1
+incremental = false
+
+[profile.dev.package."*"]
+opt-level = 2

@@ -1,0 +1,21 @@
+pub mod add_dialog;
+pub mod ansi_colors;
+pub mod components;
+pub mod diff_view;
+pub mod editor_view;
+pub mod file_icons;
+pub mod keymap;
+pub mod macos_blur;
+pub mod resources;
+pub mod root;
+pub mod search;
+pub mod settings_page;
+pub mod sidebar_left;
+pub mod sidebar_right;
+pub mod terminal_view;
+pub mod theme;
+pub mod workspace;
+pub mod worktree_dialog;
+
+pub use root::HelixRoot;
+pub use theme::Theme;

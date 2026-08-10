@@ -1,0 +1,9 @@
+[package]
+name = "helix-worktree"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+git2.workspace = true
+anyhow.workspace = true
+helix-models.workspace = true

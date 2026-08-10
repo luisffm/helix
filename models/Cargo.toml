@@ -1,0 +1,6 @@
+[package]
+name = "helix-models"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]

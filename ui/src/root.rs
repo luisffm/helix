@@ -1,0 +1,1306 @@
+use crate::add_dialog::{AddDialog, AddDialogEvent};
+use crate::components::HEADER_HEIGHT;
+use crate::resources::{UsageSnapshot, UsageTargets, format_rss};
+use crate::search::{SearchDialog, SearchEvent, SearchItem, SearchTarget};
+use crate::settings_page::{Section, SettingsEvent, SettingsPage};
+use crate::sidebar_left::{ProjectPanel, ProjectPanelEvent, WorktreeRow};
+use crate::sidebar_right::{ContextPanel, ContextPanelEvent};
+use crate::theme::Theme;
+use crate::workspace::Workspace;
+use crate::worktree_dialog::{WorktreeEditDialog, WorktreeEditEvent};
+use gpui::{
+  Context, Entity, Focusable, IntoElement, ParentElement, Render, Window, div, prelude::*, px,
+};
+use helix_commands::{
+  CloseActiveTab, CopyPathAction, DeleteWorktreeAction, EditWorktreeAction, NewClaudeSession,
+  NewTerminal, NextTab, OpenAppSettings, OpenInFinderAction, OpenInZedAction,
+  OpenProjectSettingsAction, OpenSearch, PrevTab, RemoveProjectAction, RemoveWorktreeAction,
+  ToggleLeftSidebar, ToggleRightSidebar,
+};
+use helix_filesystem::FsWatcher;
+use helix_models::{ProjectInfo, SessionKind};
+use std::collections::HashMap;
+use std::path::PathBuf;
+
+#[derive(Clone, Copy, PartialEq)]
+enum ResizingSide {
+  Left,
+  Right,
+}
+
+pub struct HelixRoot {
+  project: ProjectInfo,
+  left_open: bool,
+  right_open: bool,
+  left_width: f32,
+  right_width: f32,
+  left_anim: f32,
+  right_anim: f32,
+  left_animating: bool,
+  right_animating: bool,
+  resizing: Option<ResizingSide>,
+  git: Option<helix_models::GitSnapshot>,
+  worktrees: Vec<WorktreeRow>,
+  workspace: Entity<Workspace>,
+  workspaces: HashMap<PathBuf, Entity<Workspace>>,
+  project_panel: Entity<ProjectPanel>,
+  context_panel: Entity<ContextPanel>,
+  search: Option<Entity<SearchDialog>>,
+  add_dialog: Option<Entity<AddDialog>>,
+  settings: Option<Entity<SettingsPage>>,
+  worktree_edit: Option<Entity<WorktreeEditDialog>>,
+  resources: UsageSnapshot,
+  resources_history: HashMap<PathBuf, Vec<f32>>,
+  resources_open: bool,
+  resources_expanded: std::collections::HashSet<PathBuf>,
+  _watcher: Option<FsWatcher>,
+}
+
+impl HelixRoot {
+  pub fn new(project: ProjectInfo, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    let workspace = cx.new(|cx| Workspace::new(project.root.clone(), window, cx));
+    let project_panel = cx.new(|cx| ProjectPanel::new(project.clone(), cx));
+    let context_panel = cx.new(|cx| ContextPanel::new(project.root.clone(), window, cx));
+
+    cx.subscribe_in(&context_panel, window, |this, _, event, window, cx| {
+      match event {
+        ContextPanelEvent::OpenFile { path, preview } => {
+          let path = path.clone();
+          let preview = *preview;
+          this.workspace.update(cx, |workspace, cx| {
+            workspace.open_file(path, preview, window, cx);
+          });
+        }
+        ContextPanelEvent::OpenDiff { relative, base } => {
+          let root = this.project.root.clone();
+          let relative = relative.clone();
+          let base = base.clone();
+          this.workspace.update(cx, |workspace, cx| {
+            workspace.open_diff(root, relative, base, window, cx);
+          });
+        }
+        ContextPanelEvent::GitChanged => {
+          this.refresh_git(cx);
+        }
+      }
+      cx.notify();
+    })
+    .detach();
+
+    cx.subscribe_in(
+      &project_panel,
+      window,
+      |this, _, event, window, cx| match event {
+        ProjectPanelEvent::OpenProject(path) => {
+          this.switch_project(path.clone(), window, cx);
+        }
+        ProjectPanelEvent::RequestAddProject => {
+          this.pick_workspace(window, cx);
+        }
+        ProjectPanelEvent::RequestAddWorktree => {
+          this.open_add_dialog(false, window, cx);
+        }
+        ProjectPanelEvent::OpenSettings(target) => {
+          this.open_settings(target.clone(), window, cx);
+        }
+      },
+    )
+    .detach();
+
+    let mut workspaces = HashMap::new();
+    workspaces.insert(project.root.clone(), workspace.clone());
+
+    let mut root = Self {
+      project,
+      left_open: true,
+      left_anim: 1.0,
+      right_anim: 0.0,
+      left_animating: false,
+      right_animating: false,
+      right_open: false,
+      left_width: 280.0,
+      right_width: 320.0,
+      resizing: None,
+      git: None,
+      worktrees: Vec::new(),
+      workspace,
+      workspaces,
+      project_panel,
+      context_panel,
+      search: None,
+      add_dialog: None,
+      settings: None,
+      worktree_edit: None,
+      resources: UsageSnapshot::default(),
+      resources_history: HashMap::new(),
+      resources_open: false,
+      resources_expanded: std::collections::HashSet::new(),
+      _watcher: None,
+    };
+    let workspaces = root.workspaces.clone();
+    root.project_panel.update(cx, |panel, cx| {
+      panel.set_workspaces(workspaces, cx);
+    });
+    root.start_watcher(window, cx);
+    root.refresh_git(cx);
+    root.start_resource_monitor(cx);
+    root
+  }
+
+  fn start_resource_monitor(&mut self, cx: &mut Context<Self>) {
+    cx.spawn(async move |this, cx| {
+      loop {
+        cx.background_executor()
+          .timer(std::time::Duration::from_millis(2500))
+          .await;
+        let Ok(targets) = this.update(cx, |root, cx| root.usage_targets(cx)) else {
+          break;
+        };
+        let snapshot = cx
+          .background_executor()
+          .spawn(async move { crate::resources::sample(targets) })
+          .await;
+        if this
+          .update(cx, |root, cx| {
+            for project in &snapshot.projects {
+              let history = root
+                .resources_history
+                .entry(project.root.clone())
+                .or_default();
+              history.push(project.rss_mb);
+              if history.len() > 40 {
+                history.remove(0);
+              }
+            }
+            root.resources = snapshot.clone();
+            cx.notify();
+          })
+          .is_err()
+        {
+          break;
+        }
+      }
+    })
+    .detach();
+  }
+
+  fn usage_targets(&self, cx: &gpui::App) -> UsageTargets {
+    self
+      .workspaces
+      .iter()
+      .map(|(root, workspace)| {
+        let name = helix_state::config::project_for(root)
+          .and_then(|p| p.display_name)
+          .unwrap_or_else(|| {
+            root
+              .file_name()
+              .map(|n| n.to_string_lossy().to_string())
+              .unwrap_or_default()
+          });
+        let sessions = workspace
+          .read(cx)
+          .terminals()
+          .filter_map(|(_, view)| {
+            let view = view.read(cx);
+            view.shell_pid().map(|pid| {
+              (
+                view
+                  .title
+                  .trim_start_matches(|c: char| "✳✻✶✽*⁕ ".contains(c))
+                  .to_string(),
+                view.agent_kind(),
+                pid,
+              )
+            })
+          })
+          .collect();
+        (name, root.clone(), sessions)
+      })
+      .collect()
+  }
+
+  fn start_watcher(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Vec<PathBuf>>();
+    self._watcher = helix_filesystem::watch(&self.project.root, tx).ok();
+    let this = cx.entity().downgrade();
+    window
+      .spawn(cx, async move |cx| {
+        while let Some(batch) = rx.recv().await {
+          let updated = this.update_in(cx, |root, window, cx| {
+            root.refresh_git(cx);
+            root.workspace.update(cx, |workspace, cx| {
+              workspace.refresh_open_files(&batch, window, cx);
+            });
+          });
+          if updated.is_err() {
+            break;
+          }
+        }
+      })
+      .detach();
+  }
+
+  fn switch_project(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+    let Ok((project, _worktree)) = helix_worktree::open_project(&path) else {
+      return;
+    };
+    if project.root == self.project.root {
+      return;
+    }
+    self.project = project.clone();
+    self.git = None;
+    self.worktrees = Vec::new();
+    self.start_watcher(window, cx);
+
+    let left_open = self.left_open;
+    let workspace = match self.workspaces.get(&project.root) {
+      Some(existing) => existing.clone(),
+      None => {
+        let created = cx.new(|cx| Workspace::new(project.root.clone(), window, cx));
+        self
+          .workspaces
+          .insert(project.root.clone(), created.clone());
+        created
+      }
+    };
+    workspace.update(cx, |workspace, cx| {
+      workspace.left_sidebar_open = left_open;
+      cx.notify();
+    });
+    self.workspace = workspace.clone();
+
+    self.context_panel.update(cx, |panel, cx| {
+      panel.set_root(project.root.clone(), cx);
+    });
+    let workspaces = self.workspaces.clone();
+    self.project_panel.update(cx, |panel, cx| {
+      panel.set_workspaces(workspaces, cx);
+      panel.set_active_project(project.clone(), cx);
+    });
+    window.set_window_title(&format!("Helix — {}", project.name));
+    self.refresh_git(cx);
+    cx.notify();
+  }
+
+  fn refresh_git(&mut self, cx: &mut Context<Self>) {
+    let root = self.project.root.clone();
+    let task = cx.background_executor().spawn(async move {
+      let snapshot = helix_git::snapshot(&root).ok();
+      let mut all_worktrees: HashMap<PathBuf, Vec<WorktreeRow>> = HashMap::new();
+      let config = helix_state::config::load();
+      for project in &config.projects {
+        if !project.path.is_dir() {
+          continue;
+        }
+        let mut entries: Vec<WorktreeRow> = Vec::new();
+        if let Some(entry) = helix_worktree::describe_worktree(&project.path) {
+          entries.push(WorktreeRow {
+            entry,
+            display_name: None,
+            issue: None,
+            pr: None,
+          });
+        }
+        for wt in &project.worktrees {
+          if let Some(entry) = helix_worktree::describe_worktree(&wt.path) {
+            if !entries.iter().any(|e| e.entry.path == entry.path) {
+              entries.push(WorktreeRow {
+                entry,
+                display_name: wt.display_name.clone(),
+                issue: wt.issue.clone(),
+                pr: wt.pr.clone(),
+              });
+            }
+          }
+        }
+        all_worktrees.insert(project.path.clone(), entries);
+      }
+      let owner = helix_worktree::primary_root(&root).unwrap_or(root);
+      (snapshot, all_worktrees, owner)
+    });
+    cx.spawn(async move |this, cx| {
+      let (snapshot, all_worktrees, owner) = task.await;
+      this
+        .update(cx, |root_view, cx| {
+          root_view.git = snapshot.clone();
+          root_view.worktrees = all_worktrees.get(&owner).cloned().unwrap_or_default();
+          root_view.project_panel.update(cx, |panel, cx| {
+            panel.set_state(snapshot.clone(), all_worktrees, cx);
+          });
+          root_view.context_panel.update(cx, |panel, cx| {
+            panel.set_git(snapshot, cx);
+            panel.refresh_files(cx);
+          });
+          cx.notify();
+        })
+        .ok();
+    })
+    .detach();
+  }
+
+  fn open_worktree_edit(
+    &mut self,
+    owner: PathBuf,
+    path: PathBuf,
+    window: &mut Window,
+    cx: &mut Context<Self>,
+  ) {
+    let meta = helix_state::config::worktree_config_for(&owner, &path);
+    let branch = helix_worktree::describe_worktree(&path)
+      .map(|entry| entry.branch)
+      .unwrap_or_else(|| {
+        path
+          .file_name()
+          .map(|n| n.to_string_lossy().to_string())
+          .unwrap_or_default()
+      });
+    let (display_name, issue, pr) = meta
+      .map(|m| {
+        (
+          m.display_name.unwrap_or_default(),
+          m.issue.unwrap_or_default(),
+          m.pr.unwrap_or_default(),
+        )
+      })
+      .unwrap_or_default();
+    let dialog = cx.new(|cx| WorktreeEditDialog::new(branch, display_name, issue, pr, window, cx));
+    cx.subscribe_in(
+      &dialog,
+      window,
+      move |this, _, event, _window, cx| match event {
+        WorktreeEditEvent::Close => {
+          this.worktree_edit = None;
+          cx.notify();
+        }
+        WorktreeEditEvent::Save {
+          display_name,
+          issue,
+          pr,
+        } => {
+          helix_state::config::set_worktree_meta(
+            &owner,
+            &path,
+            Some(display_name.clone()),
+            Some(issue.clone()),
+            Some(pr.clone()),
+          );
+          this.worktree_edit = None;
+          this.refresh_git(cx);
+          cx.notify();
+        }
+      },
+    )
+    .detach();
+    self.worktree_edit = Some(dialog);
+    cx.notify();
+  }
+
+  fn delete_worktree(
+    &mut self,
+    owner: PathBuf,
+    path: PathBuf,
+    window: &mut Window,
+    cx: &mut Context<Self>,
+  ) {
+    if path == self.project.root {
+      self.switch_project(owner.clone(), window, cx);
+    }
+    let task = cx.background_executor().spawn({
+      let owner = owner.clone();
+      let path = path.clone();
+      async move {
+        let result = helix_worktree::delete_worktree(&owner, &path);
+        helix_state::config::remove_worktree(&owner, &path);
+        result
+      }
+    });
+    cx.spawn(async move |this, cx| {
+      if let Err(err) = task.await {
+        eprintln!("helix: delete worktree failed: {err}");
+      }
+      this
+        .update(cx, |root, cx| {
+          root.refresh_git(cx);
+        })
+        .ok();
+    })
+    .detach();
+  }
+
+  fn render_resource_panel(&mut self, cx: &mut Context<Self>) -> gpui::AnyElement {
+    let theme = Theme::of(cx).clone();
+    let snapshot = self.resources.clone();
+
+    let row_text = |value: String, color: gpui::Hsla, width: f32| {
+      div()
+        .w(px(width))
+        .flex_none()
+        .text_xs()
+        .text_color(color)
+        .flex()
+        .justify_end()
+        .child(value)
+    };
+
+    let mut list = div()
+      .id("resource-list")
+      .flex_1()
+      .min_h_0()
+      .overflow_y_scroll()
+      .flex()
+      .flex_col()
+      .py_1();
+
+    for project in &snapshot.projects {
+      let expanded = self.resources_expanded.contains(&project.root);
+      let toggle_root = project.root.clone();
+      let history = self
+        .resources_history
+        .get(&project.root)
+        .cloned()
+        .unwrap_or_default();
+      list = list.child(
+        div()
+          .id(gpui::SharedString::from(format!(
+            "res-{}",
+            project.root.display()
+          )))
+          .flex()
+          .items_center()
+          .gap_2()
+          .mx_2()
+          .px_2()
+          .h(px(28.0))
+          .rounded_md()
+          .cursor_pointer()
+          .hover(|s| s.bg(theme.hover))
+          .on_click(cx.listener(move |this, _, _, cx| {
+            if !this.resources_expanded.insert(toggle_root.clone()) {
+              this.resources_expanded.remove(&toggle_root);
+            }
+            cx.notify();
+          }))
+          .child(
+            div().flex_none().text_color(theme.text_dim).child(
+              gpui_component::Icon::new(if expanded {
+                gpui_component::IconName::ChevronDown
+              } else {
+                gpui_component::IconName::ChevronRight
+              })
+              .size_3(),
+            ),
+          )
+          .child(
+            div()
+              .flex_1()
+              .text_sm()
+              .font_weight(gpui::FontWeight::SEMIBOLD)
+              .text_color(theme.text)
+              .overflow_hidden()
+              .whitespace_nowrap()
+              .child(project.name.clone()),
+          )
+          .child(crate::components::sparkline(&history, theme.text_dim))
+          .child(row_text(
+            format!("{:.1}%", project.cpu),
+            theme.text_muted,
+            48.0,
+          ))
+          .child(row_text(format_rss(project.rss_mb), theme.text, 64.0)),
+      );
+      if expanded {
+        for (ix, session) in project.sessions.iter().enumerate() {
+          let color = match session.kind {
+            helix_models::SessionKind::ClaudeCode => theme.claude,
+            helix_models::SessionKind::Terminal => theme.green,
+          };
+          list = list.child(
+            div()
+              .id(gpui::SharedString::from(format!(
+                "res-s-{}-{ix}",
+                project.root.display()
+              )))
+              .flex()
+              .items_center()
+              .gap_2()
+              .ml(px(28.0))
+              .mr_2()
+              .px_2()
+              .h(px(24.0))
+              .rounded_md()
+              .child(crate::components::status_dot(color))
+              .child(
+                div()
+                  .flex_1()
+                  .text_xs()
+                  .text_color(theme.text_muted)
+                  .overflow_hidden()
+                  .whitespace_nowrap()
+                  .child(session.title.clone()),
+              )
+              .child(row_text(
+                format!("{:.1}%", session.cpu),
+                theme.text_dim,
+                48.0,
+              ))
+              .child(row_text(format_rss(session.rss_mb), theme.text_muted, 64.0)),
+          );
+        }
+      }
+    }
+
+    list = list.child(
+      div()
+        .flex()
+        .items_center()
+        .gap_2()
+        .mx_2()
+        .px_2()
+        .h(px(28.0))
+        .child(div().w(px(12.0)).flex_none())
+        .child(
+          div()
+            .flex_1()
+            .text_sm()
+            .text_color(theme.text_muted)
+            .child("Helix"),
+        )
+        .child(row_text(
+          format!("{:.1}%", snapshot.app_cpu),
+          theme.text_muted,
+          48.0,
+        ))
+        .child(row_text(format_rss(snapshot.app_rss_mb), theme.text, 64.0)),
+    );
+
+    div()
+      .id("resource-panel")
+      .occlude()
+      .absolute()
+      .right(px(12.0))
+      .bottom(px(32.0))
+      .w(px(380.0))
+      .max_h(px(420.0))
+      .rounded_xl()
+      .border_1()
+      .border_color(theme.panel_border)
+      .bg(crate::theme::ca(0x161616f8))
+      .shadow_lg()
+      .flex()
+      .flex_col()
+      .overflow_hidden()
+      .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+        this.resources_open = false;
+        cx.notify();
+      }))
+      .child(
+        div()
+          .flex()
+          .items_center()
+          .gap_2()
+          .px_3()
+          .pt_3()
+          .pb_2()
+          .border_b_1()
+          .border_color(theme.panel_border)
+          .child(
+            div()
+              .flex_none()
+              .text_color(theme.text_muted)
+              .child(gpui_component::Icon::new(gpui_component::IconName::ChartPie).size_3p5()),
+          )
+          .child(
+            div()
+              .flex_1()
+              .text_sm()
+              .font_weight(gpui::FontWeight::SEMIBOLD)
+              .text_color(theme.text)
+              .child("Resource Manager"),
+          )
+          .child(div().text_xs().text_color(theme.text_dim).child(format!(
+            "{:.1}% · {} Σ RSS",
+            snapshot.total_cpu,
+            format_rss(snapshot.total_rss_mb)
+          ))),
+      )
+      .child(
+        div()
+          .flex()
+          .items_center()
+          .gap_2()
+          .mx_2()
+          .mt_1()
+          .px_2()
+          .h(px(20.0))
+          .child(
+            div()
+              .flex_1()
+              .text_xs()
+              .text_color(theme.text_dim)
+              .child("Name"),
+          )
+          .child(row_text("CPU".to_string(), theme.text_dim, 48.0))
+          .child(row_text("RSS".to_string(), theme.text_dim, 64.0)),
+      )
+      .child(list)
+      .into_any_element()
+  }
+
+  fn kick_animation(&mut self, side: ResizingSide, cx: &mut Context<Self>) {
+    let already = match side {
+      ResizingSide::Left => std::mem::replace(&mut self.left_animating, true),
+      ResizingSide::Right => std::mem::replace(&mut self.right_animating, true),
+    };
+    if already {
+      return;
+    }
+    cx.spawn(async move |this, cx| {
+      loop {
+        cx.background_executor()
+          .timer(std::time::Duration::from_millis(14))
+          .await;
+        let done = this.update(cx, |root, cx| {
+          let (anim, target) = match side {
+            ResizingSide::Left => (
+              &mut root.left_anim,
+              if root.left_open { 1.0f32 } else { 0.0 },
+            ),
+            ResizingSide::Right => (
+              &mut root.right_anim,
+              if root.right_open { 1.0f32 } else { 0.0 },
+            ),
+          };
+          let step = 0.09;
+          if (*anim - target).abs() <= step {
+            *anim = target;
+          } else if *anim < target {
+            *anim += step;
+          } else {
+            *anim -= step;
+          }
+          cx.notify();
+          *anim == target
+        });
+        match done {
+          Ok(true) => {
+            this
+              .update(cx, |root, _| match side {
+                ResizingSide::Left => root.left_animating = false,
+                ResizingSide::Right => root.right_animating = false,
+              })
+              .ok();
+            break;
+          }
+          Ok(false) => {}
+          Err(_) => break,
+        }
+      }
+    })
+    .detach();
+  }
+
+  fn open_settings(
+    &mut self,
+    target: Option<PathBuf>,
+    window: &mut Window,
+    cx: &mut Context<Self>,
+  ) {
+    let (section, root) = match target {
+      Some(root) => (Section::Project, root),
+      None => (Section::General, self.project.root.clone()),
+    };
+    let page = cx.new(|cx| SettingsPage::new(section, root, window, cx));
+    cx.subscribe_in(&page, window, |this, _, event, window, cx| match event {
+      SettingsEvent::Close => {
+        this.settings = None;
+        cx.notify();
+      }
+      SettingsEvent::Changed => {
+        this.apply_settings_change(window, cx);
+      }
+    })
+    .detach();
+    window.focus(&page.read(cx).focus_handle(cx));
+    self.settings = Some(page);
+    cx.notify();
+  }
+
+  fn apply_settings_change(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    let config = helix_state::config::load();
+    let level = config
+      .blur_level
+      .clone()
+      .unwrap_or_else(|| "medium".to_string());
+    let mut theme = Theme::dark();
+    crate::theme::apply_blur_level(&mut theme, &level);
+    let fonts = cx.text_system().all_font_names();
+    if let Some(mono) = helix_state::terminal_font::detect(&fonts) {
+      theme.font_mono = mono.into();
+    }
+    cx.set_global(theme);
+    crate::theme::sync_component_theme(cx);
+    window.set_background_appearance(crate::theme::appearance_for_level(&level));
+    crate::macos_blur::apply_blur_material();
+    let project = self.project.clone();
+    self.project_panel.update(cx, |panel, cx| {
+      panel.set_active_project(project, cx);
+    });
+    cx.refresh_windows();
+  }
+
+  fn open_add_dialog(
+    &mut self,
+    include_workspace: bool,
+    window: &mut Window,
+    cx: &mut Context<Self>,
+  ) {
+    let can_worktree = self.git.is_some();
+    let owner =
+      helix_worktree::primary_root(&self.project.root).unwrap_or_else(|| self.project.root.clone());
+    let listed: Vec<PathBuf> = self
+      .worktrees
+      .iter()
+      .map(|wt| wt.entry.path.clone())
+      .collect();
+    let existing: Vec<(String, PathBuf)> = helix_worktree::list_worktrees(&owner)
+      .into_iter()
+      .filter(|wt| {
+        let canonical = wt.path.canonicalize().unwrap_or_else(|_| wt.path.clone());
+        !listed.contains(&canonical) && !wt.is_primary
+      })
+      .map(|wt| (wt.branch, wt.path))
+      .collect();
+    let dialog = cx.new(|cx| {
+      AddDialog::new(
+        self.project.name.clone(),
+        can_worktree,
+        include_workspace,
+        existing,
+        cx,
+      )
+    });
+    cx.subscribe_in(&dialog, window, |this, _, event, window, cx| match event {
+      AddDialogEvent::Dismissed => {
+        this.add_dialog = None;
+        cx.notify();
+      }
+      AddDialogEvent::ChooseWorkspace => {
+        this.add_dialog = None;
+        this.pick_workspace(window, cx);
+        cx.notify();
+      }
+      AddDialogEvent::CreateWorktree(name) => {
+        this.add_dialog = None;
+        this.create_worktree(name.clone(), window, cx);
+        cx.notify();
+      }
+      AddDialogEvent::AddExistingWorktree(path) => {
+        this.add_dialog = None;
+        let owner = helix_worktree::primary_root(path).unwrap_or_else(|| path.clone());
+        helix_state::config::add_worktree(&owner, path);
+        this.switch_project(path.clone(), window, cx);
+        this.refresh_git(cx);
+        cx.notify();
+      }
+    })
+    .detach();
+    window.focus(&dialog.read(cx).focus_handle(cx));
+    self.add_dialog = Some(dialog);
+    cx.notify();
+  }
+
+  fn pick_workspace(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    let receiver = cx.prompt_for_paths(gpui::PathPromptOptions {
+      files: false,
+      directories: true,
+      multiple: false,
+      prompt: Some("Add Workspace".into()),
+    });
+    cx.spawn_in(window, async move |this, cx| {
+      if let Ok(Ok(Some(paths))) = receiver.await {
+        if let Some(path) = paths.into_iter().next() {
+          helix_state::config::ensure_project(&path);
+          this
+            .update_in(cx, |root, window, cx| {
+              root.switch_project(path, window, cx);
+            })
+            .ok();
+        }
+      }
+    })
+    .detach();
+  }
+
+  fn create_worktree(&mut self, name: String, window: &mut Window, cx: &mut Context<Self>) {
+    let root = self.project.root.clone();
+    let task = cx.background_executor().spawn(async move {
+      let owner = helix_worktree::primary_root(&root).unwrap_or_else(|| root.clone());
+      helix_worktree::create_worktree(&root, &name).map(|dest| {
+        helix_state::config::add_worktree(&owner, &dest);
+        dest
+      })
+    });
+    cx.spawn_in(window, async move |this, cx| match task.await {
+      Ok(dest) => {
+        this
+          .update_in(cx, |root, window, cx| {
+            root.switch_project(dest, window, cx);
+            root.refresh_git(cx);
+          })
+          .ok();
+      }
+      Err(err) => {
+        eprintln!("helix: create worktree failed: {err}");
+        this
+          .update_in(cx, |root, _, cx| {
+            root.refresh_git(cx);
+          })
+          .ok();
+      }
+    })
+    .detach();
+  }
+
+  fn open_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    let mut items = Vec::new();
+    for row in &self.worktrees {
+      items.push(SearchItem {
+        label: row
+          .display_name
+          .clone()
+          .unwrap_or_else(|| row.entry.branch.clone()),
+        detail: row.entry.path.display().to_string(),
+        badge: self.project.name.clone(),
+        target: SearchTarget::Worktree(row.entry.path.clone()),
+      });
+    }
+    for (ix, tab) in self.workspace.read(cx).tabs.iter().enumerate() {
+      items.push(SearchItem {
+        label: tab.title(cx),
+        detail: tab.detail(cx),
+        badge: self.project.name.clone(),
+        target: SearchTarget::Tab(ix),
+      });
+    }
+    for project in helix_state::config::load().projects {
+      if project.path.is_dir() {
+        let name = project
+          .path
+          .file_name()
+          .map(|n| n.to_string_lossy().to_string())
+          .unwrap_or_default();
+        items.push(SearchItem {
+          label: name,
+          detail: project.path.display().to_string(),
+          badge: "project".to_string(),
+          target: SearchTarget::Project(project.path.clone()),
+        });
+      }
+    }
+    items.push(SearchItem {
+      label: "New Terminal".to_string(),
+      detail: "⌘T".to_string(),
+      badge: "action".to_string(),
+      target: SearchTarget::NewTerminal,
+    });
+    items.push(SearchItem {
+      label: "New Claude Session".to_string(),
+      detail: "⌘⇧T".to_string(),
+      badge: "action".to_string(),
+      target: SearchTarget::NewClaude,
+    });
+
+    let dialog = cx.new(|cx| SearchDialog::new(items, cx));
+    cx.subscribe_in(&dialog, window, |this, _, event, window, cx| match event {
+      SearchEvent::Dismissed => {
+        this.search = None;
+        cx.notify();
+      }
+      SearchEvent::Selected(target) => {
+        this.search = None;
+        this.activate_target(target.clone(), window, cx);
+        cx.notify();
+      }
+    })
+    .detach();
+    window.focus(&dialog.read(cx).focus_handle(cx));
+    self.search = Some(dialog);
+    cx.notify();
+  }
+
+  fn activate_target(&mut self, target: SearchTarget, window: &mut Window, cx: &mut Context<Self>) {
+    match target {
+      SearchTarget::Tab(ix) => {
+        self.workspace.update(cx, |workspace, cx| {
+          workspace.activate(ix, window, cx);
+        });
+      }
+      SearchTarget::Worktree(path) | SearchTarget::Project(path) => {
+        self.switch_project(path, window, cx);
+      }
+      SearchTarget::NewTerminal => {
+        self.workspace.update(cx, |workspace, cx| {
+          workspace.open_tab(SessionKind::Terminal, window, cx);
+        });
+      }
+      SearchTarget::NewClaude => {
+        self.workspace.update(cx, |workspace, cx| {
+          workspace.open_tab(SessionKind::ClaudeCode, window, cx);
+        });
+      }
+    }
+  }
+}
+
+impl Render for HelixRoot {
+  fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    let theme = Theme::of(cx).clone();
+
+    let branch = self
+      .git
+      .as_ref()
+      .map(|git| git.branch.clone())
+      .unwrap_or_else(|| "no git".to_string());
+    let dirty = self.git.as_ref().map(|git| git.dirty_count()).unwrap_or(0);
+    let sessions = self.workspace.read(cx).tabs.len();
+    let status_bar = div()
+      .flex()
+      .flex_none()
+      .items_center()
+      .h(px(26.0))
+      .px_3()
+      .gap_3()
+      .border_t_1()
+      .border_color(theme.panel_border)
+      .text_xs()
+      .text_color(theme.text_dim)
+      .child(
+        div()
+          .flex()
+          .items_center()
+          .gap_1()
+          .child(crate::components::git_branch_icon(theme.text_dim))
+          .child(branch),
+      )
+      .child(if dirty == 0 {
+        "clean".to_string()
+      } else {
+        format!("● {dirty} changes")
+      })
+      .child(div().flex_1())
+      .child(format!(
+        "{sessions} session{}",
+        if sessions == 1 { "" } else { "s" }
+      ))
+      .child(
+        div()
+          .id("resource-manager-toggle")
+          .flex()
+          .items_center()
+          .gap_1()
+          .px_1p5()
+          .rounded_sm()
+          .cursor_pointer()
+          .hover(|s| s.bg(theme.hover))
+          .when(self.resources_open, |el| el.bg(theme.hover))
+          .on_click(cx.listener(|this, _, _, cx| {
+            this.resources_open = !this.resources_open;
+            cx.notify();
+          }))
+          .child(
+            div()
+              .flex_none()
+              .child(gpui_component::Icon::new(gpui_component::IconName::ChartPie).size_3()),
+          )
+          .child(format!(
+            "{} · {:.1}%",
+            format_rss(self.resources.total_rss_mb),
+            self.resources.total_cpu
+          )),
+      )
+      .child("Helix 0.1");
+
+    let resize_handle = |id: &'static str, side: ResizingSide, cx: &mut Context<Self>| {
+      div()
+        .id(id)
+        .w(px(5.0))
+        .h_full()
+        .flex_none()
+        .flex()
+        .flex_col()
+        .cursor_col_resize()
+        .hover(|s| s.bg(theme.active))
+        .when(self.resizing == Some(side), |el| el.bg(theme.active))
+        .on_mouse_down(
+          gpui::MouseButton::Left,
+          cx.listener(move |this, _, _, cx| {
+            this.resizing = Some(side);
+            cx.notify();
+          }),
+        )
+        .child(
+          div()
+            .h(px(HEADER_HEIGHT))
+            .w_full()
+            .flex_none()
+            .border_b_1()
+            .border_color(theme.panel_border),
+        )
+    };
+
+    let ease = |t: f32| t * t * (3.0 - 2.0 * t);
+
+    let mut body = div().flex().flex_1().min_h_0();
+    if self.left_open || self.left_anim > 0.001 {
+      body = body.child(
+        div()
+          .w(px(self.left_width * ease(self.left_anim)))
+          .flex_none()
+          .h_full()
+          .overflow_hidden()
+          .child(
+            div()
+              .w(px(self.left_width))
+              .flex_none()
+              .h_full()
+              .child(self.project_panel.clone()),
+          ),
+      );
+      if self.left_open && !self.left_animating {
+        body = body.child(resize_handle("resize-left", ResizingSide::Left, cx));
+      }
+    }
+    let center: gpui::AnyElement = if let Some(settings) = &self.settings {
+      settings.clone().into_any_element()
+    } else {
+      self.workspace.clone().into_any_element()
+    };
+    body = body.child(div().flex_1().min_w_0().h_full().child(center));
+    if self.right_open || self.right_anim > 0.001 {
+      if self.right_open && !self.right_animating {
+        body = body.child(resize_handle("resize-right", ResizingSide::Right, cx));
+      }
+      body = body.child(
+        div()
+          .w(px(self.right_width * ease(self.right_anim)))
+          .flex_none()
+          .h_full()
+          .overflow_hidden()
+          .child(
+            div()
+              .w(px(self.right_width))
+              .flex_none()
+              .h_full()
+              .child(self.context_panel.clone()),
+          ),
+      );
+    }
+
+    let mut root = div()
+      .relative()
+      .size_full()
+      .flex()
+      .flex_col()
+      .font_family(theme.font_ui.clone())
+      .text_color(theme.text)
+      .on_mouse_move(
+        cx.listener(|this, event: &gpui::MouseMoveEvent, window, cx| {
+          let Some(side) = this.resizing else { return };
+          let x = f32::from(event.position.x);
+          match side {
+            ResizingSide::Left => {
+              this.left_width = x.clamp(200.0, 480.0);
+            }
+            ResizingSide::Right => {
+              let total = f32::from(window.viewport_size().width);
+              this.right_width = (total - x).clamp(220.0, 560.0);
+            }
+          }
+          cx.notify();
+        }),
+      )
+      .on_mouse_up(
+        gpui::MouseButton::Left,
+        cx.listener(|this, _, _, cx| {
+          if this.resizing.take().is_some() {
+            cx.notify();
+          }
+        }),
+      )
+      .on_action(cx.listener(|this, _: &NewTerminal, window, cx| {
+        this.workspace.update(cx, |workspace, cx| {
+          workspace.open_tab(SessionKind::Terminal, window, cx);
+        });
+      }))
+      .on_action(cx.listener(|this, _: &NewClaudeSession, window, cx| {
+        this.workspace.update(cx, |workspace, cx| {
+          workspace.open_tab(SessionKind::ClaudeCode, window, cx);
+        });
+      }))
+      .on_action(cx.listener(|this, _: &CloseActiveTab, window, cx| {
+        this.workspace.update(cx, |workspace, cx| {
+          workspace.close_active(window, cx);
+        });
+      }))
+      .on_action(cx.listener(|this, _: &NextTab, window, cx| {
+        this.workspace.update(cx, |workspace, cx| {
+          workspace.activate_next(window, cx);
+        });
+      }))
+      .on_action(cx.listener(|this, _: &PrevTab, window, cx| {
+        this.workspace.update(cx, |workspace, cx| {
+          workspace.activate_prev(window, cx);
+        });
+      }))
+      .on_action(cx.listener(|this, _: &ToggleLeftSidebar, _, cx| {
+        this.left_open = !this.left_open;
+        let open = this.left_open;
+        this.workspace.update(cx, |workspace, cx| {
+          workspace.left_sidebar_open = open;
+          cx.notify();
+        });
+        this.kick_animation(ResizingSide::Left, cx);
+        cx.notify();
+      }))
+      .on_action(cx.listener(|this, _: &ToggleRightSidebar, _, cx| {
+        this.right_open = !this.right_open;
+        this.kick_animation(ResizingSide::Right, cx);
+        cx.notify();
+      }))
+      .on_action(cx.listener(|this, _: &OpenSearch, window, cx| {
+        if this.search.is_none() {
+          this.open_search(window, cx);
+        }
+      }))
+      .on_action(cx.listener(|this, _: &OpenAppSettings, window, cx| {
+        if this.settings.is_none() {
+          this.open_settings(None, window, cx);
+        }
+      }))
+      .on_action(
+        cx.listener(|this, action: &OpenProjectSettingsAction, window, cx| {
+          this.open_settings(Some(action.root.clone()), window, cx);
+        }),
+      )
+      .on_action(
+        cx.listener(|this, action: &RemoveProjectAction, window, cx| {
+          helix_state::config::remove_project(&action.root);
+          if action.root == this.project.root {
+            if let Some(next) = helix_state::config::load()
+              .projects
+              .first()
+              .map(|p| p.path.clone())
+            {
+              this.switch_project(next, window, cx);
+            }
+          }
+          let project = this.project.clone();
+          this.project_panel.update(cx, |panel, cx| {
+            panel.set_active_project(project, cx);
+          });
+          this.refresh_git(cx);
+        }),
+      )
+      .on_action(
+        cx.listener(|this, action: &EditWorktreeAction, window, cx| {
+          this.open_worktree_edit(action.owner.clone(), action.path.clone(), window, cx);
+        }),
+      )
+      .on_action(
+        cx.listener(|this, action: &RemoveWorktreeAction, window, cx| {
+          helix_state::config::remove_worktree(&action.owner, &action.path);
+          if action.path == this.project.root {
+            this.switch_project(action.owner.clone(), window, cx);
+          }
+          this.refresh_git(cx);
+        }),
+      )
+      .on_action(
+        cx.listener(|this, action: &DeleteWorktreeAction, window, cx| {
+          this.delete_worktree(action.owner.clone(), action.path.clone(), window, cx);
+        }),
+      )
+      .on_action(cx.listener(|_, action: &OpenInZedAction, _, _| {
+        let _ = std::process::Command::new("open")
+          .args(["-a", "Zed"])
+          .arg(&action.path)
+          .spawn();
+      }))
+      .on_action(cx.listener(|_, action: &OpenInFinderAction, _, _| {
+        let _ = std::process::Command::new("open").arg(&action.path).spawn();
+      }))
+      .on_action(cx.listener(|_, action: &CopyPathAction, _, cx| {
+        cx.write_to_clipboard(gpui::ClipboardItem::new_string(
+          action.path.display().to_string(),
+        ));
+      }))
+      .child(body)
+      .child(status_bar);
+
+    if let Some(dialog) = &self.search {
+      root = root.child(
+        div()
+          .id("search-overlay")
+          .occlude()
+          .absolute()
+          .inset_0()
+          .flex()
+          .justify_center()
+          .items_start()
+          .pt(px(110.0))
+          .bg(crate::theme::ca(0x00000066))
+          .on_click(cx.listener(|this, _, _, cx| {
+            this.search = None;
+            cx.notify();
+          }))
+          .child(dialog.clone()),
+      );
+    }
+
+    if self.resources_open {
+      root = root.child(gpui::deferred(self.render_resource_panel(cx)));
+    }
+
+    if let Some(dialog) = &self.worktree_edit {
+      root = root.child(
+        div()
+          .id("worktree-edit-overlay")
+          .occlude()
+          .absolute()
+          .inset_0()
+          .flex()
+          .justify_center()
+          .items_start()
+          .pt(px(140.0))
+          .bg(crate::theme::ca(0x00000066))
+          .on_click(cx.listener(|this, _, _, cx| {
+            this.worktree_edit = None;
+            cx.notify();
+          }))
+          .child(dialog.clone()),
+      );
+    }
+
+    if let Some(dialog) = &self.add_dialog {
+      root = root.child(
+        div()
+          .id("add-overlay")
+          .occlude()
+          .absolute()
+          .inset_0()
+          .flex()
+          .justify_center()
+          .items_start()
+          .pt(px(150.0))
+          .bg(crate::theme::ca(0x00000066))
+          .on_click(cx.listener(|this, _, _, cx| {
+            this.add_dialog = None;
+            cx.notify();
+          }))
+          .child(dialog.clone()),
+      );
+    }
+
+    root
+  }
+}

@@ -1,0 +1,25 @@
+[package]
+name = "helix-ui"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+gpui.workspace = true
+gpui-component.workspace = true
+alacritty_terminal.workspace = true
+tokio.workspace = true
+anyhow.workspace = true
+helix-buffer.workspace = true
+helix-models.workspace = true
+helix-events.workspace = true
+helix-git.workspace = true
+helix-github.workspace = true
+helix-filesystem.workspace = true
+helix-worktree.workspace = true
+helix-terminal.workspace = true
+helix-agents.workspace = true
+helix-state.workspace = true
+helix-commands.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc = "0.2"

@@ -1,0 +1,8 @@
+[package]
+name = "helix-filesystem"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+notify.workspace = true
+tokio.workspace = true

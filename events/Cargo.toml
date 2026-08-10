@@ -1,0 +1,8 @@
+[package]
+name = "helix-events"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+tokio.workspace = true
+helix-models.workspace = true
