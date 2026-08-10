@@ -43,6 +43,13 @@ impl RightTab {
   }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+enum GitSection {
+  Staged,
+  Changes,
+  Commits,
+}
+
 #[derive(Clone)]
 struct FileNode {
   path: PathBuf,
@@ -63,7 +70,7 @@ pub struct ContextPanel {
   show_dotfiles: bool,
   commit_message: Entity<InputState>,
   generating_message: bool,
-  commits_open: bool,
+  collapsed: HashSet<GitSection>,
   git_error: Option<String>,
   pr: Option<HostedReview>,
   pr_eligibility: Option<Eligibility>,
@@ -91,12 +98,59 @@ impl ContextPanel {
       show_dotfiles: false,
       commit_message,
       generating_message: false,
-      commits_open: false,
+      collapsed: HashSet::from([GitSection::Commits]),
       git_error: None,
       pr: None,
       pr_eligibility: None,
       pr_busy: false,
     }
+  }
+
+  fn is_open(&self, section: GitSection) -> bool {
+    !self.collapsed.contains(&section)
+  }
+
+  fn toggle_section(&mut self, section: GitSection, cx: &mut Context<Self>) {
+    if !self.collapsed.remove(&section) {
+      self.collapsed.insert(section);
+    }
+    cx.notify();
+  }
+
+  fn section_toggle(
+    &self,
+    id: &'static str,
+    label: &'static str,
+    count: usize,
+    section: GitSection,
+    theme: &Theme,
+    cx: &mut Context<Self>,
+  ) -> AnyElement {
+    let open = self.is_open(section);
+    div()
+      .id(id)
+      .flex()
+      .items_center()
+      .gap_1()
+      .px_1()
+      .pt_3()
+      .pb_1()
+      .rounded_md()
+      .cursor_pointer()
+      .text_xs()
+      .text_color(theme.text_dim)
+      .hover(|s| s.text_color(theme.text_muted))
+      .on_click(cx.listener(move |this, _, _, cx| this.toggle_section(section, cx)))
+      .child(
+        Icon::new(if open {
+          IconName::ChevronDown
+        } else {
+          IconName::ChevronRight
+        })
+        .size_3(),
+      )
+      .child(format!("{label} ({count})"))
+      .into_any_element()
   }
 
   fn stage(&mut self, relative: String, cx: &mut Context<Self>) {
@@ -696,6 +750,53 @@ impl ContextPanel {
   ) -> AnyElement {
     let can_commit = !git.staged.is_empty();
     let unstaged_total = git.unstaged.len() + git.untracked.len();
+    let can_write = can_commit && !self.generating_message;
+
+    let actions = div()
+      .flex()
+      .items_center()
+      .gap_1()
+      .child(
+        icon_action(
+          "stage-all-button",
+          IconName::Plus,
+          "Stage all changes",
+          unstaged_total > 0,
+          theme,
+        )
+        .when(unstaged_total > 0, |el| {
+          el.on_click(cx.listener(|this, _, _, cx| this.stage_all(cx)))
+        }),
+      )
+      .child(
+        icon_action(
+          "unstage-all-button",
+          IconName::Minus,
+          "Unstage everything",
+          can_commit,
+          theme,
+        )
+        .when(can_commit, |el| {
+          el.on_click(cx.listener(|this, _, _, cx| this.unstage_all(cx)))
+        }),
+      )
+      .child(div().flex_1())
+      .child(
+        toolbar_button(
+          "generate-message-button",
+          if self.generating_message {
+            "Writing…"
+          } else {
+            "✦ Write"
+          },
+          can_write,
+          theme,
+        )
+        .when(can_write, |el| {
+          el.text_color(theme.claude)
+            .on_click(cx.listener(|this, _, window, cx| this.generate_commit_message(window, cx)))
+        }),
+      );
 
     div()
       .flex()
@@ -706,6 +807,7 @@ impl ContextPanel {
       .py_2()
       .border_b_1()
       .border_color(theme.panel_border)
+      .child(actions)
       .child(
         div()
           .rounded_md()
@@ -717,71 +819,22 @@ impl ContextPanel {
       )
       .child(
         div()
+          .id("commit-button")
+          .h(px(26.0))
           .flex()
           .items_center()
-          .gap_1()
-          .child(
-            div()
-              .id("commit-button")
-              .flex_1()
-              .h(px(24.0))
-              .flex()
-              .items_center()
-              .justify_center()
-              .rounded_md()
-              .text_xs()
-              .when(can_commit, |el| {
-                el.bg(theme.elevated)
-                  .text_color(theme.text)
-                  .cursor_pointer()
-                  .hover(|s| s.bg(theme.hover))
-                  .on_click(cx.listener(|this, _, window, cx| this.commit(window, cx)))
-              })
-              .when(!can_commit, |el| el.text_color(theme.text_dim))
-              .child(format!("Commit ({})", git.staged.len())),
-          )
-          .child(
-            icon_action(
-              "stage-all-button",
-              IconName::Plus,
-              "Stage all changes",
-              unstaged_total > 0,
-              theme,
-            )
-            .when(unstaged_total > 0, |el| {
-              el.on_click(cx.listener(|this, _, _, cx| this.stage_all(cx)))
-            }),
-          )
-          .child(
-            icon_action(
-              "unstage-all-button",
-              IconName::Minus,
-              "Unstage everything",
-              can_commit,
-              theme,
-            )
-            .when(can_commit, |el| {
-              el.on_click(cx.listener(|this, _, _, cx| this.unstage_all(cx)))
-            }),
-          )
-          .child({
-            let can_write = can_commit && !self.generating_message;
-            toolbar_button(
-              "generate-message-button",
-              if self.generating_message {
-                "Writing…"
-              } else {
-                "✦ Write"
-              },
-              can_write,
-              theme,
-            )
-            .when(can_write, |el| {
-              el.text_color(theme.claude).on_click(
-                cx.listener(|this, _, window, cx| this.generate_commit_message(window, cx)),
-              )
-            })
-          }),
+          .justify_center()
+          .rounded_md()
+          .text_xs()
+          .when(can_commit, |el| {
+            el.bg(theme.elevated)
+              .text_color(theme.text)
+              .cursor_pointer()
+              .hover(|s| s.bg(theme.hover))
+              .on_click(cx.listener(|this, _, window, cx| this.commit(window, cx)))
+          })
+          .when(!can_commit, |el| el.text_color(theme.text_dim))
+          .child(format!("Commit ({})", git.staged.len())),
       )
       .children(
         self
@@ -840,67 +893,68 @@ impl ContextPanel {
         ));
     }
 
-    let commit_rows: Vec<helix_models::CommitInfo> = if self.commits_open {
+    let staged = if self.is_open(GitSection::Staged) {
+      self.git_file_rows(&git.staged, DiffBase::Staged, "staged", true, theme, cx)
+    } else {
+      Vec::new()
+    };
+    let (unstaged, untracked) = if self.is_open(GitSection::Changes) {
+      (
+        self.git_file_rows(
+          &git.unstaged,
+          DiffBase::Unstaged,
+          "unstaged",
+          false,
+          theme,
+          cx,
+        ),
+        self.git_file_rows(
+          &git.untracked,
+          DiffBase::Unstaged,
+          "untracked",
+          false,
+          theme,
+          cx,
+        ),
+      )
+    } else {
+      (Vec::new(), Vec::new())
+    };
+    let commits: Vec<helix_models::CommitInfo> = if self.is_open(GitSection::Commits) {
       git.recent_commits.clone()
     } else {
       Vec::new()
     };
 
     content = content
-      .child(section_label(
-        format!("STAGED ({})", git.staged.len()),
-        theme,
-      ))
-      .children(self.git_file_rows(&git.staged, DiffBase::Staged, "staged", true, theme, cx))
-      .child(section_label(
-        format!("CHANGES ({})", git.unstaged.len() + git.untracked.len()),
-        theme,
-      ))
-      .children(self.git_file_rows(
-        &git.unstaged,
-        DiffBase::Unstaged,
-        "unstaged",
-        false,
+      .child(self.section_toggle(
+        "staged-toggle",
+        "STAGED",
+        git.staged.len(),
+        GitSection::Staged,
         theme,
         cx,
       ))
-      .children(self.git_file_rows(
-        &git.untracked,
-        DiffBase::Unstaged,
-        "untracked",
-        false,
+      .children(staged)
+      .child(self.section_toggle(
+        "changes-toggle",
+        "CHANGES",
+        git.unstaged.len() + git.untracked.len(),
+        GitSection::Changes,
         theme,
         cx,
       ))
-      .child(
-        div()
-          .id("commits-toggle")
-          .flex()
-          .items_center()
-          .gap_1()
-          .px_1()
-          .pt_3()
-          .pb_1()
-          .rounded_md()
-          .cursor_pointer()
-          .text_xs()
-          .text_color(theme.text_dim)
-          .hover(|s| s.text_color(theme.text_muted))
-          .on_click(cx.listener(|this, _, _, cx| {
-            this.commits_open = !this.commits_open;
-            cx.notify();
-          }))
-          .child(
-            Icon::new(if self.commits_open {
-              IconName::ChevronDown
-            } else {
-              IconName::ChevronRight
-            })
-            .size_3(),
-          )
-          .child(format!("COMMITS ({})", git.recent_commits.len())),
-      )
-      .children(commit_rows.into_iter().map(|commit| {
+      .children(unstaged)
+      .children(untracked)
+      .child(self.section_toggle(
+        "commits-toggle",
+        "COMMITS",
+        git.recent_commits.len(),
+        GitSection::Commits,
+        theme,
+        cx,
+      ))
+      .children(commits.into_iter().map(|commit| {
         div()
           .flex()
           .flex_col()
