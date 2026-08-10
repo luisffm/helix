@@ -13,10 +13,10 @@ use gpui::{
   prelude::*, px,
 };
 use helix_commands::{
-  CloseActiveTab, CopyPathAction, DeleteWorktreeAction, EditWorktreeAction, NewClaudeSession,
-  NewTerminal, NextTab, OpenAppSettings, OpenInFinderAction, OpenInZedAction,
-  OpenProjectSettingsAction, OpenSearch, PrevTab, RemoveProjectAction, RemoveWorktreeAction,
-  ToggleLeftSidebar, ToggleRightSidebar,
+  ActivateTab, ActivateWorkspace, CloseActiveTab, CopyPathAction, DeleteWorktreeAction,
+  EditWorktreeAction, NewClaudeSession, NewTerminal, NextTab, OpenAppSettings, OpenInFinderAction,
+  OpenInZedAction, OpenProjectSettingsAction, OpenSearch, PrevTab, RemoveProjectAction,
+  RemoveWorktreeAction, ToggleLeftSidebar, ToggleRightSidebar,
 };
 use helix_filesystem::FsWatcher;
 use helix_models::{ProjectInfo, SessionKind};
@@ -1176,6 +1176,22 @@ impl Render for HelixRoot {
         this.workspace.update(cx, |workspace, cx| {
           workspace.close_active(window, cx);
         });
+      }))
+      .on_action(cx.listener(|this, action: &ActivateTab, window, cx| {
+        this.workspace.update(cx, |workspace, cx| {
+          workspace.activate(action.index, window, cx);
+        });
+      }))
+      .on_action(cx.listener(|this, action: &ActivateWorkspace, window, cx| {
+        let target = helix_state::config::load()
+          .projects
+          .into_iter()
+          .filter(|project| project.path.is_dir())
+          .nth(action.index)
+          .map(|project| project.path);
+        if let Some(target) = target {
+          this.switch_project(target, window, cx);
+        }
       }))
       .on_action(cx.listener(|this, _: &NextTab, window, cx| {
         this.workspace.update(cx, |workspace, cx| {

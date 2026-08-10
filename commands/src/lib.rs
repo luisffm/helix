@@ -9,6 +9,18 @@ pub struct OpenProjectSettingsAction {
 
 #[derive(Clone, PartialEq, Action)]
 #[action(namespace = helix, no_json)]
+pub struct ActivateTab {
+  pub index: usize,
+}
+
+#[derive(Clone, PartialEq, Action)]
+#[action(namespace = helix, no_json)]
+pub struct ActivateWorkspace {
+  pub index: usize,
+}
+
+#[derive(Clone, PartialEq, Action)]
+#[action(namespace = helix, no_json)]
 pub struct RemoveProjectAction {
   pub root: PathBuf,
 }
@@ -71,8 +83,10 @@ actions!(
   ]
 );
 
+pub const SLOTS: usize = 9;
+
 pub fn default_bindings() -> Vec<KeyBinding> {
-  vec![
+  let mut bindings = vec![
     KeyBinding::new("cmd-t", NewTerminal, None),
     KeyBinding::new("cmd-shift-t", NewClaudeSession, None),
     KeyBinding::new("cmd-w", CloseActiveTab, None),
@@ -81,7 +95,7 @@ pub fn default_bindings() -> Vec<KeyBinding> {
     KeyBinding::new("cmd-shift-]", NextTab, None),
     KeyBinding::new("cmd-shift-[", PrevTab, None),
     KeyBinding::new("cmd-b", ToggleLeftSidebar, None),
-    KeyBinding::new("cmd-r", ToggleRightSidebar, None),
+    KeyBinding::new("cmd-l", ToggleRightSidebar, None),
     KeyBinding::new("cmd-k", OpenSearch, None),
     KeyBinding::new("cmd-p", OpenSearch, None),
     KeyBinding::new("cmd-,", OpenAppSettings, None),
@@ -89,5 +103,19 @@ pub fn default_bindings() -> Vec<KeyBinding> {
     KeyBinding::new("cmd-q", Quit, None),
     KeyBinding::new("cmd-c", TerminalCopy, Some("Terminal")),
     KeyBinding::new("cmd-v", TerminalPaste, Some("Terminal")),
-  ]
+  ];
+  for slot in 0..SLOTS {
+    let digit = slot + 1;
+    bindings.push(KeyBinding::new(
+      &format!("cmd-{digit}"),
+      ActivateTab { index: slot },
+      None,
+    ));
+    bindings.push(KeyBinding::new(
+      &format!("ctrl-{digit}"),
+      ActivateWorkspace { index: slot },
+      None,
+    ));
+  }
+  bindings
 }

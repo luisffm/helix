@@ -5,7 +5,7 @@ use gpui::{
 };
 use gpui_component::checkbox::Checkbox;
 use gpui_component::input::{Input, InputEvent, InputState};
-use gpui_component::{Icon, IconName};
+use gpui_component::{Icon, IconName, Sizable};
 use std::path::PathBuf;
 
 pub enum AddDialogEvent {
@@ -41,6 +41,7 @@ pub struct AddDialog {
   branch_name: Entity<InputState>,
   ai_context: Entity<InputState>,
   create_branch: bool,
+  describing: bool,
   generating_branch: bool,
   error: Option<String>,
   project_root: PathBuf,
@@ -71,11 +72,8 @@ impl AddDialog {
   ) -> Self {
     let worktree_name = cx.new(|cx| InputState::new(window, cx).placeholder("payments-refactor"));
     let branch_name = cx.new(|cx| InputState::new(window, cx).placeholder("feat/my-feature"));
-    let ai_context = cx.new(|cx| {
-      InputState::new(window, cx)
-        .auto_grow(2, 4)
-        .placeholder("Describe the work, in any language")
-    });
+    let ai_context =
+      cx.new(|cx| InputState::new(window, cx).placeholder("what should this branch do?"));
     for input in [&worktree_name, &branch_name] {
       cx.subscribe(input, |this, _, event: &InputEvent, cx| {
         if matches!(event, InputEvent::PressEnter { .. }) {
@@ -84,6 +82,16 @@ impl AddDialog {
       })
       .detach();
     }
+    cx.subscribe_in(
+      &ai_context,
+      window,
+      |this, _, event: &InputEvent, window, cx| {
+        if matches!(event, InputEvent::PressEnter { .. }) {
+          this.generate_branch_name(window, cx);
+        }
+      },
+    )
+    .detach();
     Self {
       step: Step::Choose,
       selected: 0,
@@ -93,6 +101,7 @@ impl AddDialog {
       branch_name,
       ai_context,
       create_branch: false,
+      describing: false,
       generating_branch: false,
       error: None,
       project_root,
@@ -180,6 +189,17 @@ impl AddDialog {
     cx.emit(AddDialogEvent::CreateWorktree { name, branch });
   }
 
+  fn ask_for_a_name(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    if self.describing {
+      self.generate_branch_name(window, cx);
+      return;
+    }
+    self.describing = true;
+    self.error = None;
+    window.focus(&self.ai_context.read(cx).focus_handle(cx));
+    cx.notify();
+  }
+
   fn generate_branch_name(&mut self, window: &mut Window, cx: &mut Context<Self>) {
     if self.generating_branch {
       return;
@@ -207,9 +227,13 @@ impl AddDialog {
           .update_in(cx, |dialog, window, cx| {
             dialog.generating_branch = false;
             match result {
-              Ok(name) => dialog
-                .branch_name
-                .update(cx, |state, cx| state.set_value(name, window, cx)),
+              Ok(name) => {
+                dialog.describing = false;
+                dialog
+                  .branch_name
+                  .update(cx, |state, cx| state.set_value(name, window, cx));
+                window.focus(&dialog.branch_name.read(cx).focus_handle(cx));
+              }
               Err(err) => dialog.error = Some(err.to_string()),
             }
             cx.notify();
@@ -524,11 +548,10 @@ impl Render for AddDialog {
                 .border_1()
                 .border_color(theme.panel_border)
                 .bg(theme.elevated)
-                .child(Input::new(input).appearance(false)),
+                .child(Input::new(input).appearance(false).xsmall()),
             )
         };
 
-        let can_generate = !self.generating_branch;
         let mut form = div()
           .flex()
           .flex_col()
@@ -538,6 +561,7 @@ impl Render for AddDialog {
           .child(
             Checkbox::new("create-branch")
               .label("Create a new branch")
+              .xsmall()
               .checked(self.create_branch)
               .on_click(cx.listener(|this, checked: &bool, window, cx| {
                 this.create_branch = *checked;
@@ -550,63 +574,94 @@ impl Render for AddDialog {
           );
 
         if self.create_branch {
-          form = form
-            .child(field(
-              "Branch",
-              "git will create this branch",
-              &self.branch_name,
-            ))
-            .child(
-              div()
-                .flex()
-                .flex_col()
-                .gap_1()
-                .child(
+          let describing = self.describing;
+          let sparkle = div()
+            .id("generate-branch")
+            .size(px(18.0))
+            .flex()
+            .flex_none()
+            .items_center()
+            .justify_center()
+            .rounded_sm()
+            .cursor_pointer()
+            .text_xs()
+            .text_color(theme.claude)
+            .hover(|s| s.bg(theme.hover))
+            .tooltip(move |window, cx| {
+              gpui_component::tooltip::Tooltip::new(if describing {
+                "Name it from the description"
+              } else {
+                "Let Claude name this branch"
+              })
+              .build(window, cx)
+            })
+            .on_click(cx.listener(|this, _, window, cx| this.ask_for_a_name(window, cx)))
+            .child(if self.generating_branch { "…" } else { "✦" });
+
+          form = form.child(
+            div()
+              .flex()
+              .flex_col()
+              .gap_1()
+              .child(
+                div()
+                  .flex()
+                  .items_center()
+                  .gap_2()
+                  .child(div().text_xs().text_color(theme.text_muted).child("Branch"))
+                  .child(
+                    div()
+                      .text_xs()
+                      .text_color(theme.text_dim)
+                      .child("git will create this branch"),
+                  ),
+              )
+              .child(
+                div()
+                  .relative()
+                  .px_2()
+                  .py_1()
+                  .pr(px(24.0))
+                  .rounded_md()
+                  .border_1()
+                  .border_color(theme.panel_border)
+                  .bg(theme.elevated)
+                  .child(Input::new(&self.branch_name).appearance(false).xsmall())
+                  .child(
+                    div()
+                      .absolute()
+                      .top(px(3.0))
+                      .right(px(3.0))
+                      .occlude()
+                      .child(sparkle),
+                  ),
+              )
+              .when(self.describing, |el| {
+                el.child(
                   div()
                     .flex()
-                    .items_center()
-                    .gap_2()
+                    .flex_col()
+                    .gap_1()
+                    .pt_1()
                     .child(
                       div()
-                        .flex_1()
                         .text_xs()
-                        .text_color(theme.text_muted)
-                        .child("Generate branch name"),
+                        .text_color(theme.text_dim)
+                        .child("Describe the work — any language, Enter to name it"),
                     )
                     .child(
                       div()
-                        .id("generate-branch")
                         .px_2()
-                        .py_0p5()
+                        .py_1()
                         .rounded_md()
-                        .text_xs()
-                        .when(can_generate, |el| {
-                          el.text_color(theme.claude)
-                            .cursor_pointer()
-                            .hover(|s| s.bg(theme.hover))
-                            .on_click(cx.listener(|this, _, window, cx| {
-                              this.generate_branch_name(window, cx)
-                            }))
-                        })
-                        .when(!can_generate, |el| el.text_color(theme.text_dim))
-                        .child(if self.generating_branch {
-                          "Naming…"
-                        } else {
-                          "✦ Generate"
-                        }),
+                        .border_1()
+                        .border_color(theme.active)
+                        .bg(theme.elevated)
+                        .child(Input::new(&self.ai_context).appearance(false).xsmall()),
                     ),
                 )
-                .child(
-                  div()
-                    .px_2()
-                    .py_1()
-                    .rounded_md()
-                    .border_1()
-                    .border_color(theme.panel_border)
-                    .bg(theme.elevated)
-                    .child(Input::new(&self.ai_context).appearance(false)),
-                ),
-            );
+              }),
+          );
         }
 
         form
