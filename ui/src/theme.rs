@@ -11,6 +11,7 @@ pub struct TermColors {
 #[derive(Clone)]
 pub struct Theme {
   pub bg: Hsla,
+  pub content: Hsla,
   pub panel: Hsla,
   pub panel_border: Hsla,
   pub elevated: Hsla,
@@ -113,6 +114,7 @@ impl Theme {
   pub fn dark() -> Self {
     Self {
       bg: ca(0x0d0d0dc9),
+      content: c(0x0d0d0d),
       panel: ca(0xffffff0a),
       panel_border: ca(0xffffff14),
       elevated: ca(0xffffff12),

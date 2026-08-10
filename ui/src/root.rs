@@ -9,7 +9,8 @@ use crate::theme::Theme;
 use crate::workspace::Workspace;
 use crate::worktree_dialog::{WorktreeEditDialog, WorktreeEditEvent};
 use gpui::{
-  Context, Entity, Focusable, IntoElement, ParentElement, Render, Window, div, prelude::*, px,
+  Context, Entity, FocusHandle, Focusable, IntoElement, ParentElement, Render, Window, div,
+  prelude::*, px,
 };
 use helix_commands::{
   CloseActiveTab, CopyPathAction, DeleteWorktreeAction, EditWorktreeAction, NewClaudeSession,
@@ -53,6 +54,7 @@ pub struct HelixRoot {
   resources_history: HashMap<PathBuf, Vec<f32>>,
   resources_open: bool,
   resources_expanded: std::collections::HashSet<PathBuf>,
+  focus_handle: FocusHandle,
   _watcher: Option<FsWatcher>,
 }
 
@@ -135,6 +137,7 @@ impl HelixRoot {
       resources_history: HashMap::new(),
       resources_open: false,
       resources_expanded: std::collections::HashSet::new(),
+      focus_handle: cx.focus_handle(),
       _watcher: None,
     };
     let workspaces = root.workspaces.clone();
@@ -960,11 +963,24 @@ impl HelixRoot {
       }
     }
   }
+
+  fn reclaim_focus(&self, window: &mut Window, cx: &mut Context<Self>) {
+    if window.focused(cx).is_some() {
+      return;
+    }
+    self.workspace.update(cx, |workspace, cx| {
+      workspace.focus_active(window, cx);
+    });
+    if window.focused(cx).is_none() {
+      window.focus(&self.focus_handle);
+    }
+  }
 }
 
 impl Render for HelixRoot {
-  fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+  fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
     let theme = Theme::of(cx).clone();
+    self.reclaim_focus(window, cx);
 
     let branch = self
       .git
@@ -1085,7 +1101,14 @@ impl Render for HelixRoot {
     } else {
       self.workspace.clone().into_any_element()
     };
-    body = body.child(div().flex_1().min_w_0().h_full().child(center));
+    body = body.child(
+      div()
+        .flex_1()
+        .min_w_0()
+        .h_full()
+        .bg(theme.content)
+        .child(center),
+    );
     if self.right_open || self.right_anim > 0.001 {
       if self.right_open && !self.right_animating {
         body = body.child(resize_handle("resize-right", ResizingSide::Right, cx));
@@ -1107,6 +1130,8 @@ impl Render for HelixRoot {
     }
 
     let mut root = div()
+      .key_context("Helix")
+      .track_focus(&self.focus_handle)
       .relative()
       .size_full()
       .flex()

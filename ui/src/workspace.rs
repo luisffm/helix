@@ -448,7 +448,7 @@ impl Workspace {
     }
   }
 
-  fn focus_active(&self, window: &mut Window, cx: &mut Context<Self>) {
+  pub fn focus_active(&self, window: &mut Window, cx: &mut Context<Self>) {
     if let Some(tab) = self.tabs.get(self.active) {
       window.focus(&tab.focus_handle(cx));
     }

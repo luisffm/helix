@@ -782,7 +782,7 @@ impl Render for ProjectPanel {
           .child(format!("{terminals}T · {claudes}C · {running}R")),
       );
 
-    let mut panel = div()
+    div()
       .relative()
       .flex()
       .flex_col()
@@ -794,8 +794,6 @@ impl Render for ProjectPanel {
       .child(search)
       .child(projects_header)
       .child(tree)
-      .child(bottom_bar);
-
-    panel
+      .child(bottom_bar)
   }
 }
