@@ -9,3 +9,9 @@ check:
 
 dev:
     cargo run -p helix
+
+bundle:
+    ./scripts/bundle-mac.sh
+
+release: bundle
+    open target/Helix.app
