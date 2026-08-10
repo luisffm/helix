@@ -34,9 +34,33 @@ pub enum ProjectPanelEvent {
 #[derive(Clone)]
 pub struct WorktreeRow {
   pub entry: WorktreeEntry,
+  pub canonical: PathBuf,
   pub display_name: Option<String>,
   pub issue: Option<String>,
   pub pr: Option<String>,
+}
+
+impl WorktreeRow {
+  pub fn new(
+    entry: WorktreeEntry,
+    display_name: Option<String>,
+    issue: Option<String>,
+    pr: Option<String>,
+  ) -> Self {
+    let canonical = canonical_path(&entry.path);
+
+    Self {
+      entry,
+      canonical,
+      display_name,
+      issue,
+      pr,
+    }
+  }
+}
+
+fn canonical_path(path: &PathBuf) -> PathBuf {
+  path.canonicalize().unwrap_or_else(|_| path.clone())
 }
 
 pub fn short_ref(value: &str) -> String {
@@ -93,6 +117,7 @@ struct ProjectEntry {
 pub struct ProjectPanel {
   projects: Vec<ProjectEntry>,
   active_root: PathBuf,
+  active_canonical: PathBuf,
   git: Option<GitSnapshot>,
   worktrees: HashMap<PathBuf, Vec<WorktreeRow>>,
   workspaces: HashMap<PathBuf, Entity<Workspace>>,
@@ -194,6 +219,7 @@ impl ProjectPanel {
     expanded.insert(project.root.clone());
 
     Self {
+      active_canonical: canonical_path(&project.root),
       projects,
       active_root: project.root,
       git: None,
@@ -288,6 +314,7 @@ impl ProjectPanel {
   pub fn set_active_project(&mut self, project: ProjectInfo, cx: &mut Context<Self>) {
     self.projects = load_project_entries();
     self.active_root = project.root.clone();
+    self.active_canonical = canonical_path(&project.root);
 
     let owner = self
       .projects
@@ -314,9 +341,7 @@ impl Render for ProjectPanel {
     let theme = Theme::of(cx).clone();
     let spin_step = self.spin.step();
     let active_root = self.active_root.clone();
-    let active_canonical = active_root
-      .canonicalize()
-      .unwrap_or_else(|_| active_root.clone());
+    let active_canonical = self.active_canonical.clone();
 
     let titlebar_strip = div()
       .id("sidebar-titlebar")
@@ -405,23 +430,17 @@ impl Render for ProjectPanel {
       .overflow_y_scroll()
       .gap_0p5();
 
-    let projects = self.projects.clone();
-    for (project_ix, entry) in projects.iter().enumerate() {
+    for (project_ix, entry) in self.projects.iter().enumerate() {
       let project_root = entry.info.root.clone();
-      let worktree_list = self
+      let worktree_list: &[WorktreeRow] = self
         .worktrees
         .get(&project_root)
-        .cloned()
+        .map(Vec::as_slice)
         .unwrap_or_default();
       let is_active_project = project_root == active_root
-        || worktree_list.iter().any(|row| {
-          row
-            .entry
-            .path
-            .canonicalize()
-            .unwrap_or_else(|_| row.entry.path.clone())
-            == active_canonical
-        });
+        || worktree_list
+          .iter()
+          .any(|row| row.canonical == active_canonical);
       let expanded = self.expanded.contains(&project_root);
       let has_worktrees = !worktree_list.is_empty();
 
@@ -556,15 +575,14 @@ impl Render for ProjectPanel {
       }
 
       let mut cards: Vec<gpui::AnyElement> = Vec::new();
-      for (ix, row) in worktree_list.clone().into_iter().enumerate() {
-        let wt = row.entry.clone();
+      for (ix, row) in worktree_list.iter().enumerate() {
+        let wt = &row.entry;
         let branch_label = row
           .display_name
           .clone()
           .unwrap_or_else(|| wt.branch.clone());
-        let wt_canonical = wt.path.canonicalize().unwrap_or_else(|_| wt.path.clone());
-        let is_active_card = wt_canonical == active_canonical;
-        let workspace = self.workspaces.get(&wt_canonical).cloned();
+        let is_active_card = row.canonical == active_canonical;
+        let workspace = self.workspaces.get(&row.canonical).cloned();
         let icon_color = if is_active_card {
           theme.green
         } else {

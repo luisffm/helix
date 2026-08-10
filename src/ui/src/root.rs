@@ -360,23 +360,18 @@ impl HelixRoot {
         let mut entries: Vec<WorktreeRow> = Vec::new();
 
         if let Some(entry) = helix_worktree::describe_worktree(&project.path) {
-          entries.push(WorktreeRow {
-            entry,
-            display_name: None,
-            issue: None,
-            pr: None,
-          });
+          entries.push(WorktreeRow::new(entry, None, None, None));
         }
 
         for wt in &project.worktrees {
           if let Some(entry) = helix_worktree::describe_worktree(&wt.path) {
             if !entries.iter().any(|e| e.entry.path == entry.path) {
-              entries.push(WorktreeRow {
+              entries.push(WorktreeRow::new(
                 entry,
-                display_name: wt.display_name.clone(),
-                issue: wt.issue.clone(),
-                pr: wt.pr.clone(),
-              });
+                wt.display_name.clone(),
+                wt.issue.clone(),
+                wt.pr.clone(),
+              ));
             }
           }
         }
@@ -555,7 +550,7 @@ impl HelixRoot {
 
   fn render_resource_panel(&mut self, cx: &mut Context<Self>) -> gpui::AnyElement {
     let theme = Theme::of(cx).clone();
-    let snapshot = self.resources.clone();
+    let snapshot = &self.resources;
 
     let row_text = |value: String, color: gpui::Hsla, width: f32| {
       div()
@@ -580,10 +575,10 @@ impl HelixRoot {
     for project in &snapshot.projects {
       let expanded = self.resources_expanded.contains(&project.root);
       let toggle_root = project.root.clone();
-      let history = self
+      let history: &[f32] = self
         .resources_history
         .get(&project.root)
-        .cloned()
+        .map(Vec::as_slice)
         .unwrap_or_default();
       list = list.child(
         div()
@@ -626,7 +621,7 @@ impl HelixRoot {
               .whitespace_nowrap()
               .child(project.name.clone()),
           )
-          .child(crate::components::sparkline(&history, theme.text_dim))
+          .child(crate::components::sparkline(history, theme.text_dim))
           .child(row_text(
             format!("{:.1}%", project.cpu),
             theme.text_muted,
