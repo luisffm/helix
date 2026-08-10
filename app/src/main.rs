@@ -5,6 +5,7 @@ use gpui::{
 use helix_commands::Quit;
 use helix_ui::{HelixRoot, Theme};
 
+mod app_icon;
 mod assets;
 mod single_instance;
 
@@ -31,6 +32,7 @@ fn main() {
     .with_assets(assets::HelixAssets)
     .run(move |cx: &mut App| {
       gpui_component::init(cx);
+      app_icon::apply_unbundled_icon();
       let blur_level = helix_state::config::load()
         .blur_level
         .unwrap_or_else(|| "medium".to_string());

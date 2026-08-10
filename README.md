@@ -49,6 +49,21 @@ cargo run -- /path/to/project    # defaults to the current directory
 ./scripts/dev.sh /path/to/project    # defaults to the repo itself
 ```
 
+### macOS app bundle
+
+A Dock and Finder icon needs a real `.app`. Put a square 1024×1024 PNG at `assets/icon.png`, then:
+
+```sh
+./scripts/bundle-mac.sh                  # writes target/Helix.app
+open target/Helix.app --args /path/to/project
+```
+
+The script generates every `.icns` size with `iconutil`, writes `Info.plist`, and ad-hoc signs the bundle. `ICON` and `BUNDLE_ID` override the defaults.
+
+Two things to know. The bundle is ad-hoc signed, not notarized — fine on the machine that built it, blocked by Gatekeeper anywhere else. And `Info.plist` gives the app its own `NSUserDefaults` domain, so the bundled app remembers its window position separately from `cargo run`.
+
+Running unbundled, `cargo run` hands the same PNG to AppKit at startup, so the Dock icon matches during development.
+
 ### Keybindings
 
 | Key | Action |
@@ -57,10 +72,13 @@ cargo run -- /path/to/project    # defaults to the current directory
 | ⌘⇧T | New Claude Code session |
 | ⌘W | Close active tab |
 | ⌘S | Save file (editor tabs) |
+| ⌘1…9 | Activate tab by position |
+| ⌃1…9 | Switch to project by position |
 | ⌃Tab / ⌘⇧] | Next tab |
 | ⌃⇧Tab / ⌘⇧[ | Previous tab |
 | ⌘B | Toggle left sidebar |
-| ⌘R | Toggle right sidebar |
+| ⌘L | Toggle right sidebar |
+| ⌘K / ⌘P | Search |
 | ⌘C / ⌘V | Copy / paste in terminal |
 
 ## Architecture
