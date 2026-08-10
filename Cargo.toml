@@ -10,6 +10,7 @@ members = [
     "src/worktree",
     "src/terminal",
     "src/filesystem",
+    "src/process",
     "src/events",
     "src/models",
     "src/state",
@@ -42,6 +43,7 @@ helix-github = { path = "src/github" }
 helix-worktree = { path = "src/worktree" }
 helix-terminal = { path = "src/terminal" }
 helix-filesystem = { path = "src/filesystem" }
+helix-process = { path = "src/process" }
 helix-agents = { path = "src/agents" }
 helix-state = { path = "src/state" }
 helix-commands = { path = "src/commands" }

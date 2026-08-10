@@ -162,16 +162,26 @@ fn collect_statuses(repo: &Repository, snap: &mut GitSnapshot) {
 }
 
 const MAX_COUNTED_DELTAS: usize = 500;
+const MAX_COUNTED_BYTES: u64 = 1024 * 1024;
+const BINARY_SNIFF_BYTES: usize = 8000;
 
-fn line_counts(repo: &Repository, staged: bool) -> HashMap<String, (usize, usize)> {
-  let mut out = HashMap::new();
+fn line_counts(repo: &Repository, staged: bool, paths: &[String]) -> HashMap<String, (usize, usize)> {
+  let mut out: HashMap<String, (usize, usize)> = HashMap::new();
+
+  if paths.is_empty() {
+    return out;
+  }
 
   let mut opts = git2::DiffOptions::new();
+
   opts
-    .include_untracked(true)
-    .recurse_untracked_dirs(true)
-    .show_untracked_content(true)
-    .include_typechange(true);
+    .include_typechange(true)
+    .disable_pathspec_match(true)
+    .context_lines(0);
+
+  for path in paths {
+    opts.pathspec(path);
+  }
 
   let diff = if staged {
     let tree = repo.head().and_then(|head| head.peel_to_tree()).ok();
@@ -181,25 +191,98 @@ fn line_counts(repo: &Repository, staged: bool) -> HashMap<String, (usize, usize
   };
   let Ok(diff) = diff else { return out };
 
-  for (ix, delta) in diff.deltas().enumerate().take(MAX_COUNTED_DELTAS) {
-    let Some(path) = delta.new_file().path().or_else(|| delta.old_file().path()) else {
-      continue;
-    };
-    let Ok(Some(patch)) = git2::Patch::from_diff(&diff, ix) else {
-      continue;
-    };
-    let Ok((_, added, removed)) = patch.line_stats() else {
-      continue;
-    };
-    out.insert(path.to_string_lossy().to_string(), (added, removed));
-  }
+  let mut seen = 0usize;
+
+  diff
+    .foreach(
+      &mut |_, _| {
+        seen += 1;
+
+        seen <= MAX_COUNTED_DELTAS
+      },
+      None,
+      None,
+      Some(&mut |delta, _, line| {
+        let Some(path) = delta.new_file().path().or_else(|| delta.old_file().path()) else {
+          return true;
+        };
+
+        let entry = out
+          .entry(path.to_string_lossy().to_string())
+          .or_insert((0, 0));
+
+        match line.origin() {
+          '+' => entry.0 += 1,
+          '-' => entry.1 += 1,
+          _ => {}
+        }
+
+        true
+      }),
+    )
+    .ok();
 
   out
 }
 
+/// Diffing a huge file to show a `+12` badge is never worth the content load,
+/// so anything past the cap keeps its zero counts.
+fn countable_paths<'a>(
+  workdir: Option<&Path>,
+  files: impl Iterator<Item = &'a GitFileStatus>,
+) -> Vec<String> {
+  files
+    .filter(|file| {
+      let Some(workdir) = workdir else { return true };
+
+      match std::fs::metadata(workdir.join(&file.path)) {
+        Ok(meta) => meta.len() <= MAX_COUNTED_BYTES,
+        Err(_) => true,
+      }
+    })
+    .map(|file| file.path.clone())
+    .collect()
+}
+
+fn added_lines(path: &Path) -> Option<usize> {
+  let meta = std::fs::metadata(path).ok()?;
+
+  if !meta.is_file() || meta.len() > MAX_COUNTED_BYTES {
+    return None;
+  }
+
+  let bytes = std::fs::read(path).ok()?;
+
+  if bytes.is_empty() {
+    return Some(0);
+  }
+
+  if bytes[..bytes.len().min(BINARY_SNIFF_BYTES)].contains(&0) {
+    return None;
+  }
+
+  let breaks = bytes.iter().filter(|byte| **byte == b'\n').count();
+
+  Some(if bytes.last() == Some(&b'\n') {
+    breaks
+  } else {
+    breaks + 1
+  })
+}
+
 fn apply_line_counts(repo: &Repository, snap: &mut GitSnapshot) {
-  let staged = line_counts(repo, true);
-  let workdir = line_counts(repo, false);
+  if snap.staged.is_empty()
+    && snap.unstaged.is_empty()
+    && snap.untracked.is_empty()
+    && snap.conflicted.is_empty()
+  {
+    return;
+  }
+
+  let workdir = repo.workdir().map(|dir| dir.to_path_buf());
+
+  let staged_paths = countable_paths(workdir.as_deref(), snap.staged.iter());
+  let staged = line_counts(repo, true, &staged_paths);
 
   for file in snap.staged.iter_mut() {
     if let Some((added, removed)) = staged.get(&file.path) {
@@ -208,16 +291,23 @@ fn apply_line_counts(repo: &Repository, snap: &mut GitSnapshot) {
     }
   }
 
-  for file in snap
-    .unstaged
-    .iter_mut()
-    .chain(snap.untracked.iter_mut())
-    .chain(snap.conflicted.iter_mut())
-  {
-    if let Some((added, removed)) = workdir.get(&file.path) {
+  let changed_paths = countable_paths(
+    workdir.as_deref(),
+    snap.unstaged.iter().chain(snap.conflicted.iter()),
+  );
+  let changed = line_counts(repo, false, &changed_paths);
+
+  for file in snap.unstaged.iter_mut().chain(snap.conflicted.iter_mut()) {
+    if let Some((added, removed)) = changed.get(&file.path) {
       file.added = *added;
       file.removed = *removed;
     }
+  }
+
+  let Some(workdir) = workdir else { return };
+
+  for file in snap.untracked.iter_mut() {
+    file.added = added_lines(&workdir.join(&file.path)).unwrap_or(0);
   }
 }
 

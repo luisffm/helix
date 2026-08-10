@@ -1,14 +1,22 @@
 use anyhow::{Result, anyhow};
 use std::path::Path;
 use std::process::Command;
+use std::time::Duration;
+
+/// Network git operations can hang on an unreachable remote, and the UI has no
+/// way to cancel them, so they get a deadline instead.
+const TIMEOUT: Duration = Duration::from_secs(60);
 
 fn git(root: &Path, args: &[&str]) -> Result<String> {
-  let output = Command::new("git")
+  let mut command = Command::new("git");
+
+  command
     .args(args)
     .current_dir(root)
     .env("GIT_OPTIONAL_LOCKS", "0")
-    .env("GIT_TERMINAL_PROMPT", "0")
-    .output()?;
+    .env("GIT_TERMINAL_PROMPT", "0");
+
+  let output = helix_process::output(command, None, TIMEOUT)?;
 
   if output.status.success() {
     return Ok(String::from_utf8_lossy(&output.stdout).to_string());

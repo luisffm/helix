@@ -56,18 +56,20 @@ pub fn classify(stderr: &str) -> GhErrorKind {
 }
 
 pub fn run(cwd: &Path, args: &[&str]) -> Result<String> {
-  let output = Command::new("gh")
+  let mut command = Command::new("gh");
+
+  command
     .args(args)
     .current_dir(cwd)
     .env("GH_PROMPT_DISABLED", "1")
-    .env("GH_NO_UPDATE_NOTIFIER", "1")
-    .output()
-    .map_err(|err| {
-      anyhow!(GhError {
-        kind: GhErrorKind::Unknown,
-        message: format!("could not run gh: {err}"),
-      })
-    })?;
+    .env("GH_NO_UPDATE_NOTIFIER", "1");
+
+  let output = helix_process::output(command, None, TIMEOUT).map_err(|err| {
+    anyhow!(GhError {
+      kind: GhErrorKind::Unknown,
+      message: format!("could not run gh: {err}"),
+    })
+  })?;
 
   if output.status.success() {
     return Ok(String::from_utf8_lossy(&output.stdout).to_string());
@@ -88,18 +90,21 @@ pub fn run(cwd: &Path, args: &[&str]) -> Result<String> {
 }
 
 pub fn is_authenticated() -> bool {
-  Command::new("gh")
-    .args(["auth", "status"])
-    .env("GH_PROMPT_DISABLED", "1")
-    .output()
+  let mut command = Command::new("gh");
+
+  command.args(["auth", "status"]).env("GH_PROMPT_DISABLED", "1");
+
+  helix_process::output(command, None, TIMEOUT)
     .map(|output| output.status.success())
     .unwrap_or(false)
 }
 
 pub fn is_installed() -> bool {
-  Command::new("gh")
-    .arg("--version")
-    .output()
+  let mut command = Command::new("gh");
+
+  command.arg("--version");
+
+  helix_process::output(command, None, TIMEOUT)
     .map(|output| output.status.success())
     .unwrap_or(false)
 }
