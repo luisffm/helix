@@ -1,6 +1,7 @@
 use crate::components::{HEADER_HEIGHT, icon_button};
 use crate::diff_view::DiffView;
 use crate::editor_view::{EditorView, EditorViewEvent};
+use crate::icons::HelixIcon;
 use crate::terminal_view::{TerminalView, TerminalViewEvent};
 use crate::theme::Theme;
 use gpui::{
@@ -93,7 +94,7 @@ impl TabItem {
         };
         (crate::file_icons::icon(&view.path), color)
       }
-      TabContent::Diff(_) => (Icon::default().path("icons/git-compare.svg"), theme.purple),
+      TabContent::Diff(_) => (Icon::new(HelixIcon::GitCompare), theme.purple),
     }
   }
 

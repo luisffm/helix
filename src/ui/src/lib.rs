@@ -4,6 +4,7 @@ pub mod components;
 pub mod diff_view;
 pub mod editor_view;
 pub mod file_icons;
+pub mod icons;
 pub mod keymap;
 pub mod macos_blur;
 pub mod resources;

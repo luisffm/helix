@@ -1,29 +1,24 @@
+use crate::icons::HelixIcon;
 use crate::theme::{Theme, c};
 use gpui::Hsla;
 use gpui_component::{Icon, IconName};
 use helix_models::GitFileKind;
 use std::path::Path;
 
-const CODE: &str = "icons/file-code.svg";
-const TEXT: &str = "icons/file-text.svg";
-const TERMINAL: &str = "icons/file-terminal.svg";
-const SLIDERS: &str = "icons/file-sliders.svg";
-const IMAGE: &str = "icons/file-image.svg";
-
 pub fn icon(path: &Path) -> Icon {
   if helix_buffer::image_mime(path).is_some() {
-    return Icon::default().path(IMAGE);
+    return Icon::new(HelixIcon::FileImage);
   }
   let svg = match helix_buffer::language::of(path) {
     "rust" | "typescript" | "tsx" | "javascript" | "python" | "go" | "ruby" | "java" | "c"
     | "cpp" | "c_sharp" | "swift" | "scala" | "zig" | "elixir" | "html" | "css" | "sequel"
-    | "json" => CODE,
-    "bash" | "make" | "cmake" => TERMINAL,
-    "toml" | "yaml" => SLIDERS,
-    "markdown" => TEXT,
+    | "json" => HelixIcon::FileCode,
+    "bash" | "make" | "cmake" => HelixIcon::FileTerminal,
+    "toml" | "yaml" => HelixIcon::FileSliders,
+    "markdown" => HelixIcon::FileText,
     _ => return Icon::new(IconName::File),
   };
-  Icon::default().path(svg)
+  Icon::new(svg)
 }
 
 pub fn ignored_color() -> Hsla {

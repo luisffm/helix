@@ -1,3 +1,4 @@
+use crate::icons::HelixIcon;
 use crate::theme::Theme;
 use gpui::{
   App, Context, Entity, EventEmitter, FocusHandle, Focusable, IntoElement, KeyDownEvent,
@@ -180,7 +181,7 @@ impl Render for WorktreeEditDialog {
             div()
               .flex_none()
               .text_color(theme.purple)
-              .child(Icon::default().path("icons/git-branch.svg").size_3p5()),
+              .child(Icon::new(HelixIcon::GitBranch).size_3p5()),
           )
           .child(
             div()

@@ -1,7 +1,6 @@
-use crate::components::{
-  HEADER_HEIGHT, ago, icon_button, icon_button_path, section_label, spinner,
-};
+use crate::components::{HEADER_HEIGHT, ago, icon_button, section_label, spinner};
 use crate::file_icons;
+use crate::icons::HelixIcon;
 use crate::theme::Theme;
 use gpui::{
   AnyElement, Context, Entity, EventEmitter, IntoElement, ParentElement, Render, SharedString,
@@ -64,8 +63,8 @@ impl RightTab {
   fn icon(&self) -> Icon {
     match self {
       RightTab::Files => Icon::new(IconName::File),
-      RightTab::Git => Icon::default().path("icons/git-branch.svg"),
-      RightTab::Pr => Icon::default().path("icons/git-compare.svg"),
+      RightTab::Git => Icon::new(HelixIcon::GitBranch),
+      RightTab::Pr => Icon::new(HelixIcon::GitCompare),
     }
   }
 }
@@ -1053,7 +1052,7 @@ impl ContextPanel {
           .child(name),
       )
       .child(
-        icon_button_path("files-collapse", "icons/list-collapse.svg", theme).on_click(cx.listener(
+        icon_button("files-collapse", HelixIcon::ListCollapse, theme).on_click(cx.listener(
           |this, _, _, cx| {
             this.expanded.clear();
             cx.notify();
@@ -1061,7 +1060,7 @@ impl ContextPanel {
         )),
       )
       .child(
-        icon_button_path("files-refresh", "icons/refresh.svg", theme).on_click(cx.listener(
+        icon_button("files-refresh", HelixIcon::Refresh, theme).on_click(cx.listener(
           |this, _, _, cx| {
             this.dir_cache.clear();
             cx.notify();
@@ -1889,7 +1888,7 @@ impl ContextPanel {
       })
       .when(!self.pr_busy, |el| {
         el.child(
-          icon_button_path("pr-refresh", "icons/refresh.svg", theme)
+          icon_button("pr-refresh", HelixIcon::Refresh, theme)
             .on_click(cx.listener(|this, _, _, cx| this.refresh_pull_request(cx))),
         )
       })

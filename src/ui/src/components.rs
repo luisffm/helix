@@ -79,7 +79,7 @@ pub fn git_branch_icon(color: Hsla) -> impl IntoElement {
   div()
     .flex_none()
     .text_color(color)
-    .child(Icon::default().path("icons/git-branch.svg").size_3p5())
+    .child(Icon::new(crate::icons::HelixIcon::GitBranch).size_3p5())
 }
 
 pub fn spinner(id: impl Into<ElementId>, color: Hsla) -> impl IntoElement {
@@ -94,18 +94,10 @@ pub fn spinner(id: impl Into<ElementId>, color: Hsla) -> impl IntoElement {
 
 pub fn icon_button(
   id: impl Into<SharedString>,
-  icon: gpui_component::IconName,
+  icon: impl Into<Icon>,
   theme: &Theme,
 ) -> Stateful<Div> {
-  icon_button_base(id, theme).child(gpui_component::Icon::new(icon).size_3p5())
-}
-
-pub fn icon_button_path(
-  id: impl Into<SharedString>,
-  svg_path: &'static str,
-  theme: &Theme,
-) -> Stateful<Div> {
-  icon_button_base(id, theme).child(Icon::default().path(svg_path).size_3p5())
+  icon_button_base(id, theme).child(Icon::new(icon).size_3p5())
 }
 
 fn icon_button_base(id: impl Into<SharedString>, theme: &Theme) -> Stateful<Div> {

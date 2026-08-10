@@ -1,6 +1,5 @@
-use crate::components::{
-  HEADER_HEIGHT, git_branch_icon, icon_button, icon_button_path, project_icon, spinner,
-};
+use crate::components::{HEADER_HEIGHT, git_branch_icon, icon_button, project_icon, spinner};
+use crate::icons::HelixIcon;
 use crate::theme::Theme;
 use crate::workspace::Workspace;
 use gpui::{
@@ -270,7 +269,7 @@ impl Render for ProjectPanel {
           .child("Projects"),
       )
       .child(
-        icon_button_path("project-add", "icons/folder-plus.svg", &theme).on_click(cx.listener(
+        icon_button("project-add", HelixIcon::FolderPlus, &theme).on_click(cx.listener(
           |_, _, _, cx| {
             cx.emit(ProjectPanelEvent::RequestAddProject);
           },
