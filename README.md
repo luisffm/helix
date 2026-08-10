@@ -43,11 +43,13 @@ cargo run -- /path/to/project    # defaults to the current directory
 
 ### Development loop
 
-`scripts/dev.sh` uses [cargo-watch](https://github.com/watchexec/cargo-watch) to rebuild and relaunch the app whenever any crate changes:
+`scripts/dev.sh` uses [cargo-watch](https://github.com/watchexec/cargo-watch) to rebuild, rebundle and relaunch on every change under `src/` or `assets/`:
 
 ```sh
 ./scripts/dev.sh /path/to/project    # defaults to the repo itself
 ```
+
+It runs the `.app`, not the bare binary, so the icon and the name are the same in development as in a release. Bundling a debug build costs about half a second on top of the Rust rebuild — the `.icns` is only regenerated when the artwork changes, and signing is skipped.
 
 ### macOS app bundle
 
@@ -58,11 +60,13 @@ A Dock and Finder icon needs a real `.app`. Put a square 1024×1024 PNG at `asse
 open target/Helix.app --args /path/to/project
 ```
 
-The script generates every `.icns` size with `iconutil`, writes `Info.plist`, and ad-hoc signs the bundle. `ICON` and `BUNDLE_ID` override the defaults.
+Pre-rendered sizes in `assets/icon.iconset/` are used as-is; without that directory the script downscales `icon.png` with `sips`, which is visibly softer at 16px. `ICON`, `ICONSET`, `BUNDLE_ID`, `PROFILE` and `SIGN` override the defaults.
 
-Two things to know. The bundle is ad-hoc signed, not notarized — fine on the machine that built it, blocked by Gatekeeper anywhere else. And `Info.plist` gives the app its own `NSUserDefaults` domain, so the bundled app remembers its window position separately from `cargo run`.
+The icon and the name both come from `Info.plist` (`CFBundleIconFile`, `CFBundleName`) — there is no runtime code for either, which is why the dev loop runs the bundle too.
 
-Running unbundled, `cargo run` hands the same PNG to AppKit at startup, so the Dock icon matches during development.
+The bundle is ad-hoc signed, not notarized: fine on the machine that built it, blocked by Gatekeeper anywhere else.
+
+`cargo run` still works but produces a bare binary, so macOS falls back to the executable name and a generic icon.
 
 ### Keybindings
 

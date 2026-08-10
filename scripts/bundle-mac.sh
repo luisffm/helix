@@ -5,8 +5,19 @@ cd "$(dirname "$0")/.."
 ICON="${ICON:-assets/icon.png}"
 ICONSET_SRC="${ICONSET:-assets/icon.iconset}"
 BUNDLE_ID="${BUNDLE_ID:-com.luisffm.helix}"
+PROFILE="${PROFILE:-release}"
+SIGN="${SIGN:-1}"
 APP="target/Helix.app"
+ICNS="$APP/Contents/Resources/helix.icns"
 VERSION="$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)"
+
+if [ "$PROFILE" = "debug" ]; then
+  BUILD_FLAGS=""
+  PROFILE_DIR="debug"
+else
+  BUILD_FLAGS="--release"
+  PROFILE_DIR="release"
+fi
 
 if [ ! -d "$ICONSET_SRC" ] && [ ! -f "$ICON" ]; then
   echo "bundle-mac: no icon at $ICONSET_SRC or $ICON" >&2
@@ -25,27 +36,28 @@ if [ ! -d "$ICONSET_SRC" ]; then
   fi
 fi
 
-cargo build --release
+cargo build $BUILD_FLAGS
 
-rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 
-STAGE="$(mktemp -d)"
-ICONSET="$STAGE/helix.iconset"
-mkdir -p "$ICONSET"
-if [ -d "$ICONSET_SRC" ]; then
-  cp "$ICONSET_SRC"/*.png "$ICONSET/"
-else
-  for SIZE in 16 32 128 256 512; do
-    sips -z "$SIZE" "$SIZE" "$ICON" --out "$ICONSET/icon_${SIZE}x${SIZE}.png" >/dev/null
-    RETINA=$((SIZE * 2))
-    sips -z "$RETINA" "$RETINA" "$ICON" --out "$ICONSET/icon_${SIZE}x${SIZE}@2x.png" >/dev/null
-  done
+if [ ! -f "$ICNS" ] || [ "$ICONSET_SRC" -nt "$ICNS" ] || [ "$ICON" -nt "$ICNS" ]; then
+  STAGE="$(mktemp -d)"
+  ICONSET="$STAGE/helix.iconset"
+  mkdir -p "$ICONSET"
+  if [ -d "$ICONSET_SRC" ]; then
+    cp "$ICONSET_SRC"/*.png "$ICONSET/"
+  else
+    for SIZE in 16 32 128 256 512; do
+      sips -z "$SIZE" "$SIZE" "$ICON" --out "$ICONSET/icon_${SIZE}x${SIZE}.png" >/dev/null
+      RETINA=$((SIZE * 2))
+      sips -z "$RETINA" "$RETINA" "$ICON" --out "$ICONSET/icon_${SIZE}x${SIZE}@2x.png" >/dev/null
+    done
+  fi
+  iconutil -c icns "$ICONSET" -o "$ICNS"
+  rm -rf "$STAGE"
 fi
-iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/helix.icns"
-rm -rf "$STAGE"
 
-cp target/release/helix "$APP/Contents/MacOS/helix"
+cp "target/$PROFILE_DIR/helix" "$APP/Contents/MacOS/helix"
 
 cat >"$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -77,8 +89,9 @@ cat >"$APP/Contents/Info.plist" <<PLIST
 PLIST
 
 plutil -lint "$APP/Contents/Info.plist" >/dev/null
-codesign --force --sign - "$APP" >/dev/null 2>&1 || echo "bundle-mac: ad-hoc signing failed, bundle stays unsigned" >&2
+if [ "$SIGN" = "1" ]; then
+  codesign --force --sign - "$APP" >/dev/null 2>&1 || echo "bundle-mac: ad-hoc signing failed, bundle stays unsigned" >&2
+fi
 touch "$APP"
 
-echo "built $APP ($VERSION, $BUNDLE_ID)"
-echo "run: open $APP --args \$PWD"
+echo "built $APP ($PROFILE, $VERSION, $BUNDLE_ID)"

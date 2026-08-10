@@ -7,8 +7,8 @@ use gpui::{
   AnyElement, Context, Entity, EventEmitter, IntoElement, ParentElement, Render, SharedString,
   Window, div, prelude::*, px,
 };
-use gpui_component::input::{Input, InputState};
-use gpui_component::{Icon, IconName};
+use gpui_component::input::{Input, InputEvent, InputState};
+use gpui_component::{Icon, IconName, Sizable};
 use helix_github::{BlockedReason, Eligibility, HostedReview, NextAction, ReviewLookupOutcome};
 use helix_models::{DiffBase, GitFileKind, GitFileStatus, GitSnapshot};
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -19,6 +19,25 @@ const INDENT: f32 = 16.0;
 const BASE_PAD: f32 = 8.0;
 const MAX_ROWS: usize = 2000;
 const MAX_DEPTH: usize = 16;
+const FILTER_MAX_MATCHES: usize = 300;
+const FILTER_MAX_DIRS: usize = 4000;
+const IGNORED_RANK_PENALTY: u8 = 3;
+
+/// `needle` must already be lowercase. `by_path` widens the match to the
+/// workspace-relative path, which only helps once the query has a separator.
+pub fn match_rank(name: &str, relative: &str, needle: &str, by_path: bool) -> Option<u8> {
+  let name = name.to_lowercase();
+  if name.starts_with(needle) {
+    return Some(0);
+  }
+  if name.contains(needle) {
+    return Some(1);
+  }
+  if by_path && relative.to_lowercase().contains(needle) {
+    return Some(2);
+  }
+  None
+}
 
 pub enum ContextPanelEvent {
   OpenFile { path: PathBuf, preview: bool },
@@ -68,6 +87,7 @@ pub struct ContextPanel {
   dir_status: HashMap<PathBuf, GitFileKind>,
   selected: Option<PathBuf>,
   show_dotfiles: bool,
+  file_filter: Entity<InputState>,
   commit_message: Entity<InputState>,
   generating_message: bool,
   collapsed: HashSet<GitSection>,
@@ -86,6 +106,13 @@ impl ContextPanel {
         .auto_grow(2, 6)
         .placeholder("Commit message")
     });
+    let file_filter = cx.new(|cx| InputState::new(window, cx).placeholder("Find files"));
+    cx.subscribe(&file_filter, |_, _, event: &InputEvent, cx| {
+      if matches!(event, InputEvent::Change) {
+        cx.notify();
+      }
+    })
+    .detach();
     Self {
       root,
       active: RightTab::Files,
@@ -96,6 +123,7 @@ impl ContextPanel {
       dir_status: HashMap::new(),
       selected: None,
       show_dotfiles: false,
+      file_filter,
       commit_message,
       generating_message: false,
       collapsed: HashSet::from([GitSection::Commits]),
@@ -484,6 +512,49 @@ impl ContextPanel {
     nodes
   }
 
+  fn filter_matches(&mut self, query: &str) -> Vec<FileNode> {
+    let needle = query.to_lowercase();
+    let by_path = needle.contains('/');
+    let mut ranked: Vec<(u8, FileNode)> = Vec::new();
+    let mut queue = std::collections::VecDeque::from([self.root.clone()]);
+    let mut dirs = 0usize;
+
+    while let Some(dir) = queue.pop_front() {
+      if dirs >= FILTER_MAX_DIRS || ranked.len() >= FILTER_MAX_MATCHES {
+        break;
+      }
+      dirs += 1;
+      for node in self.children_of(&dir) {
+        if node.is_dir {
+          if !node.ignored {
+            queue.push_back(node.path.clone());
+          }
+          continue;
+        }
+        let relative = node
+          .path
+          .strip_prefix(&self.root)
+          .unwrap_or(&node.path)
+          .to_string_lossy()
+          .to_string();
+        let Some(mut rank) = match_rank(&node.name, &relative, &needle, by_path) else {
+          continue;
+        };
+        if node.ignored {
+          rank += IGNORED_RANK_PENALTY;
+        }
+        ranked.push((rank, node));
+      }
+    }
+
+    ranked.sort_by(|a, b| {
+      a.0
+        .cmp(&b.0)
+        .then_with(|| natural_cmp(&a.1.name, &b.1.name))
+    });
+    ranked.into_iter().map(|(_, node)| node).collect()
+  }
+
   fn visible_rows(&mut self, dir: PathBuf, depth: usize, out: &mut Vec<(FileNode, usize)>) {
     if depth > MAX_DEPTH || out.len() > MAX_ROWS {
       return;
@@ -497,38 +568,221 @@ impl ContextPanel {
     }
   }
 
-  fn render_files(&mut self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
-    let mut rows = Vec::new();
-    self.visible_rows(self.root.clone(), 0, &mut rows);
+  fn render_filter(&self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
+    let dirty = !self.file_filter.read(cx).value().trim().is_empty();
+    div()
+      .flex()
+      .flex_none()
+      .items_center()
+      .gap_1()
+      .h(px(28.0))
+      .mx_2()
+      .mt_2()
+      .px_2()
+      .rounded_md()
+      .border_1()
+      .border_color(theme.panel_border)
+      .bg(theme.elevated)
+      .child(
+        div()
+          .flex_none()
+          .text_color(theme.text_dim)
+          .child(Icon::new(IconName::Search).size_3()),
+      )
+      .child(
+        div()
+          .flex_1()
+          .min_w_0()
+          .child(Input::new(&self.file_filter).appearance(false).xsmall()),
+      )
+      .when(dirty, |el| {
+        el.child(
+          div()
+            .id("files-filter-clear")
+            .flex_none()
+            .size(px(16.0))
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded_sm()
+            .cursor_pointer()
+            .text_color(theme.text_dim)
+            .hover(|s| s.bg(theme.hover).text_color(theme.text))
+            .on_click(cx.listener(|this, _, window, cx| {
+              this
+                .file_filter
+                .update(cx, |state, cx| state.set_value("", window, cx));
+              cx.notify();
+            }))
+            .child(Icon::new(IconName::Close).size_3()),
+        )
+      })
+      .into_any_element()
+  }
 
-    if rows.is_empty() {
-      return div()
-        .flex_1()
-        .flex()
-        .items_center()
-        .justify_center()
-        .text_xs()
-        .text_color(theme.text_dim)
-        .child("No files in this workspace")
-        .into_any_element();
-    }
+  fn render_files(&mut self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
+    let query = self.file_filter.read(cx).value().trim().to_string();
+    let filter = self.render_filter(theme, cx);
+
+    let body = if query.is_empty() {
+      let mut rows = Vec::new();
+      self.visible_rows(self.root.clone(), 0, &mut rows);
+      if rows.is_empty() {
+        self.empty_files("No files in this workspace", theme)
+      } else {
+        div()
+          .id("files-scroll")
+          .flex_1()
+          .min_h_0()
+          .overflow_y_scroll()
+          .py_2()
+          .px_1()
+          .flex()
+          .flex_col()
+          .children(
+            rows
+              .into_iter()
+              .enumerate()
+              .map(|(ix, (node, depth))| self.render_row(ix, node, depth, theme, cx)),
+          )
+          .into_any_element()
+      }
+    } else {
+      let matches = self.filter_matches(&query);
+      if matches.is_empty() {
+        self.empty_files("No file matches", theme)
+      } else {
+        div()
+          .id("files-matches")
+          .flex_1()
+          .min_h_0()
+          .overflow_y_scroll()
+          .py_2()
+          .px_1()
+          .flex()
+          .flex_col()
+          .children(
+            matches
+              .into_iter()
+              .enumerate()
+              .map(|(ix, node)| self.render_match(ix, node, theme, cx)),
+          )
+          .into_any_element()
+      }
+    };
 
     div()
-      .id("files-scroll")
       .flex_1()
       .min_h_0()
-      .overflow_y_scroll()
-      .py_2()
-      .px_1()
       .flex()
       .flex_col()
-      .children(
-        rows
-          .into_iter()
-          .enumerate()
-          .map(|(ix, (node, depth))| self.render_row(ix, node, depth, theme, cx)),
-      )
+      .child(filter)
+      .child(body)
       .into_any_element()
+  }
+
+  fn empty_files(&self, message: &'static str, theme: &Theme) -> AnyElement {
+    div()
+      .flex_1()
+      .flex()
+      .items_center()
+      .justify_center()
+      .text_xs()
+      .text_color(theme.text_dim)
+      .child(message)
+      .into_any_element()
+  }
+
+  fn render_match(
+    &self,
+    ix: usize,
+    node: FileNode,
+    theme: &Theme,
+    cx: &mut Context<Self>,
+  ) -> AnyElement {
+    let status = self.file_status.get(&node.path).copied();
+    let name_color = match status {
+      Some(kind) => file_icons::status_color(kind, theme),
+      None if node.ignored => file_icons::ignored_color(),
+      None => theme.text,
+    };
+    let parent = node
+      .path
+      .parent()
+      .and_then(|dir| dir.strip_prefix(&self.root).ok())
+      .map(|dir| dir.to_string_lossy().to_string())
+      .filter(|dir| !dir.is_empty());
+    let is_selected = self.selected.as_ref() == Some(&node.path);
+    let path = node.path.clone();
+
+    let mut row = div()
+      .id(SharedString::from(format!("file-match-{ix}")))
+      .flex()
+      .items_center()
+      .gap_1()
+      .h(px(ROW_HEIGHT))
+      .pl(px(BASE_PAD))
+      .pr_2()
+      .rounded_md()
+      .cursor_pointer()
+      .text_xs()
+      .when(is_selected, |el| {
+        el.bg(theme.elevated)
+          .border_1()
+          .border_color(theme.panel_border)
+      })
+      .when(!is_selected, |el| el.hover(|s| s.bg(theme.hover)))
+      .on_click(
+        cx.listener(move |this, event: &gpui::ClickEvent, _window, cx| {
+          this.selected = Some(path.clone());
+          cx.emit(ContextPanelEvent::OpenFile {
+            path: path.clone(),
+            preview: event.click_count() < 2,
+          });
+          cx.notify();
+        }),
+      )
+      .child(
+        div()
+          .flex_none()
+          .text_color(if node.ignored {
+            file_icons::ignored_color()
+          } else {
+            theme.text_dim
+          })
+          .child(file_icons::icon(&node.path).size_3()),
+      )
+      .child(
+        div()
+          .flex_none()
+          .text_color(name_color)
+          .child(node.name.clone()),
+      );
+
+    if let Some(parent) = parent {
+      row = row.child(
+        div()
+          .flex_1()
+          .min_w_0()
+          .overflow_hidden()
+          .whitespace_nowrap()
+          .text_color(theme.text_dim)
+          .child(parent),
+      );
+    } else {
+      row = row.child(div().flex_1());
+    }
+
+    if let Some(kind) = status {
+      row = row.child(
+        div()
+          .flex_none()
+          .text_color(file_icons::status_color(kind, theme))
+          .child(file_icons::status_letter(kind)),
+      );
+    }
+
+    row.into_any_element()
   }
 
   fn render_row(
