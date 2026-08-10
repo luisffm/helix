@@ -35,10 +35,20 @@ pub struct EditorView {
   pub title: SharedString,
   body: Body,
   disk_signature: Option<u64>,
+  disk_stamp: Option<(std::time::SystemTime, u64)>,
+  load_token: u64,
   dirty: bool,
   external: Option<ExternalMutation>,
   save_error: Option<String>,
   focus_handle: FocusHandle,
+}
+
+/// Cheap stand-in for hashing the file: a watcher batch that did not move the
+/// modification time or the length cannot have changed the content.
+fn disk_stamp(path: &Path) -> Option<(std::time::SystemTime, u64)> {
+  let metadata = std::fs::metadata(path).ok()?;
+
+  Some((metadata.modified().ok()?, metadata.len()))
 }
 
 impl EventEmitter<EditorViewEvent> for EditorView {}
@@ -64,6 +74,8 @@ impl EditorView {
       title: title.into(),
       body: Body::Binary,
       disk_signature: None,
+      disk_stamp: None,
+      load_token: 0,
       dirty: false,
       external: None,
       save_error: None,
@@ -84,9 +96,49 @@ impl EditorView {
   }
 
   fn load(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-    let language = helix_buffer::language::of(&self.path);
+    self.disk_stamp = disk_stamp(&self.path);
 
-    match helix_buffer::read(&self.path) {
+    let token = self.begin_read();
+    let task = self.spawn_read(cx);
+    let this = cx.entity().downgrade();
+
+    window
+      .spawn(cx, async move |cx| {
+        let content = task.await;
+
+        this
+          .update_in(cx, |view, window, cx| {
+            if view.load_token != token {
+              return;
+            }
+
+            view.apply_content(content, window, cx);
+          })
+          .ok();
+      })
+      .detach();
+  }
+
+  fn begin_read(&mut self) -> u64 {
+    self.load_token = self.load_token.wrapping_add(1);
+
+    self.load_token
+  }
+
+  fn spawn_read(&self, cx: &mut Context<Self>) -> gpui::Task<anyhow::Result<FileContent>> {
+    let path = self.path.clone();
+
+    cx.background_executor()
+      .spawn(async move { helix_buffer::read(&path) })
+  }
+
+  fn apply_content(
+    &mut self,
+    content: anyhow::Result<FileContent>,
+    window: &mut Window,
+    cx: &mut Context<Self>,
+  ) {
+    match content {
       Ok(FileContent::Text { text, signature }) => {
         self.disk_signature = Some(signature);
 
@@ -95,6 +147,8 @@ impl EditorView {
             state.update(cx, |state, cx| state.set_value(text, window, cx));
           }
           _ => {
+            let language = helix_buffer::language::of(&self.path);
+
             let state = cx.new(|cx| {
               let mut state = InputState::new(window, cx)
                 .code_editor(language)
@@ -165,6 +219,7 @@ impl EditorView {
     match helix_buffer::write(&self.path, &text) {
       Ok(signature) => {
         self.disk_signature = Some(signature);
+        self.disk_stamp = disk_stamp(&self.path);
         self.dirty = false;
         self.external = None;
         self.save_error = None;
@@ -179,30 +234,54 @@ impl EditorView {
   }
 
   pub fn note_external_change(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-    if !self.path.exists() {
+    let Some(stamp) = disk_stamp(&self.path) else {
       if self.dirty {
         self.external = Some(ExternalMutation::Deleted);
         cx.notify();
       }
 
       return;
-    }
-
-    let disk = match helix_buffer::read(&self.path) {
-      Ok(FileContent::Text { signature, .. }) => Some(signature),
-      _ => None,
     };
 
-    if disk.is_some() && disk == self.disk_signature {
+    if Some(stamp) == self.disk_stamp {
       return;
     }
 
-    if self.dirty {
-      self.external = Some(ExternalMutation::Changed);
-      cx.notify();
-    } else {
-      self.load(window, cx);
-    }
+    self.disk_stamp = Some(stamp);
+
+    let token = self.begin_read();
+    let task = self.spawn_read(cx);
+    let this = cx.entity().downgrade();
+
+    window
+      .spawn(cx, async move |cx| {
+        let content = task.await;
+
+        this
+          .update_in(cx, |view, window, cx| {
+            if view.load_token != token {
+              return;
+            }
+
+            let signature = match &content {
+              Ok(FileContent::Text { signature, .. }) => Some(*signature),
+              _ => None,
+            };
+
+            if signature.is_some() && signature == view.disk_signature {
+              return;
+            }
+
+            if view.dirty {
+              view.external = Some(ExternalMutation::Changed);
+              cx.notify();
+            } else {
+              view.apply_content(content, window, cx);
+            }
+          })
+          .ok();
+      })
+      .detach();
   }
 
   pub fn reload_from_disk(&mut self, window: &mut Window, cx: &mut Context<Self>) {

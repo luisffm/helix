@@ -19,6 +19,7 @@ pub struct DiffView {
   error: Option<String>,
   old_styles: Vec<(std::ops::Range<usize>, Hsla)>,
   new_styles: Vec<(std::ops::Range<usize>, Hsla)>,
+  load_token: u64,
   focus_handle: FocusHandle,
 }
 
@@ -41,6 +42,7 @@ impl DiffView {
       error: None,
       old_styles: Vec::new(),
       new_styles: Vec::new(),
+      load_token: 0,
       focus_handle: cx.focus_handle(),
     };
 
@@ -49,21 +51,51 @@ impl DiffView {
     view
   }
 
+  /// The diff plus both syntax passes are built in the background, and the view
+  /// keeps showing the content it already has until the newest load lands.
   pub fn reload(&mut self, cx: &mut Context<Self>) {
-    match helix_git::diff::file_diff(&self.root, &self.relative, &self.base) {
-      Ok(diff) => {
-        self.old_styles = highlight(&diff.language, &diff.old_text);
-        self.new_styles = highlight(&diff.language, &diff.new_text);
-        self.diff = Some(diff);
-        self.error = None;
-      }
-      Err(err) => {
-        self.diff = None;
-        self.error = Some(err.to_string());
-      }
-    }
+    self.load_token = self.load_token.wrapping_add(1);
 
-    cx.notify();
+    let token = self.load_token;
+    let root = self.root.clone();
+    let relative = self.relative.clone();
+    let base = self.base.clone();
+
+    let task = cx.background_executor().spawn(async move {
+      let diff = helix_git::diff::file_diff(&root, &relative, &base)?;
+      let old_styles = highlight(&diff.language, &diff.old_text);
+      let new_styles = highlight(&diff.language, &diff.new_text);
+
+      anyhow::Ok((diff, old_styles, new_styles))
+    });
+
+    cx.spawn(async move |this, cx| {
+      let result = task.await;
+
+      this
+        .update(cx, |view, cx| {
+          if view.load_token != token {
+            return;
+          }
+
+          match result {
+            Ok((diff, old_styles, new_styles)) => {
+              view.old_styles = old_styles;
+              view.new_styles = new_styles;
+              view.diff = Some(diff);
+              view.error = None;
+            }
+            Err(err) => {
+              view.diff = None;
+              view.error = Some(err.to_string());
+            }
+          }
+
+          cx.notify();
+        })
+        .ok();
+    })
+    .detach();
   }
 
   pub fn stats(&self) -> (usize, usize) {
