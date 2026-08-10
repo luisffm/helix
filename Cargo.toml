@@ -31,7 +31,7 @@ notify = "8"
 similar = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tokio = { version = "1", features = ["sync", "rt-multi-thread", "time", "macros"] }
+tokio = { version = "1", features = ["sync"] }
 anyhow = "1"
 
 helix-buffer = { path = "src/buffer" }
@@ -46,6 +46,11 @@ helix-agents = { path = "src/agents" }
 helix-state = { path = "src/state" }
 helix-commands = { path = "src/commands" }
 helix-ui = { path = "src/ui" }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
 
 [profile.dev]
 opt-level = 1
