@@ -5,7 +5,6 @@ use gpui_component::IconNamed;
 /// resolve against the asset source registered in the app crate.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum HelixIcon {
-  CircleSlash,
   FileCode,
   FileImage,
   FileSliders,
@@ -21,7 +20,6 @@ pub enum HelixIcon {
 impl IconNamed for HelixIcon {
   fn path(self) -> SharedString {
     match self {
-      HelixIcon::CircleSlash => "icons/circle-slash.svg",
       HelixIcon::FileCode => "icons/file-code.svg",
       HelixIcon::FileImage => "icons/file-image.svg",
       HelixIcon::FileSliders => "icons/file-sliders.svg",
