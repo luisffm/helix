@@ -1,11 +1,9 @@
-use crate::components::{
-  HEADER_HEIGHT, SpinnerClock, Spinning, ago, drive_spinner, icon_button, section_label, spinner,
-};
+use crate::components::{HEADER_HEIGHT, ago, icon_button, section_label, spinner};
 use crate::file_icons;
 use crate::icons::HelixIcon;
 use crate::theme::Theme;
 use gpui::{
-  AnyElement, App, Context, Entity, EventEmitter, IntoElement, ParentElement, Render, SharedString,
+  AnyElement, Context, Entity, EventEmitter, IntoElement, ParentElement, Render, SharedString,
   Window, div, prelude::*, px, uniform_list,
 };
 use gpui_component::input::{Input, InputEvent, InputState};
@@ -151,20 +149,9 @@ pub struct ContextPanel {
   pr: Option<HostedReview>,
   pr_eligibility: Option<Eligibility>,
   pr_busy: bool,
-  spin: SpinnerClock,
 }
 
 impl EventEmitter<ContextPanelEvent> for ContextPanel {}
-
-impl Spinning for ContextPanel {
-  fn spinner_clock(&mut self) -> &mut SpinnerClock {
-    &mut self.spin
-  }
-
-  fn spinner_active(&self, _cx: &App) -> bool {
-    self.pr_busy
-  }
-}
 
 impl ContextPanel {
   pub fn new(root: PathBuf, window: &mut Window, cx: &mut Context<Self>) -> Self {
@@ -213,7 +200,6 @@ impl ContextPanel {
       pr: None,
       pr_eligibility: None,
       pr_busy: false,
-      spin: SpinnerClock::default(),
     }
   }
 
@@ -985,6 +971,7 @@ impl ContextPanel {
     let mut row = div()
       .id(SharedString::from(format!("file-match-{ix}")))
       .flex()
+      .w_full()
       .items_center()
       .gap_1()
       .h(px(ROW_HEIGHT))
@@ -1111,6 +1098,7 @@ impl ContextPanel {
     let mut row = div()
       .id(SharedString::from(format!("file-row-{ix}")))
       .flex()
+      .w_full()
       .items_center()
       .gap_1()
       .h(px(ROW_HEIGHT))
@@ -1734,7 +1722,13 @@ impl ContextPanel {
     };
     let (unstaged, untracked) = if self.is_open(GitSection::Changes) {
       (
-        self.git_file_rows(&self.git_rows.unstaged, DiffBase::Unstaged, false, theme, cx),
+        self.git_file_rows(
+          &self.git_rows.unstaged,
+          DiffBase::Unstaged,
+          false,
+          theme,
+          cx,
+        ),
         self.git_file_rows(
           &self.git_rows.untracked,
           DiffBase::Unstaged,
@@ -2016,7 +2010,7 @@ impl ContextPanel {
           .child(label),
       )
       .when(self.pr_busy, |el| {
-        el.child(spinner(self.spin.step(), theme.text_dim))
+        el.child(spinner("pr-spin", theme.text_dim))
       })
       .when(!self.pr_busy, |el| {
         el.child(
@@ -2123,8 +2117,6 @@ fn primary_action_label(action: NextAction) -> Option<&'static str> {
 
 impl Render for ContextPanel {
   fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-    drive_spinner(self, cx);
-
     let theme = Theme::of(cx).clone();
     let active = self.active;
 

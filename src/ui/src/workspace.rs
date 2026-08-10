@@ -63,7 +63,7 @@ impl TabItem {
 
   pub fn detail(&self, cx: &App) -> String {
     match &self.content {
-      TabContent::Terminal(view) => match view.read(cx).kind {
+      TabContent::Terminal(view) => match view.read(cx).agent_kind() {
         SessionKind::Terminal => "Terminal tab".to_string(),
         SessionKind::ClaudeCode => "Claude session".to_string(),
       },
@@ -77,7 +77,7 @@ impl TabItem {
       TabContent::Terminal(view) => {
         let view = view.read(cx);
 
-        match view.kind {
+        match view.agent_kind() {
           SessionKind::Terminal => (
             Icon::new(IconName::SquareTerminal),
             status_color(view.status(), theme),
