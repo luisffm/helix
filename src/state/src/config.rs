@@ -1,5 +1,12 @@
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+use std::time::SystemTime;
+
+/// `load()` sits on hot paths (tab switches, git refreshes, every resource tick),
+/// so the parsed config is kept in process and only re-read when the file's
+/// modification time moves — which also covers edits made outside the app.
+static CACHE: Mutex<Option<(PathBuf, HelixConfig, Option<SystemTime>)>> = Mutex::new(None);
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct WorktreeConfig {
@@ -187,15 +194,32 @@ fn config_path() -> Option<PathBuf> {
   Some(app_dir()?.join("config.json"))
 }
 
+fn modified_at(path: &Path) -> Option<SystemTime> {
+  std::fs::metadata(path).ok()?.modified().ok()
+}
+
 pub fn load() -> HelixConfig {
   let Some(path) = config_path() else {
     return HelixConfig::default();
   };
 
-  std::fs::read_to_string(path)
+  let stamp = modified_at(&path);
+  let mut cache = CACHE.lock().unwrap_or_else(|err| err.into_inner());
+
+  if let Some((cached_path, config, cached_stamp)) = cache.as_ref() {
+    if *cached_path == path && *cached_stamp == stamp {
+      return config.clone();
+    }
+  }
+
+  let config: HelixConfig = std::fs::read_to_string(&path)
     .ok()
     .and_then(|content| serde_json::from_str(&content).ok())
-    .unwrap_or_default()
+    .unwrap_or_default();
+
+  *cache = Some((path, config.clone(), stamp));
+
+  config
 }
 
 pub fn save(config: &HelixConfig) {
@@ -205,9 +229,18 @@ pub fn save(config: &HelixConfig) {
     let _ = std::fs::create_dir_all(parent);
   }
 
-  if let Ok(json) = serde_json::to_string_pretty(config) {
-    let _ = std::fs::write(path, json);
+  let Ok(json) = serde_json::to_string_pretty(config) else {
+    return;
+  };
+
+  if std::fs::write(&path, json).is_err() {
+    return;
   }
+
+  let stamp = modified_at(&path);
+  let mut cache = CACHE.lock().unwrap_or_else(|err| err.into_inner());
+
+  *cache = Some((path, config.clone(), stamp));
 }
 
 pub fn ensure_project(root: &Path) {
