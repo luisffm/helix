@@ -331,7 +331,7 @@ impl Render for ProjectPanel {
         .id(SharedString::from(format!("project-row-{project_ix}")))
         .flex()
         .items_center()
-        .gap_2()
+        .gap_1p5()
         .mx_2()
         .px_2()
         .h(px(30.0))
@@ -375,7 +375,7 @@ impl Render for ProjectPanel {
               .size_4(),
             ),
         )
-        .child(div().flex_none().px_0p5().child(glyph_element))
+        .child(glyph_element)
         .child(
           div()
             .flex_1()
