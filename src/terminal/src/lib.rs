@@ -1,3 +1,6 @@
+pub mod mouse;
+pub mod shell;
+
 use alacritty_terminal::event::{Event as TermEvent, EventListener, Notify, OnResize, WindowSize};
 use alacritty_terminal::event_loop::{EventLoop, Msg, Notifier};
 use alacritty_terminal::grid::{Dimensions, Scroll};

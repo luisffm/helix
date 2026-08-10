@@ -8,14 +8,19 @@ use alacritty_terminal::term::TermMode;
 use alacritty_terminal::term::cell::Flags;
 use alacritty_terminal::vte::ansi::{Color as AnsiColor, CursorShape, NamedColor};
 use gpui::{
-  App, ClipboardItem, Context, EventEmitter, FocusHandle, Focusable, Font, FontFallbacks,
-  FontStyle, FontWeight, Hsla, IntoElement, KeyDownEvent, MouseButton, MouseDownEvent,
-  MouseMoveEvent, MouseUpEvent, ParentElement, Pixels, Point, Render, ScrollWheelEvent,
-  SharedString, StyledText, TextRun, UnderlineStyle, Window, canvas, div, font, point, prelude::*,
-  px,
+  App, ClipboardItem, Context, EventEmitter, ExternalPaths, FocusHandle, Focusable, Font,
+  FontFallbacks, FontStyle, FontWeight, Hsla, IntoElement, KeyDownEvent, Modifiers, MouseButton,
+  MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, Pixels, Point, Render,
+  ScrollWheelEvent, SharedString, StyledText, TextRun, UnderlineStyle, Window, canvas, div, font,
+  point, prelude::*, px,
 };
 use helix_agents::launch_spec;
 use helix_models::{AgentStatus, SessionId, SessionKind};
+use helix_terminal::mouse::{
+  BUTTON_LEFT, BUTTON_MIDDLE, BUTTON_RIGHT, BUTTON_WHEEL_DOWN, BUTTON_WHEEL_UP, MouseReport,
+  alternate_scroll, encode as encode_mouse, reports_motion,
+};
+use helix_terminal::shell::quote_path;
 use helix_terminal::{SpawnOptions, TerminalBackend};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
@@ -24,6 +29,16 @@ const DRAIN_LIMIT: usize = 512;
 const FLUSH_INTERVAL: Duration = Duration::from_millis(16);
 const ACTIVITY_EMIT_INTERVAL: Duration = Duration::from_secs(1);
 const DETECT_INTERVAL: Duration = Duration::from_secs(5);
+const MOTION_WITHOUT_BUTTON: u8 = 3;
+
+fn pty_mouse_button(button: MouseButton) -> Option<u8> {
+  match button {
+    MouseButton::Left => Some(BUTTON_LEFT),
+    MouseButton::Middle => Some(BUTTON_MIDDLE),
+    MouseButton::Right => Some(BUTTON_RIGHT),
+    _ => None,
+  }
+}
 
 pub enum TerminalViewEvent {
   Activity,
@@ -53,6 +68,7 @@ pub struct TerminalView {
   scroll_accum: f32,
   selecting: bool,
   select_anchor: Option<(usize, i32)>,
+  last_motion_cell: Option<(usize, i32)>,
   frame: Option<Frame>,
   frame_key: Option<FrameKey>,
   frame_stale: bool,
@@ -85,6 +101,7 @@ struct Frame {
   lines: Vec<LineFrame>,
   cursor: Option<(i32, usize)>,
   display_offset: usize,
+  mouse_reporting: bool,
 }
 
 /// The four styles a cell can ask for, built once per frame instead of cloned
@@ -212,6 +229,7 @@ impl TerminalView {
       scroll_accum: 0.0,
       selecting: false,
       select_anchor: None,
+      last_motion_cell: None,
       frame: None,
       frame_key: None,
       frame_stale: true,
@@ -444,12 +462,63 @@ impl TerminalView {
     (col, row, side)
   }
 
+  fn reports_mouse(&self, backend: &TerminalBackend, modifiers: &Modifiers) -> bool {
+    !modifiers.shift && backend.mode().intersects(TermMode::MOUSE_MODE)
+  }
+
+  fn report_mouse(
+    &self,
+    backend: &TerminalBackend,
+    button: u8,
+    position: Point<Pixels>,
+    pressed: bool,
+    motion: bool,
+    modifiers: &Modifiers,
+  ) {
+    let (col, row, _) = self.grid_position(position);
+    let report = MouseReport {
+      button,
+      col,
+      row: row.max(0) as usize,
+      pressed,
+      motion,
+      shift: modifiers.shift,
+      alt: modifiers.alt,
+      ctrl: modifiers.control,
+    };
+
+    if let Some(bytes) = encode_mouse(report, backend.mode()) {
+      backend.write(bytes);
+    }
+  }
+
   fn on_mouse_down(&mut self, event: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
     window.focus(&self.focus_handle);
 
     let Some(backend) = self.backend.clone() else {
       return;
     };
+
+    if let Some(button) = pty_mouse_button(event.button) {
+      if self.reports_mouse(&backend, &event.modifiers) {
+        self.report_mouse(
+          &backend,
+          button,
+          event.position,
+          true,
+          false,
+          &event.modifiers,
+        );
+
+        cx.stop_propagation();
+
+        return;
+      }
+    }
+
+    if event.button != MouseButton::Left {
+      return;
+    }
 
     let (col, row, side) = self.grid_position(event.position);
     let grid_point = backend.viewport_to_point(col, row);
@@ -482,13 +551,45 @@ impl TerminalView {
     _window: &mut Window,
     cx: &mut Context<Self>,
   ) {
-    if !self.selecting || event.pressed_button != Some(MouseButton::Left) {
-      return;
-    }
-
     let Some(backend) = self.backend.clone() else {
       return;
     };
+
+    if self.reports_mouse(&backend, &event.modifiers) {
+      let pressed = event.pressed_button.is_some();
+
+      if !reports_motion(backend.mode(), pressed) {
+        return;
+      }
+
+      let cell = self.grid_position(event.position);
+
+      if self.last_motion_cell == Some((cell.0, cell.1)) {
+        return;
+      }
+
+      self.last_motion_cell = Some((cell.0, cell.1));
+
+      let button = event
+        .pressed_button
+        .and_then(pty_mouse_button)
+        .unwrap_or(MOTION_WITHOUT_BUTTON);
+
+      self.report_mouse(
+        &backend,
+        button,
+        event.position,
+        true,
+        true,
+        &event.modifiers,
+      );
+
+      return;
+    }
+
+    if !self.selecting || event.pressed_button != Some(MouseButton::Left) {
+      return;
+    }
 
     let (col, row, side) = self.grid_position(event.position);
     let grid_point = backend.viewport_to_point(col, row);
@@ -512,9 +613,68 @@ impl TerminalView {
     cx.notify();
   }
 
-  fn on_mouse_up(&mut self, _: &MouseUpEvent, _window: &mut Window, cx: &mut Context<Self>) {
+  fn on_mouse_up(&mut self, event: &MouseUpEvent, _window: &mut Window, cx: &mut Context<Self>) {
+    if let Some(backend) = self.backend.clone() {
+      if let Some(button) = pty_mouse_button(event.button) {
+        if self.reports_mouse(&backend, &event.modifiers) {
+          self.report_mouse(
+            &backend,
+            button,
+            event.position,
+            false,
+            false,
+            &event.modifiers,
+          );
+
+          self.last_motion_cell = None;
+
+          cx.stop_propagation();
+
+          return;
+        }
+      }
+
+      if self.selecting {
+        if let Some(text) = backend.selection_text().filter(|text| !text.is_empty()) {
+          cx.write_to_clipboard(ClipboardItem::new_string(text));
+        }
+      }
+    }
+
     self.selecting = false;
     self.select_anchor = None;
+
+    cx.notify();
+  }
+
+  fn on_drop_paths(&mut self, paths: &ExternalPaths, window: &mut Window, cx: &mut Context<Self>) {
+    let Some(backend) = self.backend.clone() else {
+      return;
+    };
+
+    let text = paths
+      .paths()
+      .iter()
+      .map(|path| quote_path(path))
+      .collect::<Vec<_>>()
+      .join(" ");
+
+    if text.is_empty() {
+      return;
+    }
+
+    window.focus(&self.focus_handle);
+
+    let payload = if backend.mode().contains(TermMode::BRACKETED_PASTE) {
+      format!("\x1b[200~{text}\x1b[201~")
+    } else {
+      text
+    };
+
+    backend.scroll_to_bottom();
+    backend.write(payload.into_bytes());
+
+    self.frame_stale = true;
 
     cx.notify();
   }
@@ -535,15 +695,46 @@ impl TerminalView {
 
     let lines = self.scroll_accum as i32;
 
-    if lines != 0 {
-      self.scroll_accum -= lines as f32;
-
-      backend.scroll_lines(lines);
-
-      self.frame_stale = true;
-
-      cx.notify();
+    if lines == 0 {
+      return;
     }
+
+    self.scroll_accum -= lines as f32;
+
+    let mode = backend.mode();
+
+    if self.reports_mouse(&backend, &event.modifiers) {
+      let button = if lines > 0 {
+        BUTTON_WHEEL_UP
+      } else {
+        BUTTON_WHEEL_DOWN
+      };
+
+      for _ in 0..lines.unsigned_abs() {
+        self.report_mouse(
+          &backend,
+          button,
+          event.position,
+          true,
+          false,
+          &event.modifiers,
+        );
+      }
+
+      return;
+    }
+
+    if let Some(bytes) = alternate_scroll(lines, mode) {
+      backend.write(bytes);
+
+      return;
+    }
+
+    backend.scroll_lines(lines);
+
+    self.frame_stale = true;
+
+    cx.notify();
   }
 
   fn sync_layout(
@@ -597,6 +788,7 @@ impl TerminalView {
 
     self.frame = Some(backend.with_term(|term| {
       let content = term.renderable_content();
+      let content_mode = content.mode;
       let display_offset = content.display_offset;
       let selection = content.selection;
       let colors = ansi_colors::ColorTable::new(theme, content.colors);
@@ -710,6 +902,7 @@ impl TerminalView {
         lines,
         cursor,
         display_offset,
+        mouse_reporting: content_mode.intersects(TermMode::MOUSE_MODE),
       }
     }))
   }
@@ -755,6 +948,10 @@ impl Render for TerminalView {
     }
 
     let focused = self.focus_handle.is_focused(window);
+    let mouse_reporting = self
+      .frame
+      .as_ref()
+      .is_some_and(|frame| frame.mouse_reporting);
     let entity = cx.entity().downgrade();
     let padding = px(10.0);
 
@@ -851,14 +1048,21 @@ impl Render for TerminalView {
       .text_size(self.font_size)
       .line_height(self.line_height)
       .text_color(theme.term.fg)
-      .cursor_text()
+      .when(mouse_reporting, |el| el.cursor_default())
+      .when(!mouse_reporting, |el| el.cursor_text())
       .on_action(cx.listener(Self::copy))
       .on_action(cx.listener(Self::paste))
       .on_key_down(cx.listener(Self::on_key_down))
       .on_mouse_down(MouseButton::Left, cx.listener(Self::on_mouse_down))
+      .on_mouse_down(MouseButton::Middle, cx.listener(Self::on_mouse_down))
+      .on_mouse_down(MouseButton::Right, cx.listener(Self::on_mouse_down))
       .on_mouse_move(cx.listener(Self::on_mouse_move))
       .on_mouse_up(MouseButton::Left, cx.listener(Self::on_mouse_up))
+      .on_mouse_up(MouseButton::Middle, cx.listener(Self::on_mouse_up))
+      .on_mouse_up(MouseButton::Right, cx.listener(Self::on_mouse_up))
       .on_scroll_wheel(cx.listener(Self::on_scroll_wheel))
+      .on_drop(cx.listener(Self::on_drop_paths))
+      .drag_over::<ExternalPaths>(move |style, _, _, _| style.bg(theme.hover))
       .child(content);
 
     if let Some(error) = &self.spawn_error {
