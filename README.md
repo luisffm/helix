@@ -87,19 +87,22 @@ Cargo workspace, one crate per domain; UI crates depend on domain crates, never 
 
 ```
 helix/
-  app/         binary: window bootstrap, macOS blur integration
-  ui/          GPUI views: root layout, sidebars, workspace, terminal/editor/diff views, theme
-  terminal/    PTY + alacritty_terminal backend (no UI dependency)
-  agents/      session launch specs (shell, claude) and agent metadata
-  buffer/      file reads with size/binary gating, language detection, content signatures
-  git/         libgit2 snapshots, index ops (stage/commit), blob-pair diffs, remote ops
-  github/      gh CLI transport, hosted-review model, PR eligibility state machine
-  worktree/    project/worktree discovery and metadata
-  filesystem/  debounced recursive fs watcher
-  events/      shared event types and channels
-  models/      pure domain types shared by all crates
-  state/       session activity status, history log
-  commands/    gpui actions and default keybindings
+  assets/      app icon: svg source, 1024 png, prerendered iconset
+  scripts/     dev loop, macOS bundler
+  src/
+    app/         binary: window bootstrap, macOS blur and icon integration
+    ui/          GPUI views: root layout, sidebars, workspace, terminal/editor/diff views, theme
+    terminal/    PTY + alacritty_terminal backend (no UI dependency)
+    agents/      session launch specs (shell, claude) and agent metadata
+    buffer/      file reads with size/binary gating, language detection, content signatures
+    git/         libgit2 snapshots, index ops (stage/commit), blob-pair diffs, remote ops
+    github/      gh CLI transport, hosted-review model, PR eligibility state machine
+    worktree/    project/worktree discovery and metadata
+    filesystem/  debounced recursive fs watcher
+    events/      shared event types and channels
+    models/      pure domain types shared by all crates
+    state/       session activity status, history log
+    commands/    gpui actions and default keybindings
 ```
 
 Requires Rust 1.85+ and macOS (for now). Uses gpui's `runtime_shaders` feature, so full Xcode is not required — Command Line Tools are enough.

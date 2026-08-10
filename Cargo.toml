@@ -1,21 +1,21 @@
 [workspace]
 resolver = "2"
 members = [
-    "app",
-    "ui",
-    "agents",
-    "buffer",
-    "git",
-    "github",
-    "worktree",
-    "terminal",
-    "filesystem",
-    "events",
-    "models",
-    "state",
-    "commands",
+    "src/app",
+    "src/ui",
+    "src/agents",
+    "src/buffer",
+    "src/git",
+    "src/github",
+    "src/worktree",
+    "src/terminal",
+    "src/filesystem",
+    "src/events",
+    "src/models",
+    "src/state",
+    "src/commands",
 ]
-default-members = ["app"]
+default-members = ["src/app"]
 
 [workspace.package]
 version = "0.1.0"
@@ -34,18 +34,18 @@ serde_json = "1"
 tokio = { version = "1", features = ["sync", "rt-multi-thread", "time", "macros"] }
 anyhow = "1"
 
-helix-buffer = { path = "buffer" }
-helix-models = { path = "models" }
-helix-events = { path = "events" }
-helix-git = { path = "git" }
-helix-github = { path = "github" }
-helix-worktree = { path = "worktree" }
-helix-terminal = { path = "terminal" }
-helix-filesystem = { path = "filesystem" }
-helix-agents = { path = "agents" }
-helix-state = { path = "state" }
-helix-commands = { path = "commands" }
-helix-ui = { path = "ui" }
+helix-buffer = { path = "src/buffer" }
+helix-models = { path = "src/models" }
+helix-events = { path = "src/events" }
+helix-git = { path = "src/git" }
+helix-github = { path = "src/github" }
+helix-worktree = { path = "src/worktree" }
+helix-terminal = { path = "src/terminal" }
+helix-filesystem = { path = "src/filesystem" }
+helix-agents = { path = "src/agents" }
+helix-state = { path = "src/state" }
+helix-commands = { path = "src/commands" }
+helix-ui = { path = "src/ui" }
 
 [profile.dev]
 opt-level = 1

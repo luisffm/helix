@@ -3,23 +3,26 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 ICON="${ICON:-assets/icon.png}"
+ICONSET_SRC="${ICONSET:-assets/icon.iconset}"
 BUNDLE_ID="${BUNDLE_ID:-com.luisffm.helix}"
 APP="target/Helix.app"
 VERSION="$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)"
 
-if [ ! -f "$ICON" ]; then
-  echo "bundle-mac: no icon at $ICON" >&2
+if [ ! -d "$ICONSET_SRC" ] && [ ! -f "$ICON" ]; then
+  echo "bundle-mac: no icon at $ICONSET_SRC or $ICON" >&2
   echo "            drop a square 1024x1024 png there, or set ICON=path/to/icon.png" >&2
   exit 1
 fi
 
-read -r WIDTH HEIGHT <<<"$(sips -g pixelWidth -g pixelHeight "$ICON" | sed -n 's/.*: \([0-9]*\)$/\1/p' | paste -sd' ' -)"
-if [ "$WIDTH" != "$HEIGHT" ]; then
-  echo "bundle-mac: icon is ${WIDTH}x${HEIGHT}, macOS wants a square" >&2
-  exit 1
-fi
-if [ "$WIDTH" -lt 1024 ]; then
-  echo "bundle-mac: icon is ${WIDTH}px, upscaling to 1024 will look soft" >&2
+if [ ! -d "$ICONSET_SRC" ]; then
+  read -r WIDTH HEIGHT <<<"$(sips -g pixelWidth -g pixelHeight "$ICON" | sed -n 's/.*: \([0-9]*\)$/\1/p' | paste -sd' ' -)"
+  if [ "$WIDTH" != "$HEIGHT" ]; then
+    echo "bundle-mac: icon is ${WIDTH}x${HEIGHT}, macOS wants a square" >&2
+    exit 1
+  fi
+  if [ "$WIDTH" -lt 1024 ]; then
+    echo "bundle-mac: icon is ${WIDTH}px, upscaling to 1024 will look soft" >&2
+  fi
 fi
 
 cargo build --release
@@ -27,15 +30,20 @@ cargo build --release
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 
-ICONSET="$(mktemp -d)/helix.iconset"
+STAGE="$(mktemp -d)"
+ICONSET="$STAGE/helix.iconset"
 mkdir -p "$ICONSET"
-for SIZE in 16 32 128 256 512; do
-  sips -z "$SIZE" "$SIZE" "$ICON" --out "$ICONSET/icon_${SIZE}x${SIZE}.png" >/dev/null
-  RETINA=$((SIZE * 2))
-  sips -z "$RETINA" "$RETINA" "$ICON" --out "$ICONSET/icon_${SIZE}x${SIZE}@2x.png" >/dev/null
-done
+if [ -d "$ICONSET_SRC" ]; then
+  cp "$ICONSET_SRC"/*.png "$ICONSET/"
+else
+  for SIZE in 16 32 128 256 512; do
+    sips -z "$SIZE" "$SIZE" "$ICON" --out "$ICONSET/icon_${SIZE}x${SIZE}.png" >/dev/null
+    RETINA=$((SIZE * 2))
+    sips -z "$RETINA" "$RETINA" "$ICON" --out "$ICONSET/icon_${SIZE}x${SIZE}@2x.png" >/dev/null
+  done
+fi
 iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/helix.icns"
-rm -rf "$(dirname "$ICONSET")"
+rm -rf "$STAGE"
 
 cp target/release/helix "$APP/Contents/MacOS/helix"
 

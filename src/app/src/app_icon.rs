@@ -1,6 +1,6 @@
 #![allow(unexpected_cfgs)]
 
-const SOURCE_ICON: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../assets/icon.png");
+const SOURCE_ICON: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/icon.png");
 
 #[cfg(target_os = "macos")]
 pub fn apply_unbundled_icon() {
