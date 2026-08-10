@@ -53,6 +53,9 @@ pub struct TerminalView {
   scroll_accum: f32,
   selecting: bool,
   select_anchor: Option<(usize, i32)>,
+  frame: Option<Frame>,
+  frame_key: Option<FrameKey>,
+  frame_stale: bool,
 }
 
 impl EventEmitter<TerminalViewEvent> for TerminalView {}
@@ -85,7 +88,7 @@ struct RunFrame {
   text: String,
   fg: Hsla,
   bg: Option<Hsla>,
-  font: Font,
+  style: u8,
   underline: Option<UnderlineStyle>,
   mergeable: bool,
 }
@@ -98,6 +101,48 @@ struct Frame {
   lines: Vec<LineFrame>,
   cursor: Option<(i32, usize)>,
   display_offset: usize,
+}
+
+/// The four styles a cell can ask for, built once per frame instead of cloned
+/// and compared per cell.
+struct FontSet([Font; 4]);
+
+impl FontSet {
+  fn new(base: Font) -> Self {
+    let mut bold = base.clone();
+    bold.weight = FontWeight::BOLD;
+
+    let mut italic = base.clone();
+    italic.style = FontStyle::Italic;
+
+    let mut bold_italic = italic.clone();
+    bold_italic.weight = FontWeight::BOLD;
+
+    Self([base, bold, italic, bold_italic])
+  }
+
+  fn get(&self, style: u8) -> Font {
+    self.0[style as usize].clone()
+  }
+}
+
+fn style_of(flags: Flags) -> u8 {
+  u8::from(flags.contains(Flags::BOLD)) | (u8::from(flags.contains(Flags::ITALIC)) << 1)
+}
+
+/// Everything outside the terminal's own content that changes what a frame
+/// looks like. While it holds and no wakeup arrived, the cached frame stands.
+#[derive(PartialEq)]
+struct FrameKey {
+  font: SharedString,
+  font_size: Pixels,
+  cell_width: Pixels,
+  line_height: Pixels,
+  bg: Hsla,
+  fg: Hsla,
+  selection: Hsla,
+  cols: u16,
+  rows: u16,
 }
 
 impl TerminalView {
@@ -183,6 +228,9 @@ impl TerminalView {
       scroll_accum: 0.0,
       selecting: false,
       select_anchor: None,
+      frame: None,
+      frame_key: None,
+      frame_stale: true,
     }
   }
 
@@ -296,6 +344,7 @@ impl TerminalView {
       this
         .update(cx, |view, cx| {
           view.flush_pending = false;
+          view.frame_stale = true;
 
           if view.last_activity_emit.elapsed() >= ACTIVITY_EMIT_INTERVAL {
             view.last_activity_emit = Instant::now();
@@ -364,6 +413,7 @@ impl TerminalView {
       backend.write(bytes);
 
       self.last_activity = Instant::now();
+      self.frame_stale = true;
 
       cx.notify();
       cx.stop_propagation();
@@ -395,6 +445,8 @@ impl TerminalView {
 
     backend.scroll_to_bottom();
     backend.write(payload.into_bytes());
+
+    self.frame_stale = true;
 
     cx.notify();
   }
@@ -442,6 +494,8 @@ impl TerminalView {
       }
     }
 
+    self.frame_stale = true;
+
     cx.notify();
   }
 
@@ -476,6 +530,8 @@ impl TerminalView {
 
     backend.update_selection(grid_point, side);
 
+    self.frame_stale = true;
+
     cx.notify();
   }
 
@@ -506,6 +562,9 @@ impl TerminalView {
       self.scroll_accum -= lines as f32;
 
       backend.scroll_lines(lines);
+
+      self.frame_stale = true;
+
       cx.notify();
     }
   }
@@ -550,14 +609,20 @@ impl TerminalView {
     base
   }
 
-  fn build_frame(&self, theme: &Theme) -> Option<Frame> {
-    let backend = self.backend.as_ref()?;
-    let base_font = self.base_font(theme);
+  fn build_frame(&mut self, theme: &Theme) {
+    let Some(backend) = self.backend.clone() else {
+      self.frame = None;
 
-    Some(backend.with_term(|term| {
+      return;
+    };
+
+    let rows = self.rows as i32;
+
+    self.frame = Some(backend.with_term(|term| {
       let content = term.renderable_content();
       let display_offset = content.display_offset;
       let selection = content.selection;
+      let colors = ansi_colors::ColorTable::new(theme, content.colors);
 
       let mut lines: Vec<LineFrame> = Vec::new();
       let mut current_row: Option<i32> = None;
@@ -591,10 +656,10 @@ impl TerminalView {
           cell.c
         };
 
-        let mut fg = ansi_colors::to_hsla(cell.fg, content.colors, theme);
+        let mut fg = colors.resolve(cell.fg);
         let mut bg = match cell.bg {
           AnsiColor::Named(NamedColor::Background) => None,
-          other => Some(ansi_colors::to_hsla(other, content.colors, theme)),
+          other => Some(colors.resolve(other)),
         };
 
         if cell.flags.contains(Flags::INVERSE) {
@@ -612,15 +677,7 @@ impl TerminalView {
           fg.a *= 0.6;
         }
 
-        let mut run_font = base_font.clone();
-
-        if cell.flags.contains(Flags::BOLD) {
-          run_font.weight = FontWeight::BOLD;
-        }
-
-        if cell.flags.contains(Flags::ITALIC) {
-          run_font.style = FontStyle::Italic;
-        }
+        let style = style_of(cell.flags);
 
         let underline = if cell.flags.intersects(Flags::ALL_UNDERLINES) {
           Some(UnderlineStyle {
@@ -641,7 +698,7 @@ impl TerminalView {
               && run.start_col + run.cols == col
               && run.fg == fg
               && run.bg == bg
-              && run.font == run_font
+              && run.style == style
               && run.underline == underline =>
           {
             run.text.push(ch);
@@ -653,7 +710,7 @@ impl TerminalView {
             text: ch.to_string(),
             fg,
             bg,
-            font: run_font,
+            style,
             underline,
             mergeable,
           }),
@@ -665,7 +722,7 @@ impl TerminalView {
       } else {
         let row = content.cursor.point.line.0 + display_offset as i32;
 
-        if row >= 0 && row < self.rows as i32 {
+        if row >= 0 && row < rows {
           Some((row, content.cursor.point.column.0))
         } else {
           None
@@ -685,9 +742,11 @@ impl Render for TerminalView {
   fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
     let theme = Theme::of(cx).clone();
 
+    let fonts = FontSet::new(self.base_font(&theme));
+
     let measure_run = TextRun {
       len: 1,
-      font: self.base_font(&theme),
+      font: fonts.get(0),
       color: theme.text,
       background_color: None,
       underline: None,
@@ -699,7 +758,25 @@ impl Render for TerminalView {
       .shape_line("M".into(), self.font_size, &[measure_run], None)
       .width;
 
-    let frame = self.build_frame(&theme);
+    let key = FrameKey {
+      font: theme.font_mono.clone(),
+      font_size: self.font_size,
+      cell_width: self.cell_width,
+      line_height: self.line_height,
+      bg: theme.bg,
+      fg: theme.term.fg,
+      selection: theme.term.selection,
+      cols: self.cols,
+      rows: self.rows,
+    };
+
+    if self.frame_stale || self.frame.is_none() || self.frame_key.as_ref() != Some(&key) {
+      self.build_frame(&theme);
+
+      self.frame_stale = false;
+      self.frame_key = Some(key);
+    }
+
     let focused = self.focus_handle.is_focused(window);
     let entity = cx.entity().downgrade();
     let padding = px(10.0);
@@ -719,7 +796,7 @@ impl Render for TerminalView {
       .size_full(),
     );
 
-    if let Some(frame) = frame {
+    if let Some(frame) = &self.frame {
       let line_height = self.line_height;
       let cell_width = self.cell_width;
 
@@ -727,12 +804,12 @@ impl Render for TerminalView {
         div()
           .flex()
           .flex_col()
-          .children(frame.lines.into_iter().map(|line| {
+          .children(frame.lines.iter().map(|line| {
             div()
               .relative()
               .h(line_height)
               .w_full()
-              .children(line.runs.into_iter().filter_map(|run| {
+              .children(line.runs.iter().filter_map(|run| {
                 let visible =
                   !run.text.trim().is_empty() || run.bg.is_some() || run.underline.is_some();
                 if !visible {
@@ -743,9 +820,9 @@ impl Render for TerminalView {
                 let width = cell_width * run.cols as f32;
                 let len = run.text.len();
 
-                let styled = StyledText::new(run.text).with_runs(vec![TextRun {
+                let styled = StyledText::new(run.text.clone()).with_runs(vec![TextRun {
                   len,
-                  font: run.font,
+                  font: fonts.get(run.style),
                   color: run.fg,
                   background_color: None,
                   underline: run.underline,

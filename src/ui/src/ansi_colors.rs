@@ -23,15 +23,40 @@ pub fn hsla_to_rgb(color: Hsla) -> AnsiRgb {
   }
 }
 
-pub fn to_hsla(color: AnsiColor, overrides: &TermPalette, theme: &Theme) -> Hsla {
-  match color {
-    AnsiColor::Spec(rgb) => rgb_to_hsla(rgb),
-    AnsiColor::Indexed(i) => overrides[i as usize]
-      .map(rgb_to_hsla)
-      .unwrap_or_else(|| indexed(theme, i)),
-    AnsiColor::Named(named) => overrides[named as usize]
-      .map(rgb_to_hsla)
-      .unwrap_or_else(|| named_color(theme, named)),
+/// Resolving an indexed colour means cube arithmetic and an RGB→HSL conversion,
+/// which is far too much to redo for every cell of every frame. The 256 indexed
+/// slots are resolved once per frame build and looked up by index after that.
+pub struct ColorTable<'a> {
+  indexed: [Hsla; 256],
+  overrides: &'a TermPalette,
+  theme: &'a Theme,
+}
+
+impl<'a> ColorTable<'a> {
+  pub fn new(theme: &'a Theme, overrides: &'a TermPalette) -> Self {
+    let mut table = [theme.term.fg; 256];
+
+    for (i, slot) in table.iter_mut().enumerate() {
+      *slot = overrides[i]
+        .map(rgb_to_hsla)
+        .unwrap_or_else(|| indexed(theme, i as u8));
+    }
+
+    Self {
+      indexed: table,
+      overrides,
+      theme,
+    }
+  }
+
+  pub fn resolve(&self, color: AnsiColor) -> Hsla {
+    match color {
+      AnsiColor::Spec(rgb) => rgb_to_hsla(rgb),
+      AnsiColor::Indexed(i) => self.indexed[i as usize],
+      AnsiColor::Named(named) => self.overrides[named as usize]
+        .map(rgb_to_hsla)
+        .unwrap_or_else(|| named_color(self.theme, named)),
+    }
   }
 }
 
