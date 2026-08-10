@@ -1,5 +1,6 @@
 pub mod eligibility;
 pub mod gh;
+pub mod probe;
 pub mod review;
 
 pub use eligibility::{BlockedReason, Eligibility, NextAction, ReviewLookupOutcome};
@@ -34,4 +35,21 @@ pub enum CheckConclusion {
 
 pub fn current_pull_request() -> Option<PullRequestInfo> {
   None
+}
+
+pub fn short_ref(value: &str) -> String {
+  let digits: String = value
+    .chars()
+    .rev()
+    .take_while(|c| c.is_ascii_digit())
+    .collect::<String>()
+    .chars()
+    .rev()
+    .collect();
+
+  if digits.is_empty() {
+    "link".to_string()
+  } else {
+    format!("#{digits}")
+  }
 }

@@ -81,6 +81,10 @@ pub struct RepoState {
   pub commits_ahead_of_base: usize,
 }
 
+pub fn is_feature_branch(branch: &str) -> bool {
+  !matches!(branch, "main" | "master" | "trunk")
+}
+
 pub fn evaluate(
   state: &RepoState,
   lookup: ReviewLookupOutcome,
@@ -239,6 +243,19 @@ mod tests {
     let result = evaluate(&state, ReviewLookupOutcome::Unavailable, None);
 
     assert_eq!(result.next_action, NextAction::Authenticate);
+  }
+
+  #[test]
+  fn default_branches_are_not_feature_branches() {
+    assert!(!is_feature_branch("main"));
+    assert!(!is_feature_branch("master"));
+    assert!(!is_feature_branch("trunk"));
+  }
+
+  #[test]
+  fn anything_else_is_a_feature_branch() {
+    assert!(is_feature_branch("feature/login"));
+    assert!(is_feature_branch("mainline"));
   }
 
   #[test]

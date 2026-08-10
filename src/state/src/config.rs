@@ -81,6 +81,13 @@ impl ProjectConfig {
       worktrees: Vec::new(),
     }
   }
+
+  pub fn label(&self) -> String {
+    self
+      .display_name
+      .clone()
+      .unwrap_or_else(|| dir_label(&self.path))
+  }
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -299,6 +306,21 @@ pub fn project_for(root: &Path) -> Option<ProjectConfig> {
   load().projects.into_iter().find(|p| p.path == root)
 }
 
+pub fn visible_projects() -> Vec<ProjectConfig> {
+  load()
+    .projects
+    .into_iter()
+    .filter(|project| project.path.is_dir())
+    .collect()
+}
+
+pub fn dir_label(path: &Path) -> String {
+  path
+    .file_name()
+    .map(|name| name.to_string_lossy().to_string())
+    .unwrap_or_else(|| path.display().to_string())
+}
+
 fn update_project(root: &Path, apply: impl FnOnce(&mut ProjectConfig)) {
   let mut config = load();
 
@@ -315,8 +337,13 @@ fn update_project(root: &Path, apply: impl FnOnce(&mut ProjectConfig)) {
   save(&config);
 }
 
-pub fn set_display_name(root: &Path, name: Option<String>) {
-  update_project(root, |project| project.display_name = name);
+/// A name that matches the directory carries no information, so it is stored as
+/// absent and the label falls back to the directory again.
+pub fn set_display_name(root: &Path, name: &str) {
+  let trimmed = name.trim();
+  let stored = (!trimmed.is_empty() && trimmed != dir_label(root)).then(|| trimmed.to_string());
+
+  update_project(root, |project| project.display_name = stored);
 }
 
 pub fn set_icon(root: &Path, icon: &str) {

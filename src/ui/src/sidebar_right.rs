@@ -10,8 +10,10 @@ use gpui::{
 };
 use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::{Icon, IconName, Sizable};
+use helix_filesystem::scan::{FileNode, scan_dir, scan_matches};
 use helix_git::IgnoreProbe;
-use helix_github::{BlockedReason, Eligibility, HostedReview, NextAction, ReviewLookupOutcome};
+use helix_git::ops::{GitAction, IndexOp, perform_remote};
+use helix_github::{BlockedReason, Eligibility, HostedReview, NextAction};
 use helix_models::{DiffBase, GitFileKind, GitFileStatus, GitSnapshot};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -23,33 +25,8 @@ const INDENT: f32 = 16.0;
 const BASE_PAD: f32 = 8.0;
 const MAX_ROWS: usize = 2000;
 const MAX_DEPTH: usize = 16;
-const FILTER_MAX_MATCHES: usize = 300;
-const FILTER_MAX_DIRS: usize = 4000;
 const MAX_CACHED_DIRS: usize = 4096;
 const FILTER_DEBOUNCE: Duration = Duration::from_millis(100);
-const IGNORED_RANK_PENALTY: u8 = 3;
-
-/// `needle` must already be lowercase. `by_path` widens the match to the
-/// workspace-relative path, which only helps once the query has a separator.
-pub fn match_rank(name: &str, relative: &str, needle: &str, by_path: bool) -> Option<u8> {
-  rank_lowered(&name.to_lowercase(), relative, needle, by_path)
-}
-
-fn rank_lowered(name: &str, relative: &str, needle: &str, by_path: bool) -> Option<u8> {
-  if name.starts_with(needle) {
-    return Some(0);
-  }
-
-  if name.contains(needle) {
-    return Some(1);
-  }
-
-  if by_path && relative.to_lowercase().contains(needle) {
-    return Some(2);
-  }
-
-  None
-}
 
 pub enum ContextPanelEvent {
   OpenFile { path: PathBuf, preview: bool },
@@ -87,84 +64,6 @@ enum GitSection {
   Staged,
   Changes,
   Commits,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum GitAction {
-  Commit,
-  CommitPush,
-  CommitSync,
-  Push,
-  ForcePush,
-  Pull,
-  FastForward,
-  Sync,
-  Rebase,
-  Fetch,
-  Publish,
-}
-
-impl GitAction {
-  fn commits(self) -> bool {
-    matches!(self, Self::Commit | Self::CommitPush | Self::CommitSync)
-  }
-
-  fn remote_step(self) -> Option<Self> {
-    match self {
-      Self::Commit => None,
-      Self::CommitPush => Some(Self::Push),
-      Self::CommitSync => Some(Self::Sync),
-      other => Some(other),
-    }
-  }
-}
-
-enum IndexOp {
-  Stage(String),
-  Unstage(String),
-  StageAll,
-  UnstageAll,
-  Discard(String),
-}
-
-impl IndexOp {
-  fn run(self, root: &Path) -> anyhow::Result<()> {
-    match self {
-      Self::Stage(relative) => helix_git::index::stage(root, &relative),
-      Self::Unstage(relative) => helix_git::index::unstage(root, &relative),
-      Self::StageAll => helix_git::index::stage_all(root),
-      Self::UnstageAll => helix_git::index::unstage_all(root),
-      Self::Discard(relative) => helix_git::index::discard(root, &relative),
-    }
-  }
-}
-
-fn perform_remote(
-  action: GitAction,
-  root: &Path,
-  branch: &str,
-  upstream: &str,
-) -> anyhow::Result<()> {
-  match action {
-    GitAction::Push => helix_git::remote::push(root),
-    GitAction::ForcePush => helix_git::remote::force_push(root),
-    GitAction::Pull => helix_git::remote::pull(root),
-    GitAction::FastForward => helix_git::remote::fast_forward(root),
-    GitAction::Sync => helix_git::remote::sync(root),
-    GitAction::Rebase => helix_git::remote::rebase(root, upstream),
-    GitAction::Fetch => helix_git::remote::fetch(root),
-    GitAction::Publish => helix_git::remote::publish(root, branch),
-    GitAction::Commit | GitAction::CommitPush | GitAction::CommitSync => Ok(()),
-  }
-}
-
-#[derive(Clone)]
-struct FileNode {
-  path: PathBuf,
-  name: String,
-  lower: String,
-  is_dir: bool,
-  ignored: bool,
 }
 
 /// Everything a git file row draws, built once when the snapshot lands so that
@@ -220,92 +119,6 @@ fn build_git_rows(files: &[GitFileStatus], prefix: &str) -> Vec<GitRow> {
       }
     })
     .collect()
-}
-
-fn name_cmp(a: &FileNode, b: &FileNode) -> std::cmp::Ordering {
-  a.lower.cmp(&b.lower).then_with(|| a.name.cmp(&b.name))
-}
-
-fn scan_dir(dir: &Path, show_dotfiles: bool, probe: Option<&IgnoreProbe>) -> Vec<FileNode> {
-  let mut nodes: Vec<FileNode> = std::fs::read_dir(dir)
-    .into_iter()
-    .flatten()
-    .flatten()
-    .filter_map(|entry| {
-      let name = entry.file_name().to_string_lossy().to_string();
-
-      if name == ".git" || name == "node_modules" {
-        return None;
-      }
-
-      if !show_dotfiles && name.starts_with('.') {
-        return None;
-      }
-
-      let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
-      let path = entry.path();
-      let ignored = probe.is_some_and(|probe| probe.is_ignored(&path));
-
-      Some(FileNode {
-        lower: name.to_lowercase(),
-        path,
-        name,
-        is_dir,
-        ignored,
-      })
-    })
-    .collect();
-
-  nodes.sort_by(|a, b| b.is_dir.cmp(&a.is_dir).then_with(|| name_cmp(a, b)));
-
-  nodes
-}
-
-fn scan_matches(root: &Path, needle: &str, by_path: bool, show_dotfiles: bool) -> Vec<FileNode> {
-  let probe = IgnoreProbe::open(root);
-
-  let mut ranked: Vec<(u8, FileNode)> = Vec::new();
-  let mut queue = std::collections::VecDeque::from([root.to_path_buf()]);
-  let mut dirs = 0usize;
-
-  while let Some(dir) = queue.pop_front() {
-    if dirs >= FILTER_MAX_DIRS || ranked.len() >= FILTER_MAX_MATCHES {
-      break;
-    }
-
-    dirs += 1;
-
-    for node in scan_dir(&dir, show_dotfiles, probe.as_ref()) {
-      if node.is_dir {
-        if !node.ignored {
-          queue.push_back(node.path.clone());
-        }
-
-        continue;
-      }
-
-      let relative = node
-        .path
-        .strip_prefix(root)
-        .unwrap_or(&node.path)
-        .to_string_lossy()
-        .to_string();
-
-      let Some(mut rank) = rank_lowered(&node.lower, &relative, needle, by_path) else {
-        continue;
-      };
-
-      if node.ignored {
-        rank += IGNORED_RANK_PENALTY;
-      }
-
-      ranked.push((rank, node));
-    }
-  }
-
-  ranked.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| name_cmp(&a.1, &b.1)));
-
-  ranked.into_iter().map(|(_, node)| node).collect()
 }
 
 pub struct ContextPanel {
@@ -700,58 +513,10 @@ impl ContextPanel {
     self.pr_busy = true;
 
     let root = self.root.clone();
-    let branch = git.branch.clone();
-    let dirty_count = git.dirty_count();
-    let ahead = git.ahead;
-    let behind = git.behind;
 
-    let task = cx.background_executor().spawn(async move {
-      let gh_installed = helix_github::gh::is_installed();
-      let authenticated = gh_installed && helix_github::gh::is_authenticated();
-
-      let (lookup, review) = if authenticated {
-        match helix_github::review::for_branch(&root, &branch) {
-          Ok(Some(review)) => (ReviewLookupOutcome::Found, Some(review)),
-          Ok(None) => (ReviewLookupOutcome::NotFound, None),
-          Err(_) => (ReviewLookupOutcome::Unavailable, None),
-        }
-      } else {
-        (ReviewLookupOutcome::Unavailable, None)
-      };
-
-      let base_ref = helix_git::diff::default_base_ref(&root);
-
-      let commits_ahead_of_base = base_ref
-        .as_deref()
-        .and_then(|base| helix_git::remote::commits_ahead_of(&root, base).ok())
-        .unwrap_or(0);
-
-      let has_upstream = ahead > 0 || behind > 0 || commits_ahead_of_base == 0 || {
-        std::process::Command::new("git")
-          .args(["rev-parse", "--abbrev-ref", "@{upstream}"])
-          .current_dir(&root)
-          .output()
-          .map(|output| output.status.success())
-          .unwrap_or(false)
-      };
-
-      let state = helix_github::eligibility::RepoState {
-        gh_installed,
-        authenticated,
-        detached: false,
-        branch,
-        base_ref,
-        dirty_count,
-        has_upstream,
-        ahead,
-        behind,
-        commits_ahead_of_base,
-      };
-
-      let eligibility = helix_github::eligibility::evaluate(&state, lookup, review.clone());
-
-      (eligibility, review)
-    });
+    let task = cx
+      .background_executor()
+      .spawn(async move { helix_github::probe::gather(&root, &git) });
 
     cx.spawn(async move |this, cx| {
       let (eligibility, review) = task.await;
@@ -878,7 +643,7 @@ impl ContextPanel {
         let replace = self
           .file_status
           .get(&path)
-          .map(|existing| file_icons::dominance(file.kind) > file_icons::dominance(*existing))
+          .map(|existing| file.kind.dominance() > existing.dominance())
           .unwrap_or(true);
 
         if replace {
@@ -906,7 +671,7 @@ impl ContextPanel {
         let replace = self
           .dir_status
           .get(ancestor)
-          .map(|existing| file_icons::dominance(kind) > file_icons::dominance(*existing))
+          .map(|existing| kind.dominance() > existing.dominance())
           .unwrap_or(true);
 
         if replace {
@@ -929,7 +694,9 @@ impl ContextPanel {
     let task = cx.background_executor().spawn(async move {
       let probe = IgnoreProbe::open(&root);
 
-      scan_dir(&target, show_dotfiles, probe.as_ref())
+      scan_dir(&target, show_dotfiles, &|path| {
+        probe.as_ref().is_some_and(|probe| probe.is_ignored(path))
+      })
     });
 
     cx.spawn(async move |this, cx| {
@@ -1031,8 +798,11 @@ impl ContextPanel {
         .spawn(async move {
           let needle = query.to_lowercase();
           let by_path = needle.contains('/');
+          let probe = IgnoreProbe::open(&root);
 
-          scan_matches(&root, &needle, by_path, show_dotfiles)
+          scan_matches(&root, &needle, by_path, show_dotfiles, &|path| {
+            probe.as_ref().is_some_and(|probe| probe.is_ignored(path))
+          })
         })
         .await;
 
@@ -1275,7 +1045,7 @@ impl ContextPanel {
         div()
           .flex_none()
           .text_color(file_icons::status_color(kind, theme))
-          .child(file_icons::status_letter(kind)),
+          .child(kind.status_letter()),
       );
     }
 
@@ -1396,7 +1166,7 @@ impl ContextPanel {
         div()
           .flex_none()
           .text_color(file_icons::status_color(kind, theme))
-          .child(file_icons::status_letter(kind)),
+          .child(kind.status_letter()),
       );
     }
 
@@ -1404,11 +1174,7 @@ impl ContextPanel {
   }
 
   fn render_files_toolbar(&self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
-    let name = self
-      .root
-      .file_name()
-      .map(|n| n.to_string_lossy().to_string())
-      .unwrap_or_else(|| self.root.display().to_string());
+    let name = helix_state::config::dir_label(&self.root);
 
     div()
       .flex()
@@ -1499,11 +1265,7 @@ impl ContextPanel {
               .clone()
               .map(|removed| div().text_color(theme.red).child(removed)),
           )
-          .child(
-            div()
-              .text_color(color)
-              .child(file_icons::status_letter(file.kind)),
-          );
+          .child(div().text_color(color).child(file.kind.status_letter()));
 
         let toggle = div()
           .id(file.toggle_id.clone())
@@ -1653,7 +1415,7 @@ impl ContextPanel {
       .upstream
       .clone()
       .unwrap_or_else(|| "upstream".to_string());
-    let feature_branch = !matches!(git.branch.as_str(), "main" | "master" | "trunk");
+    let feature_branch = helix_github::eligibility::is_feature_branch(&git.branch);
 
     let entries: Vec<(&'static str, Option<String>, bool, Option<GitAction>)> = vec![
       ("Commit", None, staged, Some(GitAction::Commit)),
@@ -2276,7 +2038,11 @@ impl ContextPanel {
       }
       NextAction::OpenExistingReview => {
         if let Some(review) = &self.pr {
-          let _ = std::process::Command::new("open").arg(&review.url).spawn();
+          let url = review.url.clone();
+
+          cx.background_executor()
+            .spawn(async move { helix_process::open_url(&url) })
+            .detach();
         }
 
         return;
@@ -2316,7 +2082,7 @@ impl ContextPanel {
         NextAction::Publish => helix_git::remote::publish(&root, &branch),
         NextAction::Push => helix_git::remote::push(&root),
         NextAction::Sync => helix_git::remote::sync(&root),
-        NextAction::CreateReview => create_pull_request(&root, &title),
+        NextAction::CreateReview => helix_github::probe::create_pull_request(&root, &title),
         _ => Ok(()),
       }
     });
@@ -2338,16 +2104,6 @@ impl ContextPanel {
     })
     .detach();
   }
-}
-
-fn create_pull_request(root: &Path, title: &str) -> anyhow::Result<()> {
-  let base = helix_git::diff::default_base_ref(root)
-    .map(|base| base.trim_start_matches("origin/").to_string())
-    .unwrap_or_else(|| "main".to_string());
-
-  helix_github::review::create(root, &base, title, "", false)?;
-
-  Ok(())
 }
 
 fn primary_action_label(action: NextAction) -> Option<&'static str> {

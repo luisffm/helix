@@ -130,15 +130,7 @@ impl SettingsPage {
   }
 
   fn persist_display_name(&self, value: String, cx: &mut Context<Self>) {
-    let trimmed = value.trim();
-
-    let stored = if trimmed.is_empty() || trimmed == self.project_dir_name {
-      None
-    } else {
-      Some(trimmed.to_string())
-    };
-
-    helix_state::config::set_display_name(&self.project_root, stored);
+    helix_state::config::set_display_name(&self.project_root, &value);
     cx.emit(SettingsEvent::Changed);
   }
 

@@ -1,3 +1,6 @@
+pub mod paths;
+pub mod scan;
+
 use notify::{Event, RecommendedWatcher, RecursiveMode, Watcher};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc as std_mpsc;

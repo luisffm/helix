@@ -55,11 +55,7 @@ impl TabItem {
 
   pub fn title(&self, cx: &App) -> String {
     match &self.content {
-      TabContent::Terminal(view) => view
-        .read(cx)
-        .title
-        .trim_start_matches(|c: char| "✳✻✶✽*⁕ ".contains(c))
-        .to_string(),
+      TabContent::Terminal(view) => helix_agents::strip_spinner(&view.read(cx).title).to_string(),
       TabContent::Editor(view) => view.read(cx).title.to_string(),
       TabContent::Diff(view) => view.read(cx).title.to_string(),
     }

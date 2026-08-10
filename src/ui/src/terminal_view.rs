@@ -66,22 +66,6 @@ impl Focusable for TerminalView {
   }
 }
 
-fn is_claude_process(pgid: i32) -> bool {
-  let Ok(output) = std::process::Command::new("ps")
-    .args(["-o", "comm=", "-o", "args=", "-p", &pgid.to_string()])
-    .output()
-  else {
-    return false;
-  };
-
-  let text = String::from_utf8_lossy(&output.stdout).to_lowercase();
-
-  text
-    .split_whitespace()
-    .take(4)
-    .any(|token| token.rsplit('/').next() == Some("claude"))
-}
-
 struct RunFrame {
   start_col: usize,
   cols: usize,
@@ -291,7 +275,7 @@ impl TerminalView {
           None => false,
           Some(pgid) => {
             cx.background_executor()
-              .spawn(async move { is_claude_process(pgid) })
+              .spawn(async move { helix_agents::is_claude_process(pgid) })
               .await
           }
         };
@@ -315,14 +299,7 @@ impl TerminalView {
   }
 
   pub fn activity_ago(&self) -> String {
-    let secs = self.last_activity.elapsed().as_secs();
-
-    match secs {
-      0..=9 => "now".to_string(),
-      10..=59 => format!("{secs}s"),
-      60..=3599 => format!("{}m", secs / 60),
-      _ => format!("{}h", secs / 3600),
-    }
+    crate::components::elapsed_label(self.last_activity.elapsed().as_secs())
   }
 
   fn write_bytes(&self, bytes: Vec<u8>) {

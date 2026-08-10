@@ -1,4 +1,4 @@
-use helix_ui::sidebar_right::match_rank;
+use helix_filesystem::scan::match_rank;
 
 #[test]
 fn prefix_beats_substring() {

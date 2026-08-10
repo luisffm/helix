@@ -170,18 +170,29 @@ fn icon_button_base(id: impl Into<SharedString>, theme: &Theme) -> Stateful<Div>
     .cursor_pointer()
 }
 
+pub fn elapsed_label(secs: u64) -> String {
+  match secs {
+    0..=9 => "now".to_string(),
+    10..=59 => format!("{secs}s"),
+    60..=3599 => format!("{}m", secs / 60),
+    3600..=86_399 => format!("{}h", secs / 3600),
+    _ => format!("{}d", secs / 86_400),
+  }
+}
+
 pub fn ago(epoch_seconds: i64) -> String {
   let now = std::time::SystemTime::now()
     .duration_since(std::time::UNIX_EPOCH)
     .map(|d| d.as_secs() as i64)
     .unwrap_or(0);
 
-  let delta = (now - epoch_seconds).max(0);
+  elapsed_label((now - epoch_seconds).max(0) as u64)
+}
 
-  match delta {
-    0..=59 => format!("{delta}s"),
-    60..=3599 => format!("{}m", delta / 60),
-    3600..=86_399 => format!("{}h", delta / 3600),
-    _ => format!("{}d", delta / 86_400),
-  }
+/// `query_lower` must already be lowercase. Matches an item made of several
+/// fields, unlike `scan::match_rank`, which ranks a single name.
+pub fn query_matches(query_lower: &str, fields: &[&str]) -> bool {
+  fields
+    .iter()
+    .any(|field| field.to_lowercase().contains(query_lower))
 }

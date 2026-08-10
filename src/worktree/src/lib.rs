@@ -1,6 +1,10 @@
+pub mod rows;
+
 use anyhow::{Context, Result};
 use helix_models::ProjectInfo;
 use std::path::{Path, PathBuf};
+
+pub use rows::{WorktreeRow, canonical_path, rows_for_projects, worktree_rows};
 
 #[derive(Clone, Debug)]
 pub struct WorktreeDescriptor {

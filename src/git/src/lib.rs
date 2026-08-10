@@ -1,5 +1,6 @@
 pub mod diff;
 pub mod index;
+pub mod ops;
 pub mod remote;
 
 use anyhow::Result;

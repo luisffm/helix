@@ -1,3 +1,4 @@
+use crate::components::query_matches;
 use crate::theme::Theme;
 use gpui::{
   App, Context, Entity, EventEmitter, FocusHandle, Focusable, IntoElement, KeyDownEvent,
@@ -150,10 +151,7 @@ impl AddDialog {
     self
       .existing
       .iter()
-      .filter(|(branch, path)| {
-        branch.to_lowercase().contains(&query)
-          || path.display().to_string().to_lowercase().contains(&query)
-      })
+      .filter(|(branch, path)| query_matches(&query, &[branch, &path.display().to_string()]))
       .cloned()
       .collect()
   }
@@ -502,7 +500,6 @@ impl Render for AddDialog {
       Step::Existing => {
         let filtered = self.filtered_existing();
         let selected_ix = self.existing_selected.min(filtered.len().saturating_sub(1));
-        let home = std::env::var("HOME").unwrap_or_default();
         let mut list = div().flex().flex_col().gap_0p5().pb_2().child(
           div()
             .flex()
@@ -558,14 +555,7 @@ impl Render for AddDialog {
             .map(|(ix, (branch, path))| {
               let is_selected = ix == selected_ix;
               let target = path.clone();
-              let display_path = {
-                let p = path.display().to_string();
-                if !home.is_empty() && p.starts_with(&home) {
-                  format!("~{}", &p[home.len()..])
-                } else {
-                  p
-                }
-              };
+              let display_path = helix_filesystem::paths::abbreviate_home(&path);
               div()
                 .id(SharedString::from(format!("existing-{ix}")))
                 .flex()

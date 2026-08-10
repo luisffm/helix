@@ -35,18 +35,6 @@ pub fn folder_icon(expanded: bool) -> Icon {
   })
 }
 
-pub fn status_letter(kind: GitFileKind) -> &'static str {
-  match kind {
-    GitFileKind::Added => "A",
-    GitFileKind::Modified => "M",
-    GitFileKind::Deleted => "D",
-    GitFileKind::Renamed => "R",
-    GitFileKind::Typechange => "T",
-    GitFileKind::Untracked => "U",
-    GitFileKind::Conflicted => "!",
-  }
-}
-
 pub fn status_color(kind: GitFileKind, theme: &Theme) -> Hsla {
   match kind {
     GitFileKind::Modified | GitFileKind::Typechange => c(0xe2c08d),
@@ -54,31 +42,5 @@ pub fn status_color(kind: GitFileKind, theme: &Theme) -> Hsla {
     GitFileKind::Deleted => c(0xc74e39),
     GitFileKind::Renamed | GitFileKind::Untracked => c(0x73c991),
     GitFileKind::Conflicted => theme.red,
-  }
-}
-
-pub fn dominance(kind: GitFileKind) -> u8 {
-  match kind {
-    GitFileKind::Conflicted => 6,
-    GitFileKind::Deleted => 5,
-    GitFileKind::Modified | GitFileKind::Typechange => 4,
-    GitFileKind::Added | GitFileKind::Untracked => 3,
-    GitFileKind::Renamed => 2,
-  }
-}
-
-#[cfg(test)]
-mod tests {
-  use super::dominance;
-  use helix_models::GitFileKind;
-
-  #[test]
-  fn deleted_outranks_modified() {
-    assert!(dominance(GitFileKind::Deleted) > dominance(GitFileKind::Modified));
-  }
-
-  #[test]
-  fn modified_outranks_untracked() {
-    assert!(dominance(GitFileKind::Modified) > dominance(GitFileKind::Untracked));
   }
 }

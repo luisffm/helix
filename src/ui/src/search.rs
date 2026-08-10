@@ -1,3 +1,4 @@
+use crate::components::query_matches;
 use crate::theme::Theme;
 use gpui::{
   App, Context, EventEmitter, FocusHandle, Focusable, IntoElement, KeyDownEvent, ParentElement,
@@ -84,11 +85,7 @@ impl SearchDialog {
     self
       .items
       .iter()
-      .filter(|item| {
-        item.label.to_lowercase().contains(&query)
-          || item.detail.to_lowercase().contains(&query)
-          || item.badge.to_lowercase().contains(&query)
-      })
+      .filter(|item| query_matches(&query, &[&item.label, &item.detail, &item.badge]))
       .cloned()
       .collect()
   }

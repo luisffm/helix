@@ -1,9 +1,8 @@
 use crate::add_dialog::{AddDialog, AddDialogEvent};
 use crate::components::HEADER_HEIGHT;
-use crate::resources::{UsageSnapshot, UsageTargets, format_rss};
 use crate::search::{SearchDialog, SearchEvent, SearchItem, SearchTarget};
 use crate::settings_page::{Section, SettingsEvent, SettingsPage};
-use crate::sidebar_left::{ProjectPanel, ProjectPanelEvent, WorktreeRow};
+use crate::sidebar_left::{ProjectPanel, ProjectPanelEvent};
 use crate::sidebar_right::{ContextPanel, ContextPanelEvent};
 use crate::theme::Theme;
 use crate::workspace::Workspace;
@@ -20,37 +19,12 @@ use helix_commands::{
 };
 use helix_filesystem::FsWatcher;
 use helix_models::{ProjectInfo, SessionKind};
+use helix_process::usage::{UsageSnapshot, UsageTargets, format_rss};
+use helix_worktree::{WorktreeRow, canonical_path, rows_for_projects};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
 const RETAINED_WORKSPACES: usize = 4;
-
-fn worktree_rows(project: &helix_state::config::ProjectConfig) -> Vec<WorktreeRow> {
-  let mut entries: Vec<WorktreeRow> = Vec::new();
-
-  if let Some(entry) = helix_worktree::describe_worktree(&project.path) {
-    entries.push(WorktreeRow::new(entry, None, None, None));
-  }
-
-  for wt in &project.worktrees {
-    let Some(entry) = helix_worktree::describe_worktree(&wt.path) else {
-      continue;
-    };
-
-    if entries.iter().any(|e| e.entry.path == entry.path) {
-      continue;
-    }
-
-    entries.push(WorktreeRow::new(
-      entry,
-      wt.display_name.clone(),
-      wt.issue.clone(),
-      wt.pr.clone(),
-    ));
-  }
-
-  entries
-}
 
 #[derive(Clone, Copy, PartialEq)]
 enum ResizingSide {
@@ -244,7 +218,7 @@ impl HelixRoot {
 
         let snapshot = cx
           .background_executor()
-          .spawn(async move { crate::resources::sample(targets) })
+          .spawn(async move { helix_process::usage::sample(targets) })
           .await;
 
         if this
@@ -262,7 +236,7 @@ impl HelixRoot {
               }
             }
 
-            let next = crate::resources::status_summary(&snapshot);
+            let next = helix_process::usage::status_summary(&snapshot);
             let changed = if root.resources_open {
               snapshot != root.resources
             } else {
@@ -291,13 +265,8 @@ impl HelixRoot {
       .iter()
       .map(|(root, workspace)| {
         let name = helix_state::config::project_for(root)
-          .and_then(|p| p.display_name)
-          .unwrap_or_else(|| {
-            root
-              .file_name()
-              .map(|n| n.to_string_lossy().to_string())
-              .unwrap_or_default()
-          });
+          .map(|project| project.label())
+          .unwrap_or_else(|| helix_state::config::dir_label(root));
 
         let sessions = workspace
           .read(cx)
@@ -307,10 +276,7 @@ impl HelixRoot {
 
             view.shell_pid().map(|pid| {
               (
-                view
-                  .title
-                  .trim_start_matches(|c: char| "✳✻✶✽*⁕ ".contains(c))
-                  .to_string(),
+                helix_agents::strip_spinner(&view.title).to_string(),
                 view.agent_kind(),
                 pid,
               )
@@ -457,13 +423,8 @@ impl HelixRoot {
       let snapshot = helix_git::snapshot(&root).ok();
       let owner = helix_worktree::primary_root(&root).unwrap_or(root);
 
-      let worktrees: HashMap<PathBuf, Vec<WorktreeRow>> = helix_state::config::load()
-        .projects
-        .iter()
-        .filter(|project| project.path.is_dir())
-        .filter(|project| every_project || project.path == owner)
-        .map(|project| (project.path.clone(), worktree_rows(project)))
-        .collect();
+      let only = (!every_project).then_some(owner.as_path());
+      let worktrees = rows_for_projects(&helix_state::config::load().projects, only);
 
       (snapshot, worktrees, owner)
     });
@@ -1027,7 +988,7 @@ impl HelixRoot {
     let existing: Vec<(String, PathBuf)> = helix_worktree::list_worktrees(&owner)
       .into_iter()
       .filter(|wt| {
-        let canonical = wt.path.canonicalize().unwrap_or_else(|_| wt.path.clone());
+        let canonical = canonical_path(&wt.path);
 
         !listed.contains(&canonical) && !wt.is_primary
       })
@@ -1045,22 +1006,12 @@ impl HelixRoot {
         continue;
       }
 
-      let name = project.display_name.clone().unwrap_or_else(|| {
-        primary
-          .file_name()
-          .map(|n| n.to_string_lossy().to_string())
-          .unwrap_or_else(|| primary.display().to_string())
-      });
-
-      targets.push((name, primary));
+      targets.push((project.label(), primary));
     }
 
     if let Some(active_owner) = &active_owner {
       if targets.iter().all(|(_, path)| path != active_owner) {
-        let name = active_owner
-          .file_name()
-          .map(|n| n.to_string_lossy().to_string())
-          .unwrap_or_else(|| active_owner.display().to_string());
+        let name = helix_state::config::dir_label(active_owner);
 
         targets.insert(0, (name, active_owner.clone()));
       }
@@ -1217,21 +1168,13 @@ impl HelixRoot {
       });
     }
 
-    for project in helix_state::config::load().projects {
-      if project.path.is_dir() {
-        let name = project
-          .path
-          .file_name()
-          .map(|n| n.to_string_lossy().to_string())
-          .unwrap_or_default();
-
-        items.push(SearchItem {
-          label: name,
-          detail: project.path.display().to_string(),
-          badge: "project".to_string(),
-          target: SearchTarget::Project(project.path.clone()),
-        });
-      }
+    for project in helix_state::config::visible_projects() {
+      items.push(SearchItem {
+        label: project.label(),
+        detail: project.path.display().to_string(),
+        badge: "project".to_string(),
+        target: SearchTarget::Project(project.path.clone()),
+      });
     }
 
     items.push(SearchItem {
@@ -1371,7 +1314,7 @@ impl Render for HelixRoot {
               .flex_none()
               .child(gpui_component::Icon::new(gpui_component::IconName::ChartPie).size_3()),
           )
-          .child(crate::resources::status_summary(&self.resources)),
+          .child(helix_process::usage::status_summary(&self.resources)),
       )
       .child("Helix 0.1");
 
@@ -1512,10 +1455,8 @@ impl Render for HelixRoot {
         });
       }))
       .on_action(cx.listener(|this, action: &ActivateWorkspace, window, cx| {
-        let target = helix_state::config::load()
-          .projects
+        let target = helix_state::config::visible_projects()
           .into_iter()
-          .filter(|project| project.path.is_dir())
           .nth(action.index)
           .map(|project| project.path);
         if let Some(target) = target {
@@ -1605,14 +1546,19 @@ impl Render for HelixRoot {
           this.delete_worktree(action.owner.clone(), action.path.clone(), window, cx);
         }),
       )
-      .on_action(cx.listener(|_, action: &OpenInZedAction, _, _| {
-        let _ = std::process::Command::new("open")
-          .args(["-a", "Zed"])
-          .arg(&action.path)
-          .spawn();
+      .on_action(cx.listener(|_, action: &OpenInZedAction, _, cx| {
+        let path = action.path.clone();
+
+        cx.background_executor()
+          .spawn(async move { helix_process::open_with("Zed", &path) })
+          .detach();
       }))
-      .on_action(cx.listener(|_, action: &OpenInFinderAction, _, _| {
-        let _ = std::process::Command::new("open").arg(&action.path).spawn();
+      .on_action(cx.listener(|_, action: &OpenInFinderAction, _, cx| {
+        let path = action.path.clone();
+
+        cx.background_executor()
+          .spawn(async move { helix_process::open_path(&path) })
+          .detach();
       }))
       .on_action(cx.listener(|_, action: &CopyPathAction, _, cx| {
         cx.write_to_clipboard(gpui::ClipboardItem::new_string(

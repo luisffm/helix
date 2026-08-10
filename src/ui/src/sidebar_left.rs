@@ -15,9 +15,10 @@ use helix_commands::{
   CopyPathAction, DeleteWorktreeAction, EditWorktreeAction, OpenInFinderAction, OpenInZedAction,
   OpenProjectSettingsAction, RemoveProjectAction, RemoveWorktreeAction,
 };
+use helix_github::short_ref;
 use helix_models::AgentStatus;
 use helix_models::{GitSnapshot, ProjectInfo, SessionKind};
-use helix_worktree::WorktreeEntry;
+use helix_worktree::{WorktreeRow, canonical_path};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::time::Duration;
@@ -29,55 +30,6 @@ pub enum ProjectPanelEvent {
   RequestAddProject,
   RequestAddWorktree,
   OpenSettings(Option<PathBuf>),
-}
-
-#[derive(Clone)]
-pub struct WorktreeRow {
-  pub entry: WorktreeEntry,
-  pub canonical: PathBuf,
-  pub display_name: Option<String>,
-  pub issue: Option<String>,
-  pub pr: Option<String>,
-}
-
-impl WorktreeRow {
-  pub fn new(
-    entry: WorktreeEntry,
-    display_name: Option<String>,
-    issue: Option<String>,
-    pr: Option<String>,
-  ) -> Self {
-    let canonical = canonical_path(&entry.path);
-
-    Self {
-      entry,
-      canonical,
-      display_name,
-      issue,
-      pr,
-    }
-  }
-}
-
-fn canonical_path(path: &PathBuf) -> PathBuf {
-  path.canonicalize().unwrap_or_else(|_| path.clone())
-}
-
-pub fn short_ref(value: &str) -> String {
-  let digits: String = value
-    .chars()
-    .rev()
-    .take_while(|c| c.is_ascii_digit())
-    .collect::<String>()
-    .chars()
-    .rev()
-    .collect();
-
-  if digits.is_empty() {
-    "link".to_string()
-  } else {
-    format!("#{digits}")
-  }
 }
 
 #[derive(Clone)]
@@ -146,17 +98,9 @@ impl Spinning for ProjectPanel {
 }
 
 fn load_project_entries() -> Vec<ProjectEntry> {
-  helix_state::config::load()
-    .projects
+  helix_state::config::visible_projects()
     .iter()
-    .filter(|p| p.path.is_dir())
     .map(|p| {
-      let dir_name = p
-        .path
-        .file_name()
-        .map(|n| n.to_string_lossy().to_string())
-        .unwrap_or_else(|| p.path.display().to_string());
-
       let glyph = if let Some(icon) = &p.icon {
         ProjectGlyph::Icon(icon.clone())
       } else if let Some(emoji) = &p.emoji {
@@ -167,7 +111,7 @@ fn load_project_entries() -> Vec<ProjectEntry> {
 
       ProjectEntry {
         info: ProjectInfo {
-          name: p.display_name.clone().unwrap_or(dir_name),
+          name: p.label(),
           root: p.path.clone(),
         },
         glyph,
@@ -803,10 +747,7 @@ impl Render for ProjectPanel {
                   .child(Icon::new(status_icon).size_3())
                   .into_any_element()
               };
-              let title = view
-                .title
-                .trim_start_matches(|c: char| "✳✻✶✽*⁕ ".contains(c))
-                .to_string();
+              let title = helix_agents::strip_spinner(&view.title).to_string();
               let ago = view.activity_ago();
               let is_tab_active = tab_ix == workspace_read.active && is_active_card;
               let ws = workspace_entity.clone();

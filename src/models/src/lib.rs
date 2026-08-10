@@ -79,6 +79,28 @@ impl GitFileKind {
       GitFileKind::Conflicted => "!",
     }
   }
+
+  pub fn status_letter(&self) -> &'static str {
+    match self {
+      GitFileKind::Added => "A",
+      GitFileKind::Modified => "M",
+      GitFileKind::Deleted => "D",
+      GitFileKind::Renamed => "R",
+      GitFileKind::Typechange => "T",
+      GitFileKind::Untracked => "U",
+      GitFileKind::Conflicted => "!",
+    }
+  }
+
+  pub fn dominance(&self) -> u8 {
+    match self {
+      GitFileKind::Conflicted => 6,
+      GitFileKind::Deleted => 5,
+      GitFileKind::Modified | GitFileKind::Typechange => 4,
+      GitFileKind::Added | GitFileKind::Untracked => 3,
+      GitFileKind::Renamed => 2,
+    }
+  }
 }
 
 #[derive(Clone, Debug)]
@@ -202,5 +224,20 @@ impl FileDiff {
     };
 
     source.get(line.range.clone()).unwrap_or_default()
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::GitFileKind;
+
+  #[test]
+  fn deleted_outranks_modified() {
+    assert!(GitFileKind::Deleted.dominance() > GitFileKind::Modified.dominance());
+  }
+
+  #[test]
+  fn modified_outranks_untracked() {
+    assert!(GitFileKind::Modified.dominance() > GitFileKind::Untracked.dominance());
   }
 }

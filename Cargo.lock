@@ -2652,6 +2652,7 @@ dependencies = [
  "anyhow",
  "helix-git",
  "helix-models",
+ "helix-process",
  "libc",
 ]
 
@@ -2702,6 +2703,8 @@ name = "helix-github"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "helix-git",
+ "helix-models",
  "helix-process",
  "serde",
  "serde_json",
@@ -2715,6 +2718,7 @@ version = "0.1.0"
 name = "helix-process"
 version = "0.1.0"
 dependencies = [
+ "helix-models",
  "libc",
 ]
 
@@ -2754,6 +2758,7 @@ dependencies = [
  "helix-git",
  "helix-github",
  "helix-models",
+ "helix-process",
  "helix-state",
  "helix-terminal",
  "helix-worktree",
@@ -2768,6 +2773,7 @@ dependencies = [
  "anyhow",
  "git2",
  "helix-models",
+ "helix-state",
 ]
 
 [[package]]

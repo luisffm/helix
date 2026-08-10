@@ -4,6 +4,12 @@ pub mod commit_message;
 
 use helix_models::SessionKind;
 use std::path::Path;
+use std::process::Command;
+use std::time::Duration;
+
+/// `ps` is cheap but not guaranteed to answer, and the probe runs on the
+/// background executor where a stuck child would hold a slot forever.
+const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub struct LaunchSpec {
   pub program: String,
@@ -64,4 +70,27 @@ pub fn shell_display_name(program: &str) -> String {
     .file_name()
     .map(|n| n.to_string_lossy().to_string())
     .unwrap_or_else(|| program.to_string())
+}
+
+/// Claude paints a spinner glyph into the terminal title while it works; the
+/// title is only stable once that prefix is gone.
+pub fn strip_spinner(title: &str) -> &str {
+  title.trim_start_matches(|c: char| "✳✻✶✽*⁕ ".contains(c))
+}
+
+pub fn is_claude_process(pgid: i32) -> bool {
+  let mut command = Command::new("ps");
+
+  command.args(["-o", "comm=", "-o", "args=", "-p", &pgid.to_string()]);
+
+  let Ok(output) = helix_process::output(command, None, PROBE_TIMEOUT) else {
+    return false;
+  };
+
+  let text = String::from_utf8_lossy(&output.stdout).to_lowercase();
+
+  text
+    .split_whitespace()
+    .take(4)
+    .any(|token| token.rsplit('/').next() == Some("claude"))
 }

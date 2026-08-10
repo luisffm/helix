@@ -15,6 +15,7 @@ helix-events.workspace = true
 helix-git.workspace = true
 helix-github.workspace = true
 helix-filesystem.workspace = true
+helix-process.workspace = true
 helix-worktree.workspace = true
 helix-terminal.workspace = true
 helix-agents.workspace = true

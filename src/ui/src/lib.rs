@@ -7,7 +7,6 @@ pub mod file_icons;
 pub mod icons;
 pub mod keymap;
 pub mod macos_blur;
-pub mod resources;
 pub mod root;
 pub mod search;
 pub mod settings_page;

@@ -6,6 +6,7 @@ edition.workspace = true
 [dependencies]
 anyhow.workspace = true
 helix-models.workspace = true
+helix-process.workspace = true
 
 [dev-dependencies]
 helix-git.workspace = true

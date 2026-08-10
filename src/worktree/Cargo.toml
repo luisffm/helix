@@ -7,3 +7,4 @@ edition.workspace = true
 git2.workspace = true
 anyhow.workspace = true
 helix-models.workspace = true
+helix-state.workspace = true

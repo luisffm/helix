@@ -1,4 +1,7 @@
+pub mod usage;
+
 use std::io::{Result, Write};
+use std::path::Path;
 use std::process::{Command, Output, Stdio};
 use std::time::Duration;
 
@@ -38,6 +41,18 @@ pub fn output(mut command: Command, stdin: Option<&[u8]>, timeout: Duration) -> 
   let _ = done_tx.send(());
 
   output
+}
+
+pub fn open_path(path: &Path) {
+  let _ = Command::new("open").arg(path).spawn();
+}
+
+pub fn open_with(app: &str, path: &Path) {
+  let _ = Command::new("open").args(["-a", app]).arg(path).spawn();
+}
+
+pub fn open_url(url: &str) {
+  let _ = Command::new("open").arg(url).spawn();
 }
 
 #[cfg(unix)]
