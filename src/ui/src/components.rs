@@ -1,12 +1,15 @@
 use crate::theme::Theme;
 use gpui::{
-  Animation, AnimationExt, Div, ElementId, Hsla, IntoElement, SharedString, Stateful,
-  Transformation, div, percentage, prelude::*, px,
+  App, Context, Div, Hsla, IntoElement, Render, SharedString, Stateful, Transformation, div,
+  percentage, prelude::*, px,
 };
 use gpui_component::{Icon, IconName};
 use std::time::Duration;
 
 pub const HEADER_HEIGHT: f32 = 42.0;
+
+const SPINNER_STEPS: u32 = 12;
+const SPINNER_TICK: Duration = Duration::from_millis(75);
 
 pub fn section_label(text: impl Into<SharedString>, theme: &Theme) -> Div {
   div()
@@ -84,13 +87,65 @@ pub fn git_branch_icon(color: Hsla) -> impl IntoElement {
     .child(Icon::new(crate::icons::HelixIcon::GitBranch).size_3p5())
 }
 
-pub fn spinner(id: impl Into<ElementId>, color: Hsla) -> impl IntoElement {
+#[derive(Default)]
+pub struct SpinnerClock {
+  step: u32,
+  ticking: bool,
+}
+
+impl SpinnerClock {
+  pub fn step(&self) -> u32 {
+    self.step
+  }
+}
+
+pub trait Spinning: Render {
+  fn spinner_clock(&mut self) -> &mut SpinnerClock;
+  fn spinner_active(&self, cx: &App) -> bool;
+}
+
+pub fn drive_spinner<V: Spinning>(view: &mut V, cx: &mut Context<V>) {
+  if view.spinner_clock().ticking || !view.spinner_active(cx) {
+    return;
+  }
+
+  view.spinner_clock().ticking = true;
+
+  cx.spawn(async move |this, cx| {
+    loop {
+      cx.background_executor().timer(SPINNER_TICK).await;
+
+      let advanced = this.update(cx, |view, cx| {
+        if !view.spinner_active(cx) {
+          view.spinner_clock().ticking = false;
+
+          return false;
+        }
+
+        let clock = view.spinner_clock();
+
+        clock.step = (clock.step + 1) % SPINNER_STEPS;
+
+        cx.notify();
+
+        true
+      });
+
+      if !matches!(advanced, Ok(true)) {
+        break;
+      }
+    }
+  })
+  .detach();
+}
+
+pub fn spinner(step: u32, color: Hsla) -> impl IntoElement {
+  let turn = (step % SPINNER_STEPS) as f32 / SPINNER_STEPS as f32;
+
   div().flex_none().text_color(color).child(
-    Icon::new(IconName::LoaderCircle).size_3p5().with_animation(
-      id,
-      Animation::new(Duration::from_millis(900)).repeat(),
-      |icon, delta| icon.transform(Transformation::rotate(percentage(delta))),
-    ),
+    Icon::new(IconName::LoaderCircle)
+      .size_3p5()
+      .transform(Transformation::rotate(percentage(turn))),
   )
 }
 

@@ -1,9 +1,11 @@
-use crate::components::{HEADER_HEIGHT, ago, icon_button, section_label, spinner};
+use crate::components::{
+  HEADER_HEIGHT, SpinnerClock, Spinning, ago, drive_spinner, icon_button, section_label, spinner,
+};
 use crate::file_icons;
 use crate::icons::HelixIcon;
 use crate::theme::Theme;
 use gpui::{
-  AnyElement, Context, Entity, EventEmitter, IntoElement, ParentElement, Render, SharedString,
+  AnyElement, App, Context, Entity, EventEmitter, IntoElement, ParentElement, Render, SharedString,
   Window, div, prelude::*, px,
 };
 use gpui_component::input::{Input, InputEvent, InputState};
@@ -158,9 +160,20 @@ pub struct ContextPanel {
   pr: Option<HostedReview>,
   pr_eligibility: Option<Eligibility>,
   pr_busy: bool,
+  spin: SpinnerClock,
 }
 
 impl EventEmitter<ContextPanelEvent> for ContextPanel {}
+
+impl Spinning for ContextPanel {
+  fn spinner_clock(&mut self) -> &mut SpinnerClock {
+    &mut self.spin
+  }
+
+  fn spinner_active(&self, _cx: &App) -> bool {
+    self.pr_busy
+  }
+}
 
 impl ContextPanel {
   pub fn new(root: PathBuf, window: &mut Window, cx: &mut Context<Self>) -> Self {
@@ -200,6 +213,7 @@ impl ContextPanel {
       pr: None,
       pr_eligibility: None,
       pr_busy: false,
+      spin: SpinnerClock::default(),
     }
   }
 
@@ -1965,7 +1979,7 @@ impl ContextPanel {
           .child(label),
       )
       .when(self.pr_busy, |el| {
-        el.child(spinner("pr-busy", theme.text_dim))
+        el.child(spinner(self.spin.step(), theme.text_dim))
       })
       .when(!self.pr_busy, |el| {
         el.child(
@@ -2057,6 +2071,8 @@ fn natural_cmp(a: &str, b: &str) -> std::cmp::Ordering {
 
 impl Render for ContextPanel {
   fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    drive_spinner(self, cx);
+
     let theme = Theme::of(cx).clone();
     let active = self.active;
 

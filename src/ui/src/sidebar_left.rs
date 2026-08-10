@@ -1,9 +1,12 @@
-use crate::components::{HEADER_HEIGHT, git_branch_icon, icon_button, project_icon, spinner};
+use crate::components::{
+  HEADER_HEIGHT, SpinnerClock, Spinning, drive_spinner, git_branch_icon, icon_button, project_icon,
+  spinner,
+};
 use crate::icons::HelixIcon;
 use crate::theme::Theme;
 use crate::workspace::Workspace;
 use gpui::{
-  Animation, AnimationExt, Context, Entity, EntityId, EventEmitter, IntoElement, ParentElement,
+  Animation, AnimationExt, App, Context, Entity, EntityId, EventEmitter, IntoElement, ParentElement,
   Render, SharedString, Window, div, prelude::*, px,
 };
 use gpui_component::menu::ContextMenuExt;
@@ -96,9 +99,26 @@ pub struct ProjectPanel {
   observed: HashSet<EntityId>,
   expanded: HashSet<PathBuf>,
   closing: HashSet<PathBuf>,
+  spin: SpinnerClock,
 }
 
 impl EventEmitter<ProjectPanelEvent> for ProjectPanel {}
+
+impl Spinning for ProjectPanel {
+  fn spinner_clock(&mut self) -> &mut SpinnerClock {
+    &mut self.spin
+  }
+
+  fn spinner_active(&self, cx: &App) -> bool {
+    self.workspaces.values().any(|workspace| {
+      workspace.read(cx).terminals().any(|(_, view)| {
+        let view = view.read(cx);
+
+        view.agent_kind() == SessionKind::ClaudeCode && view.status() == AgentStatus::Running
+      })
+    })
+  }
+}
 
 fn load_project_entries() -> Vec<ProjectEntry> {
   helix_state::config::load()
@@ -134,10 +154,32 @@ fn load_project_entries() -> Vec<ProjectEntry> {
 impl ProjectPanel {
   pub fn new(project: ProjectInfo, cx: &mut Context<Self>) -> Self {
     cx.spawn(async move |this, cx| {
-      loop {
-        cx.background_executor().timer(Duration::from_secs(1)).await;
+      let mut signature: Vec<(AgentStatus, String)> = Vec::new();
 
-        if this.update(cx, |_, cx| cx.notify()).is_err() {
+      loop {
+        let Ok(fast) = this.update(cx, |panel, cx| panel.has_ticking_labels(cx)) else {
+          break;
+        };
+
+        let interval = if fast {
+          Duration::from_secs(1)
+        } else {
+          Duration::from_secs(10)
+        };
+
+        cx.background_executor().timer(interval).await;
+
+        let updated = this.update(cx, |panel, cx| {
+          let next = panel.activity_signature(cx);
+
+          if next != signature {
+            signature = next;
+
+            cx.notify();
+          }
+        });
+
+        if updated.is_err() {
           break;
         }
       }
@@ -160,7 +202,34 @@ impl ProjectPanel {
       observed: HashSet::new(),
       expanded,
       closing: HashSet::new(),
+      spin: SpinnerClock::default(),
     }
+  }
+
+  fn has_ticking_labels(&self, cx: &App) -> bool {
+    self.workspaces.values().any(|workspace| {
+      workspace
+        .read(cx)
+        .terminals()
+        .any(|(_, view)| view.read(cx).last_activity.elapsed() < Duration::from_secs(60))
+    })
+  }
+
+  fn activity_signature(&self, cx: &App) -> Vec<(AgentStatus, String)> {
+    let mut roots: Vec<&PathBuf> = self.workspaces.keys().collect();
+
+    roots.sort();
+
+    roots
+      .into_iter()
+      .flat_map(|root| {
+        self.workspaces[root].read(cx).terminals().map(|(_, view)| {
+          let view = view.read(cx);
+
+          (view.status(), view.activity_ago())
+        })
+      })
+      .collect()
   }
 
   fn toggle_project(&mut self, root: PathBuf, cx: &mut Context<Self>) {
@@ -240,7 +309,10 @@ impl ProjectPanel {
 
 impl Render for ProjectPanel {
   fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    drive_spinner(self, cx);
+
     let theme = Theme::of(cx).clone();
+    let spin_step = self.spin.step();
     let active_root = self.active_root.clone();
     let active_canonical = active_root
       .canonicalize()
@@ -506,11 +578,7 @@ impl Render for ProjectPanel {
           })
         });
         let branch_icon: gpui::AnyElement = if any_running {
-          spinner(
-            SharedString::from(format!("branch-spin-{project_ix}-{ix}")),
-            theme.yellow,
-          )
-          .into_any_element()
+          spinner(spin_step, theme.yellow).into_any_element()
         } else {
           git_branch_icon(icon_color).into_any_element()
         };
@@ -698,11 +766,7 @@ impl Render for ProjectPanel {
                 AgentStatus::Running | AgentStatus::Waiting | AgentStatus::Thinking
               );
               let status_element: gpui::AnyElement = if loading {
-                spinner(
-                  SharedString::from(format!("agent-spin-{project_ix}-{tab_ix}")),
-                  status_color,
-                )
-                .into_any_element()
+                spinner(spin_step, status_color).into_any_element()
               } else {
                 div()
                   .flex_none()
