@@ -1320,7 +1320,7 @@ impl ContextPanel {
       .id("git-menu")
       .occlude()
       .absolute()
-      .bottom(px(30.0))
+      .top(px(30.0))
       .right_0()
       .w(px(240.0))
       .max_h(px(420.0))
@@ -1384,6 +1384,8 @@ impl ContextPanel {
   ) -> AnyElement {
     let can_commit = !git.staged.is_empty();
     let can_write = can_commit && !self.generating_message;
+    let pending = git.unstaged.len() + git.untracked.len() + git.conflicted.len();
+    let primary_enabled = (can_commit || pending > 0) && !self.git_busy;
     // Always interactive: gating the handler on `can_write` left a dim glyph with
     // no click, no tooltip and no way to learn why. It now explains itself.
     let write = div()
@@ -1463,23 +1465,32 @@ impl ContextPanel {
               .items_center()
               .justify_center()
               .rounded_md()
+              .gap_1()
               .text_xs()
-              .when(can_commit && !self.git_busy, |el| {
-                el.bg(theme.elevated)
-                  .text_color(theme.text)
+              .bg(theme.elevated)
+              .when(primary_enabled, |el| {
+                el.text_color(theme.text)
                   .cursor_pointer()
                   .hover(|s| s.bg(theme.hover))
-                  .on_click(cx.listener(|this, _, window, cx| {
-                    this.run_git_action(GitAction::Commit, window, cx)
+                  .on_click(cx.listener(move |this, _, window, cx| {
+                    if can_commit {
+                      this.run_git_action(GitAction::Commit, window, cx);
+                    } else {
+                      this.stage_all(cx);
+                    }
                   }))
               })
-              .when(!can_commit || self.git_busy, |el| {
-                el.text_color(theme.text_dim)
-              })
+              .when(!primary_enabled, |el| el.text_color(theme.text_dim))
+              .children(
+                (!can_commit && !self.git_busy)
+                  .then(|| div().flex_none().child(Icon::new(IconName::Plus).size_3())),
+              )
               .child(if self.git_busy {
                 "Working…".to_string()
-              } else {
+              } else if can_commit {
                 format!("Commit ({})", git.staged.len())
+              } else {
+                "Stage All".to_string()
               }),
           )
           .child(
