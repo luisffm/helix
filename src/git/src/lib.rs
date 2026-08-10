@@ -5,7 +5,7 @@ pub mod remote;
 use anyhow::Result;
 use git2::{Repository, Status, StatusOptions};
 use helix_models::{CommitInfo, GitFileKind, GitFileStatus, GitSnapshot};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 pub fn snapshot(root: &Path) -> Result<GitSnapshot> {
@@ -45,6 +45,7 @@ pub fn snapshot(root: &Path) -> Result<GitSnapshot> {
   }
 
   collect_statuses(&repo, &mut snap);
+  apply_line_counts(&repo, &mut snap);
   collect_commits(&repo, &mut snap);
   collect_ahead_behind(&repo, &mut snap);
 
@@ -102,17 +103,15 @@ fn collect_statuses(repo: &Repository, snap: &mut GitSnapshot) {
     let st = entry.status();
     let path = entry.path().unwrap_or_default().to_string();
     if st.contains(Status::CONFLICTED) {
-      snap.conflicted.push(GitFileStatus {
-        path,
-        kind: GitFileKind::Conflicted,
-      });
+      snap
+        .conflicted
+        .push(GitFileStatus::new(path, GitFileKind::Conflicted));
       continue;
     }
     if st.contains(Status::WT_NEW) {
-      snap.untracked.push(GitFileStatus {
-        path: path.clone(),
-        kind: GitFileKind::Untracked,
-      });
+      snap
+        .untracked
+        .push(GitFileStatus::new(path.clone(), GitFileKind::Untracked));
     }
     for (bit, kind) in [
       (Status::INDEX_NEW, GitFileKind::Added),
@@ -122,10 +121,7 @@ fn collect_statuses(repo: &Repository, snap: &mut GitSnapshot) {
       (Status::INDEX_TYPECHANGE, GitFileKind::Typechange),
     ] {
       if st.contains(bit) {
-        snap.staged.push(GitFileStatus {
-          path: path.clone(),
-          kind,
-        });
+        snap.staged.push(GitFileStatus::new(path.clone(), kind));
       }
     }
     for (bit, kind) in [
@@ -135,11 +131,64 @@ fn collect_statuses(repo: &Repository, snap: &mut GitSnapshot) {
       (Status::WT_TYPECHANGE, GitFileKind::Typechange),
     ] {
       if st.contains(bit) {
-        snap.unstaged.push(GitFileStatus {
-          path: path.clone(),
-          kind,
-        });
+        snap.unstaged.push(GitFileStatus::new(path.clone(), kind));
       }
+    }
+  }
+}
+
+const MAX_COUNTED_DELTAS: usize = 500;
+
+fn line_counts(repo: &Repository, staged: bool) -> HashMap<String, (usize, usize)> {
+  let mut out = HashMap::new();
+  let mut opts = git2::DiffOptions::new();
+  opts
+    .include_untracked(true)
+    .recurse_untracked_dirs(true)
+    .show_untracked_content(true)
+    .include_typechange(true);
+  let diff = if staged {
+    let tree = repo.head().and_then(|head| head.peel_to_tree()).ok();
+    repo.diff_tree_to_index(tree.as_ref(), None, Some(&mut opts))
+  } else {
+    repo.diff_index_to_workdir(None, Some(&mut opts))
+  };
+  let Ok(diff) = diff else { return out };
+
+  for (ix, delta) in diff.deltas().enumerate().take(MAX_COUNTED_DELTAS) {
+    let Some(path) = delta.new_file().path().or_else(|| delta.old_file().path()) else {
+      continue;
+    };
+    let Ok(Some(patch)) = git2::Patch::from_diff(&diff, ix) else {
+      continue;
+    };
+    let Ok((_, added, removed)) = patch.line_stats() else {
+      continue;
+    };
+    out.insert(path.to_string_lossy().to_string(), (added, removed));
+  }
+  out
+}
+
+fn apply_line_counts(repo: &Repository, snap: &mut GitSnapshot) {
+  let staged = line_counts(repo, true);
+  let workdir = line_counts(repo, false);
+
+  for file in snap.staged.iter_mut() {
+    if let Some((added, removed)) = staged.get(&file.path) {
+      file.added = *added;
+      file.removed = *removed;
+    }
+  }
+  for file in snap
+    .unstaged
+    .iter_mut()
+    .chain(snap.untracked.iter_mut())
+    .chain(snap.conflicted.iter_mut())
+  {
+    if let Some((added, removed)) = workdir.get(&file.path) {
+      file.added = *added;
+      file.removed = *removed;
     }
   }
 }
@@ -180,6 +229,7 @@ fn collect_ahead_behind(repo: &Repository, snap: &mut GitSnapshot) {
   let Ok(upstream) = branch.upstream() else {
     return;
   };
+  snap.upstream = upstream.name().ok().flatten().map(|name| name.to_string());
   let (Some(local), Some(remote)) = (head.target(), upstream.get().target()) else {
     return;
   };

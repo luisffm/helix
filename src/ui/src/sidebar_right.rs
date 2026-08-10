@@ -69,6 +69,55 @@ enum GitSection {
   Commits,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum GitAction {
+  Commit,
+  CommitPush,
+  CommitSync,
+  Push,
+  ForcePush,
+  Pull,
+  FastForward,
+  Sync,
+  Rebase,
+  Fetch,
+  Publish,
+}
+
+impl GitAction {
+  fn commits(self) -> bool {
+    matches!(self, Self::Commit | Self::CommitPush | Self::CommitSync)
+  }
+
+  fn remote_step(self) -> Option<Self> {
+    match self {
+      Self::Commit => None,
+      Self::CommitPush => Some(Self::Push),
+      Self::CommitSync => Some(Self::Sync),
+      other => Some(other),
+    }
+  }
+}
+
+fn perform_remote(
+  action: GitAction,
+  root: &Path,
+  branch: &str,
+  upstream: &str,
+) -> anyhow::Result<()> {
+  match action {
+    GitAction::Push => helix_git::remote::push(root),
+    GitAction::ForcePush => helix_git::remote::force_push(root),
+    GitAction::Pull => helix_git::remote::pull(root),
+    GitAction::FastForward => helix_git::remote::fast_forward(root),
+    GitAction::Sync => helix_git::remote::sync(root),
+    GitAction::Rebase => helix_git::remote::rebase(root, upstream),
+    GitAction::Fetch => helix_git::remote::fetch(root),
+    GitAction::Publish => helix_git::remote::publish(root, branch),
+    GitAction::Commit | GitAction::CommitPush | GitAction::CommitSync => Ok(()),
+  }
+}
+
 #[derive(Clone)]
 struct FileNode {
   path: PathBuf,
@@ -92,6 +141,9 @@ pub struct ContextPanel {
   generating_message: bool,
   collapsed: HashSet<GitSection>,
   git_error: Option<String>,
+  discard_armed: Option<String>,
+  git_menu_open: bool,
+  git_busy: bool,
   pr: Option<HostedReview>,
   pr_eligibility: Option<Eligibility>,
   pr_busy: bool,
@@ -128,6 +180,9 @@ impl ContextPanel {
       generating_message: false,
       collapsed: HashSet::from([GitSection::Commits]),
       git_error: None,
+      discard_armed: None,
+      git_menu_open: false,
+      git_busy: false,
       pr: None,
       pr_eligibility: None,
       pr_busy: false,
@@ -225,6 +280,80 @@ impl ContextPanel {
     cx.notify();
   }
 
+  fn run_git_action(&mut self, action: GitAction, window: &mut Window, cx: &mut Context<Self>) {
+    self.git_menu_open = false;
+    if self.git_busy {
+      return;
+    }
+
+    if action.commits() {
+      let message = self.commit_message.read(cx).value().to_string();
+      match helix_git::index::commit(&self.root, &message) {
+        Ok(_) => {
+          self.git_error = None;
+          self
+            .commit_message
+            .update(cx, |state, cx| state.set_value("", window, cx));
+        }
+        Err(err) => {
+          self.git_error = Some(err.to_string());
+          cx.emit(ContextPanelEvent::GitChanged);
+          cx.notify();
+          return;
+        }
+      }
+    }
+
+    let Some(step) = action.remote_step() else {
+      cx.emit(ContextPanelEvent::GitChanged);
+      cx.notify();
+      return;
+    };
+
+    self.git_busy = true;
+    self.git_error = None;
+    cx.notify();
+
+    let root = self.root.clone();
+    let branch = self
+      .git
+      .as_ref()
+      .map(|git| git.branch.clone())
+      .unwrap_or_default();
+    let upstream = self
+      .git
+      .as_ref()
+      .and_then(|git| git.upstream.clone())
+      .unwrap_or_default();
+    let task = cx
+      .background_executor()
+      .spawn(async move { perform_remote(step, &root, &branch, &upstream) });
+
+    let this = cx.entity().downgrade();
+    window
+      .spawn(cx, async move |cx| {
+        let result = task.await;
+        this
+          .update_in(cx, |panel, _, cx| {
+            panel.git_busy = false;
+            panel.git_error = result.err().map(|err| err.to_string());
+            cx.emit(ContextPanelEvent::GitChanged);
+            cx.notify();
+          })
+          .ok();
+      })
+      .detach();
+  }
+
+  fn discard(&mut self, relative: String, cx: &mut Context<Self>) {
+    self.discard_armed = None;
+    self.git_error = helix_git::index::discard(&self.root, &relative)
+      .err()
+      .map(|err| err.to_string());
+    cx.emit(ContextPanelEvent::GitChanged);
+    cx.notify();
+  }
+
   fn unstage(&mut self, relative: String, cx: &mut Context<Self>) {
     self.git_error = helix_git::index::unstage(&self.root, &relative)
       .err()
@@ -245,21 +374,6 @@ impl ContextPanel {
     self.git_error = helix_git::index::unstage_all(&self.root)
       .err()
       .map(|err| err.to_string());
-    cx.emit(ContextPanelEvent::GitChanged);
-    cx.notify();
-  }
-
-  fn commit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-    let message = self.commit_message.read(cx).value().to_string();
-    match helix_git::index::commit(&self.root, &message) {
-      Ok(_) => {
-        self.git_error = None;
-        self
-          .commit_message
-          .update(cx, |state, cx| state.set_value("", window, cx));
-      }
-      Err(err) => self.git_error = Some(err.to_string()),
-    }
     cx.emit(ContextPanelEvent::GitChanged);
     cx.notify();
   }
@@ -972,12 +1086,124 @@ impl ContextPanel {
       .enumerate()
       .map(|(ix, file)| {
         let color = file_icons::status_color(file.kind, theme);
+        let group = SharedString::from(format!("git-row-{prefix}-{ix}"));
         let relative = file.path.clone();
         let toggle_path = file.path.clone();
+        let discard_path = file.path.clone();
         let base = base.clone();
+        let armed = self.discard_armed.as_deref() == Some(file.path.as_str());
+        let as_path = Path::new(&file.path);
+        let name = as_path
+          .file_name()
+          .map(|n| n.to_string_lossy().to_string())
+          .unwrap_or_else(|| file.path.clone());
+        let parent = as_path
+          .parent()
+          .map(|dir| dir.to_string_lossy().to_string())
+          .filter(|dir| !dir.is_empty());
+
+        let stat = div()
+          .flex_none()
+          .flex()
+          .items_center()
+          .gap_1()
+          .group_hover(group.clone(), |s| s.invisible())
+          .children((file.added > 0).then(|| {
+            div()
+              .text_color(theme.green)
+              .child(format!("+{}", file.added))
+          }))
+          .children((file.removed > 0).then(|| {
+            div()
+              .text_color(theme.red)
+              .child(format!("-{}", file.removed))
+          }))
+          .child(
+            div()
+              .text_color(color)
+              .child(file_icons::status_letter(file.kind)),
+          );
+
+        let toggle = div()
+          .id(SharedString::from(format!("git-toggle-{prefix}-{ix}")))
+          .flex_none()
+          .size(px(18.0))
+          .flex()
+          .items_center()
+          .justify_center()
+          .rounded_sm()
+          .cursor_pointer()
+          .text_color(theme.text_dim)
+          .hover(|s| s.bg(theme.elevated).text_color(theme.text))
+          .tooltip(move |window, cx| {
+            gpui_component::tooltip::Tooltip::new(if staged {
+              "Unstage this file"
+            } else {
+              "Stage this file"
+            })
+            .build(window, cx)
+          })
+          .on_click(cx.listener(move |this, _, _, cx| {
+            cx.stop_propagation();
+            this.discard_armed = None;
+            if staged {
+              this.unstage(toggle_path.clone(), cx);
+            } else {
+              this.stage(toggle_path.clone(), cx);
+            }
+          }))
+          .child(
+            Icon::new(if staged {
+              IconName::Minus
+            } else {
+              IconName::Plus
+            })
+            .size_3(),
+          );
+
+        let discard = (!staged).then(|| {
+          div()
+            .id(SharedString::from(format!("git-discard-{prefix}-{ix}")))
+            .flex_none()
+            .size(px(18.0))
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded_sm()
+            .cursor_pointer()
+            .text_color(if armed { theme.red } else { theme.text_dim })
+            .hover(|s| s.bg(theme.elevated))
+            .tooltip(move |window, cx| {
+              gpui_component::tooltip::Tooltip::new(if armed {
+                "Click again to throw the changes away"
+              } else {
+                "Discard changes"
+              })
+              .build(window, cx)
+            })
+            .on_click(cx.listener(move |this, _, _, cx| {
+              cx.stop_propagation();
+              if this.discard_armed.as_deref() == Some(discard_path.as_str()) {
+                this.discard(discard_path.clone(), cx);
+              } else {
+                this.discard_armed = Some(discard_path.clone());
+                cx.notify();
+              }
+            }))
+            .child(
+              Icon::new(if armed {
+                IconName::Check
+              } else {
+                IconName::Undo2
+              })
+              .size_3(),
+            )
+        });
+
         div()
           .id(SharedString::from(format!("git-{prefix}-{ix}")))
-          .group(SharedString::from(format!("git-row-{prefix}-{ix}")))
+          .group(group.clone())
+          .relative()
           .flex()
           .items_center()
           .gap_2()
@@ -987,7 +1213,8 @@ impl ContextPanel {
           .cursor_pointer()
           .text_xs()
           .hover(|s| s.bg(theme.hover))
-          .on_click(cx.listener(move |_, _, _, cx| {
+          .on_click(cx.listener(move |this, _, _, cx| {
+            this.discard_armed = None;
             cx.emit(ContextPanelEvent::OpenDiff {
               relative: relative.clone(),
               base: base.clone(),
@@ -995,51 +1222,158 @@ impl ContextPanel {
           }))
           .child(
             div()
-              .w(px(10.0))
               .flex_none()
-              .text_color(color)
-              .child(file_icons::status_letter(file.kind)),
+              .text_color(theme.text_dim)
+              .child(file_icons::icon(as_path).size_3()),
           )
-          .child(
+          .child(div().flex_none().text_color(theme.text).child(name))
+          .children(parent.map(|parent| {
             div()
               .flex_1()
               .min_w_0()
               .overflow_hidden()
               .whitespace_nowrap()
-              .text_color(theme.text_muted)
-              .child(file.path.clone()),
-          )
+              .text_color(theme.text_dim)
+              .child(parent)
+          }))
+          .child(div().flex_1())
+          .child(stat)
           .child(
             div()
-              .id(SharedString::from(format!("git-toggle-{prefix}-{ix}")))
-              .flex_none()
-              .size(px(16.0))
+              .absolute()
+              .right_1()
               .flex()
               .items_center()
-              .justify_center()
-              .rounded_sm()
-              .text_color(theme.text_dim)
-              .hover(|s| s.bg(theme.elevated).text_color(theme.text))
-              .on_click(cx.listener(move |this, _, _, cx| {
-                cx.stop_propagation();
-                if staged {
-                  this.unstage(toggle_path.clone(), cx);
-                } else {
-                  this.stage(toggle_path.clone(), cx);
-                }
-              }))
-              .child(
-                Icon::new(if staged {
-                  IconName::Minus
-                } else {
-                  IconName::Plus
-                })
-                .size_3(),
-              ),
+              .gap_0p5()
+              .invisible()
+              .group_hover(group, |s| s.visible())
+              .children(discard)
+              .child(toggle),
           )
           .into_any_element()
       })
       .collect()
+  }
+
+  fn render_git_menu(
+    &self,
+    git: &GitSnapshot,
+    theme: &Theme,
+    cx: &mut Context<Self>,
+  ) -> AnyElement {
+    let staged = !git.staged.is_empty();
+    let published = git.upstream.is_some();
+    let upstream = git
+      .upstream
+      .clone()
+      .unwrap_or_else(|| "upstream".to_string());
+    let feature_branch = !matches!(git.branch.as_str(), "main" | "master" | "trunk");
+
+    let entries: Vec<(&'static str, Option<String>, bool, Option<GitAction>)> = vec![
+      ("Commit", None, staged, Some(GitAction::Commit)),
+      (
+        "Commit & Push",
+        None,
+        staged && published,
+        Some(GitAction::CommitPush),
+      ),
+      (
+        "Commit & Sync",
+        None,
+        staged && published,
+        Some(GitAction::CommitSync),
+      ),
+      ("", None, false, None),
+      ("Push", None, published, Some(GitAction::Push)),
+      ("Force Push", None, published, Some(GitAction::ForcePush)),
+      (
+        "Create PR",
+        (!feature_branch).then(|| "Switch to a feature branch".to_string()),
+        feature_branch,
+        None,
+      ),
+      ("", None, false, None),
+      ("Pull", None, published, Some(GitAction::Pull)),
+      (
+        "Fast-forward",
+        None,
+        published && git.behind > 0,
+        Some(GitAction::FastForward),
+      ),
+      ("Sync", None, published, Some(GitAction::Sync)),
+      (
+        "Rebase",
+        Some(format!("from {upstream}")),
+        published,
+        Some(GitAction::Rebase),
+      ),
+      ("Fetch", None, true, Some(GitAction::Fetch)),
+      (
+        "Publish Branch",
+        published.then(|| format!("already tracking {upstream}")),
+        !published,
+        Some(GitAction::Publish),
+      ),
+    ];
+
+    let mut menu = div()
+      .id("git-menu")
+      .occlude()
+      .absolute()
+      .bottom(px(30.0))
+      .right_0()
+      .w(px(240.0))
+      .max_h(px(420.0))
+      .overflow_y_scroll()
+      .rounded_lg()
+      .border_1()
+      .border_color(theme.panel_border)
+      .bg(crate::theme::ca(0x1b1b1bfa))
+      .shadow_lg()
+      .py_1()
+      .flex()
+      .flex_col();
+
+    for (ix, (label, hint, enabled, action)) in entries.into_iter().enumerate() {
+      if label.is_empty() {
+        menu = menu.child(div().my_1().h(px(1.0)).bg(theme.panel_border).flex_none());
+        continue;
+      }
+      let enabled = enabled && !self.git_busy;
+      menu = menu.child(
+        div()
+          .id(SharedString::from(format!("git-menu-{ix}")))
+          .flex()
+          .flex_col()
+          .px_3()
+          .py_1()
+          .text_xs()
+          .when(enabled, |el| {
+            el.cursor_pointer()
+              .text_color(theme.text)
+              .hover(|s| s.bg(theme.hover))
+          })
+          .when(!enabled, |el| el.text_color(theme.text_dim))
+          .when_some(action.filter(|_| enabled), |el, action| {
+            el.on_click(cx.listener(move |this, _, window, cx| {
+              cx.stop_propagation();
+              this.run_git_action(action, window, cx);
+            }))
+          })
+          .when(enabled && action.is_none(), |el| {
+            el.on_click(cx.listener(|this, _, _, cx| {
+              cx.stop_propagation();
+              this.git_menu_open = false;
+              this.active = RightTab::Pr;
+              cx.notify();
+            }))
+          })
+          .child(label)
+          .children(hint.map(|hint| div().text_color(theme.text_dim).child(hint))),
+      );
+    }
+
+    menu.into_any_element()
   }
 
   fn render_commit_box(
@@ -1116,22 +1450,67 @@ impl ContextPanel {
       )
       .child(
         div()
-          .id("commit-button")
-          .h(px(26.0))
+          .relative()
           .flex()
           .items_center()
-          .justify_center()
-          .rounded_md()
-          .text_xs()
-          .when(can_commit, |el| {
-            el.bg(theme.elevated)
-              .text_color(theme.text)
+          .gap_0p5()
+          .child(
+            div()
+              .id("commit-button")
+              .flex_1()
+              .h(px(26.0))
+              .flex()
+              .items_center()
+              .justify_center()
+              .rounded_md()
+              .text_xs()
+              .when(can_commit && !self.git_busy, |el| {
+                el.bg(theme.elevated)
+                  .text_color(theme.text)
+                  .cursor_pointer()
+                  .hover(|s| s.bg(theme.hover))
+                  .on_click(cx.listener(|this, _, window, cx| {
+                    this.run_git_action(GitAction::Commit, window, cx)
+                  }))
+              })
+              .when(!can_commit || self.git_busy, |el| {
+                el.text_color(theme.text_dim)
+              })
+              .child(if self.git_busy {
+                "Working…".to_string()
+              } else {
+                format!("Commit ({})", git.staged.len())
+              }),
+          )
+          .child(
+            div()
+              .id("commit-menu-button")
+              .flex_none()
+              .w(px(26.0))
+              .h(px(26.0))
+              .flex()
+              .items_center()
+              .justify_center()
+              .rounded_md()
+              .bg(theme.elevated)
+              .text_color(theme.text_muted)
               .cursor_pointer()
-              .hover(|s| s.bg(theme.hover))
-              .on_click(cx.listener(|this, _, window, cx| this.commit(window, cx)))
-          })
-          .when(!can_commit, |el| el.text_color(theme.text_dim))
-          .child(format!("Commit ({})", git.staged.len())),
+              .hover(|s| s.bg(theme.hover).text_color(theme.text))
+              .tooltip(move |window, cx| {
+                gpui_component::tooltip::Tooltip::new("More commit and remote actions")
+                  .build(window, cx)
+              })
+              .on_click(cx.listener(|this, _, _, cx| {
+                this.git_menu_open = !this.git_menu_open;
+                cx.notify();
+              }))
+              .child(Icon::new(IconName::ChevronDown).size_3()),
+          )
+          .children(
+            self
+              .git_menu_open
+              .then(|| gpui::deferred(self.render_git_menu(git, theme, cx))),
+          ),
       )
       .children(
         self
@@ -1638,6 +2017,15 @@ impl Render for ContextPanel {
       .bg(theme.panel)
       .border_l_1()
       .border_color(theme.panel_border)
+      .when(self.git_menu_open, |el| {
+        el.on_mouse_down(
+          gpui::MouseButton::Left,
+          cx.listener(|this, _, _, cx| {
+            this.git_menu_open = false;
+            cx.notify();
+          }),
+        )
+      })
       .child(tabs)
       .children(toolbar)
       .child(body)

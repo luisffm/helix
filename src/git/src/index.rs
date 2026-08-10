@@ -1,6 +1,33 @@
-use anyhow::{Result, anyhow};
-use git2::{IndexAddOption, Repository, Signature};
+use anyhow::{Context, Result, anyhow};
+use git2::{IndexAddOption, Repository, Signature, build::CheckoutBuilder};
 use std::path::Path;
+
+/// Throws away the working-tree changes for one path, the way `git restore`
+/// does: tracked files go back to the index, untracked files are deleted
+/// outright. Neither is recoverable through git.
+pub fn discard(root: &Path, relative: &str) -> Result<()> {
+  let repo = Repository::discover(root)?;
+  let workdir = repo
+    .workdir()
+    .context("cannot discard inside a bare repository")?
+    .to_path_buf();
+  let index = repo.index()?;
+
+  if index.get_path(Path::new(relative), 0).is_none() {
+    let target = workdir.join(relative);
+    if target.is_dir() {
+      std::fs::remove_dir_all(&target)?;
+    } else if target.exists() {
+      std::fs::remove_file(&target)?;
+    }
+    return Ok(());
+  }
+
+  let mut checkout = CheckoutBuilder::new();
+  checkout.force().path(relative);
+  repo.checkout_index(None, Some(&mut checkout))?;
+  Ok(())
+}
 
 pub fn stage(root: &Path, relative: &str) -> Result<()> {
   let repo = Repository::discover(root)?;

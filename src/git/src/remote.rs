@@ -46,6 +46,43 @@ pub fn sync(root: &Path) -> Result<()> {
   Ok(())
 }
 
+/// Refuses to overwrite a remote that moved since the last fetch, which plain
+/// `--force` would happily do.
+pub fn force_push(root: &Path) -> Result<()> {
+  git(root, &["push", "--force-with-lease"])?;
+  Ok(())
+}
+
+pub fn pull(root: &Path) -> Result<()> {
+  git(root, &["pull"])?;
+  Ok(())
+}
+
+pub fn fast_forward(root: &Path) -> Result<()> {
+  git(root, &["merge", "--ff-only", "@{u}"])?;
+  Ok(())
+}
+
+pub fn rebase(root: &Path, upstream: &str) -> Result<()> {
+  git(root, &["rebase", "--end-of-options", upstream])?;
+  Ok(())
+}
+
+pub fn fetch(root: &Path) -> Result<()> {
+  git(root, &["fetch", "--all", "--prune"])?;
+  Ok(())
+}
+
+pub fn upstream(root: &Path) -> Option<String> {
+  git(
+    root,
+    &["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"],
+  )
+  .ok()
+  .map(|name| name.trim().to_string())
+  .filter(|name| !name.is_empty())
+}
+
 pub fn commits_ahead_of(root: &Path, base_ref: &str) -> Result<usize> {
   let output = git(root, &["rev-list", "--count", &format!("{base_ref}..HEAD")])?;
   Ok(output.trim().parse().unwrap_or(0))

@@ -85,6 +85,19 @@ impl GitFileKind {
 pub struct GitFileStatus {
   pub path: String,
   pub kind: GitFileKind,
+  pub added: usize,
+  pub removed: usize,
+}
+
+impl GitFileStatus {
+  pub fn new(path: String, kind: GitFileKind) -> Self {
+    Self {
+      path,
+      kind,
+      added: 0,
+      removed: 0,
+    }
+  }
 }
 
 #[derive(Clone, Debug)]
@@ -104,6 +117,7 @@ pub struct GitSnapshot {
   pub main_repo: Option<PathBuf>,
   pub ahead: usize,
   pub behind: usize,
+  pub upstream: Option<String>,
   pub staged: Vec<GitFileStatus>,
   pub unstaged: Vec<GitFileStatus>,
   pub untracked: Vec<GitFileStatus>,

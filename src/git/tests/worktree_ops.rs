@@ -349,3 +349,194 @@ fn branch_diff_uses_merge_base() {
   let ahead = helix_git::remote::commits_ahead_of(&repo.path, "main").unwrap();
   assert_eq!(ahead, 1);
 }
+
+#[test]
+fn snapshot_counts_added_and_removed_lines() {
+  let repo = TempRepo::new("linecounts");
+  repo.write("kept.txt", "one\ntwo\nthree\n");
+  repo.commit_all("initial");
+  repo.write("kept.txt", "one\nTWO\nthree\nfour\n");
+  repo.write("fresh.txt", "a\nb\n");
+
+  let snap = helix_git::snapshot(&repo.path).unwrap();
+  let modified = snap
+    .unstaged
+    .iter()
+    .find(|file| file.path == "kept.txt")
+    .expect("kept.txt should be unstaged");
+  assert_eq!((modified.added, modified.removed), (2, 1));
+
+  let untracked = snap
+    .untracked
+    .iter()
+    .find(|file| file.path == "fresh.txt")
+    .expect("fresh.txt should be untracked");
+  assert_eq!((untracked.added, untracked.removed), (2, 0));
+}
+
+#[test]
+fn snapshot_counts_staged_lines_separately_from_the_worktree() {
+  let repo = TempRepo::new("stagedcounts");
+  repo.write("a.txt", "one\n");
+  repo.commit_all("initial");
+  repo.write("a.txt", "one\ntwo\n");
+  helix_git::index::stage(&repo.path, "a.txt").unwrap();
+  repo.write("a.txt", "one\ntwo\nthree\n");
+
+  let snap = helix_git::snapshot(&repo.path).unwrap();
+  let staged = snap
+    .staged
+    .iter()
+    .find(|file| file.path == "a.txt")
+    .expect("a.txt should be staged");
+  assert_eq!((staged.added, staged.removed), (1, 0), "index vs HEAD");
+  let unstaged = snap
+    .unstaged
+    .iter()
+    .find(|file| file.path == "a.txt")
+    .expect("a.txt should also be unstaged");
+  assert_eq!(
+    (unstaged.added, unstaged.removed),
+    (1, 0),
+    "worktree vs index"
+  );
+}
+
+#[test]
+fn discard_restores_a_tracked_file_from_the_index() {
+  let repo = TempRepo::new("discard-tracked");
+  repo.write("a.txt", "original\n");
+  repo.commit_all("initial");
+  repo.write("a.txt", "ruined\n");
+
+  helix_git::index::discard(&repo.path, "a.txt").unwrap();
+
+  let contents = std::fs::read_to_string(repo.path.join("a.txt")).unwrap();
+  assert_eq!(contents, "original\n");
+  let snap = helix_git::snapshot(&repo.path).unwrap();
+  assert!(snap.unstaged.is_empty(), "{:?}", snap.unstaged);
+}
+
+#[test]
+fn discard_keeps_staged_work_and_only_drops_the_worktree_edit() {
+  let repo = TempRepo::new("discard-staged");
+  repo.write("a.txt", "one\n");
+  repo.commit_all("initial");
+  repo.write("a.txt", "one\ntwo\n");
+  helix_git::index::stage(&repo.path, "a.txt").unwrap();
+  repo.write("a.txt", "one\ntwo\nthree\n");
+
+  helix_git::index::discard(&repo.path, "a.txt").unwrap();
+
+  let contents = std::fs::read_to_string(repo.path.join("a.txt")).unwrap();
+  assert_eq!(
+    contents, "one\ntwo\n",
+    "should fall back to the index, not HEAD"
+  );
+  let snap = helix_git::snapshot(&repo.path).unwrap();
+  assert_eq!(snap.staged.len(), 1, "staged work survives");
+  assert!(snap.unstaged.is_empty());
+}
+
+#[test]
+fn discard_deletes_an_untracked_file() {
+  let repo = TempRepo::new("discard-untracked");
+  repo.write("keep.txt", "keep\n");
+  repo.commit_all("initial");
+  repo.write("junk.txt", "junk\n");
+
+  helix_git::index::discard(&repo.path, "junk.txt").unwrap();
+
+  assert!(!repo.path.join("junk.txt").exists());
+  assert!(repo.path.join("keep.txt").exists());
+}
+
+fn with_local_remote(name: &str) -> (TempRepo, PathBuf) {
+  let remote = std::env::temp_dir().join(format!("helix-remote-{name}-{}", std::process::id()));
+  let _ = std::fs::remove_dir_all(&remote);
+  std::fs::create_dir_all(&remote).unwrap();
+  git(&remote, &["init", "--bare", "--initial-branch=main"]);
+
+  let repo = TempRepo::new(name);
+  repo.write("a.txt", "one\n");
+  repo.commit_all("initial");
+  git(
+    &repo.path,
+    &["remote", "add", "origin", remote.to_str().unwrap()],
+  );
+  helix_git::remote::publish(&repo.path, "main").unwrap();
+  (repo, remote)
+}
+
+#[test]
+fn upstream_is_reported_after_publishing() {
+  let (repo, remote) = with_local_remote("upstream");
+  assert_eq!(
+    helix_git::remote::upstream(&repo.path).as_deref(),
+    Some("origin/main")
+  );
+  let _ = std::fs::remove_dir_all(remote);
+}
+
+#[test]
+fn fetch_and_fast_forward_move_the_branch() {
+  let (repo, remote) = with_local_remote("fastforward");
+
+  let other = std::env::temp_dir().join(format!("helix-clone-{}", std::process::id()));
+  let _ = std::fs::remove_dir_all(&other);
+  git(
+    &std::env::temp_dir(),
+    &["clone", remote.to_str().unwrap(), other.to_str().unwrap()],
+  );
+  git(&other, &["config", "user.name", "Other"]);
+  git(&other, &["config", "user.email", "other@helix.local"]);
+  std::fs::write(other.join("b.txt"), "two\n").unwrap();
+  git(&other, &["add", "-A"]);
+  git(&other, &["commit", "-m", "from elsewhere"]);
+  git(&other, &["push"]);
+
+  helix_git::remote::fetch(&repo.path).unwrap();
+  assert_eq!(
+    helix_git::snapshot(&repo.path).unwrap().behind,
+    1,
+    "fetch should reveal the remote commit"
+  );
+
+  helix_git::remote::fast_forward(&repo.path).unwrap();
+  let snap = helix_git::snapshot(&repo.path).unwrap();
+  assert_eq!((snap.ahead, snap.behind), (0, 0));
+  assert!(repo.path.join("b.txt").exists());
+
+  let _ = std::fs::remove_dir_all(remote);
+  let _ = std::fs::remove_dir_all(other);
+}
+
+#[test]
+fn fast_forward_refuses_to_merge_divergent_history() {
+  let (repo, remote) = with_local_remote("divergent");
+
+  let other = std::env::temp_dir().join(format!("helix-clone-div-{}", std::process::id()));
+  let _ = std::fs::remove_dir_all(&other);
+  git(
+    &std::env::temp_dir(),
+    &["clone", remote.to_str().unwrap(), other.to_str().unwrap()],
+  );
+  git(&other, &["config", "user.name", "Other"]);
+  git(&other, &["config", "user.email", "other@helix.local"]);
+  std::fs::write(other.join("b.txt"), "theirs\n").unwrap();
+  git(&other, &["add", "-A"]);
+  git(&other, &["commit", "-m", "theirs"]);
+  git(&other, &["push"]);
+
+  repo.write("c.txt", "mine\n");
+  repo.commit_all("mine");
+  helix_git::remote::fetch(&repo.path).unwrap();
+
+  assert!(
+    helix_git::remote::fast_forward(&repo.path).is_err(),
+    "diverged branches cannot fast-forward"
+  );
+
+  let _ = std::fs::remove_dir_all(remote);
+  let _ = std::fs::remove_dir_all(other);
+}
