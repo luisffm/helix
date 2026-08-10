@@ -56,9 +56,15 @@ pub fn apply_blur_level(theme: &mut Theme, level: &str) {
 
 pub fn sync_component_theme(cx: &mut App) {
   use gpui_component::theme::{Theme as ComponentTheme, ThemeMode};
+  use std::sync::Arc;
   ComponentTheme::change(ThemeMode::Dark, None, cx);
   let ours = Theme::of(cx).clone();
   let component = ComponentTheme::global_mut(cx);
+  let mut highlight = (*component.highlight_theme).clone();
+  highlight.style.editor_background = Some(Hsla::transparent_black());
+  highlight.style.editor_line_number = Some(ours.text_dim);
+  highlight.style.editor_active_line_number = Some(ours.text_muted);
+  component.highlight_theme = Arc::new(highlight);
   component.font_family = ours.font_ui.clone();
   component.mono_font_family = ours.font_mono.clone();
   component.radius = gpui::px(6.0);

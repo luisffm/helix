@@ -1,12 +1,10 @@
+use crate::claude_cli;
 use anyhow::{Result, anyhow};
-use std::io::Write;
 use std::path::Path;
-use std::process::{Command, Stdio};
-use std::time::Duration;
+
+pub use claude_cli::Spec;
 
 pub const PATCH_BYTE_BUDGET: usize = 200 * 1024;
-pub const TIMEOUT: Duration = Duration::from_secs(60);
-pub const MAX_OUTPUT_BYTES: usize = 4 * 1024 * 1024;
 
 const BASE_PROMPT: &str = "\
 You are writing a git commit message for the staged changes below.
@@ -49,116 +47,24 @@ pub fn build_prompt(context: &Context, extra: Option<&str>) -> String {
   prompt
 }
 
-#[derive(Clone, Debug)]
-pub struct Spec {
-  pub program: String,
-  pub args: Vec<String>,
-  pub stdin: String,
-}
-
 pub fn plan(prompt: String, model: Option<&str>) -> Spec {
-  let mut args = vec![
-    "-p".to_string(),
-    "--output-format".to_string(),
-    "text".to_string(),
-    "--permission-mode".to_string(),
-    "plan".to_string(),
-  ];
-  if let Some(model) = model.map(str::trim).filter(|model| !model.is_empty()) {
-    args.push("--model".to_string());
-    args.push(model.to_string());
-  }
-  Spec {
-    program: "claude".to_string(),
-    args,
-    stdin: prompt,
-  }
+  claude_cli::print_mode(prompt, model)
 }
 
 pub fn generate(cwd: &Path, spec: &Spec) -> Result<String> {
-  let mut child = Command::new(&spec.program)
-    .args(&spec.args)
-    .current_dir(cwd)
-    .stdin(Stdio::piped())
-    .stdout(Stdio::piped())
-    .stderr(Stdio::piped())
-    .spawn()
-    .map_err(|err| anyhow!("could not run {}: {err}", spec.program))?;
-
-  child
-    .stdin
-    .take()
-    .ok_or_else(|| anyhow!("could not open stdin"))?
-    .write_all(spec.stdin.as_bytes())?;
-
-  let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
-  let pid = child.id();
-  std::thread::Builder::new()
-    .name("helix-commit-message-timeout".into())
-    .spawn(move || {
-      if done_rx.recv_timeout(TIMEOUT).is_err() {
-        kill(pid);
-      }
-    })
-    .ok();
-
-  let output = child.wait_with_output();
-  let _ = done_tx.send(());
-  let output = output?;
-
-  if !output.status.success() {
-    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-    let message = if stderr.is_empty() {
-      format!("{} exited without a message", spec.program)
-    } else {
-      stderr
-    };
-    return Err(anyhow!(message));
-  }
-  if output.stdout.len() > MAX_OUTPUT_BYTES {
-    return Err(anyhow!("generated message was unexpectedly large"));
-  }
-
-  let message = sanitize(&String::from_utf8_lossy(&output.stdout));
+  let message = sanitize(&claude_cli::run(cwd, spec)?);
   if message.is_empty() {
     return Err(anyhow!("model returned an empty commit message"));
   }
   Ok(message)
 }
 
-#[cfg(unix)]
-fn kill(pid: u32) {
-  unsafe {
-    libc::kill(pid as i32, libc::SIGKILL);
-  }
-}
-
-#[cfg(not(unix))]
-fn kill(_pid: u32) {}
-
 pub fn sanitize(raw: &str) -> String {
-  let mut lines: Vec<&str> = raw.lines().collect();
-
-  if lines
-    .first()
-    .map(|line| line.trim_start().starts_with("```"))
-    .unwrap_or(false)
-  {
-    lines.remove(0);
-    if lines
-      .last()
-      .map(|line| line.trim() == "```")
-      .unwrap_or(false)
-    {
-      lines.pop();
-    }
-  }
-
+  let mut lines = claude_cli::strip_code_fence(raw);
   lines.retain(|line| {
     let lower = line.trim().to_ascii_lowercase();
     !lower.starts_with("co-authored-by:") && !lower.starts_with("generated with")
   });
-
   lines
     .join("\n")
     .trim_matches(|c: char| c == '\n' || c == '\r')
@@ -171,37 +77,11 @@ mod tests {
   use super::*;
 
   #[test]
-  fn plan_omits_model_when_unset() {
-    let spec = plan("hi".to_string(), None);
-    assert!(!spec.args.contains(&"--model".to_string()));
-    assert_eq!(spec.stdin, "hi");
-  }
-
-  #[test]
-  fn plan_passes_model_when_set() {
-    let spec = plan("hi".to_string(), Some("opus"));
-    let position = spec.args.iter().position(|arg| arg == "--model").unwrap();
-    assert_eq!(spec.args[position + 1], "opus");
-  }
-
-  #[test]
-  fn plan_ignores_blank_model() {
-    let spec = plan("hi".to_string(), Some("   "));
-    assert!(!spec.args.contains(&"--model".to_string()));
-  }
-
-  #[test]
-  fn plan_uses_print_mode() {
-    let spec = plan("hi".to_string(), None);
-    assert_eq!(spec.program, "claude");
-    assert!(spec.args.contains(&"-p".to_string()));
-    assert!(spec.args.contains(&"plan".to_string()));
-  }
-
-  #[test]
   fn sanitize_strips_code_fences() {
-    let raw = "```\nfix: repair parser\n```\n";
-    assert_eq!(sanitize(raw), "fix: repair parser");
+    assert_eq!(
+      sanitize("```\nfix: repair parser\n```\n"),
+      "fix: repair parser"
+    );
   }
 
   #[test]

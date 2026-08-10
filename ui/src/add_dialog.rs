@@ -1,15 +1,19 @@
 use crate::theme::Theme;
 use gpui::{
-  App, Context, EventEmitter, FocusHandle, Focusable, IntoElement, KeyDownEvent, ParentElement,
-  Render, SharedString, Window, div, prelude::*, px,
+  App, Context, Entity, EventEmitter, FocusHandle, Focusable, IntoElement, KeyDownEvent,
+  ParentElement, Render, SharedString, Window, div, prelude::*, px,
 };
+use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::{Icon, IconName};
 use std::path::PathBuf;
 
 pub enum AddDialogEvent {
   Dismissed,
   ChooseWorkspace,
-  CreateWorktree(String),
+  CreateWorktree {
+    name: String,
+    branch: Option<String>,
+  },
   AddExistingWorktree(PathBuf),
 }
 
@@ -32,7 +36,12 @@ pub struct AddDialog {
   selected: usize,
   existing_selected: usize,
   existing_query: String,
-  name: String,
+  worktree_name: Entity<InputState>,
+  branch_name: Entity<InputState>,
+  ai_context: Entity<InputState>,
+  generating_branch: bool,
+  error: Option<String>,
+  project_root: PathBuf,
   project_name: String,
   can_worktree: bool,
   include_workspace: bool,
@@ -50,18 +59,40 @@ impl Focusable for AddDialog {
 
 impl AddDialog {
   pub fn new(
+    project_root: PathBuf,
     project_name: String,
     can_worktree: bool,
     include_workspace: bool,
     existing: Vec<(String, PathBuf)>,
+    window: &mut Window,
     cx: &mut Context<Self>,
   ) -> Self {
+    let worktree_name = cx.new(|cx| InputState::new(window, cx).placeholder("payments-refactor"));
+    let branch_name = cx.new(|cx| InputState::new(window, cx).placeholder("feat/my-feature"));
+    let ai_context = cx.new(|cx| {
+      InputState::new(window, cx)
+        .auto_grow(2, 4)
+        .placeholder("Describe the work, in any language")
+    });
+    for input in [&worktree_name, &branch_name] {
+      cx.subscribe(input, |this, _, event: &InputEvent, cx| {
+        if matches!(event, InputEvent::PressEnter { .. }) {
+          this.confirm_worktree(cx);
+        }
+      })
+      .detach();
+    }
     Self {
       step: Step::Choose,
       selected: 0,
       existing_selected: 0,
       existing_query: String::new(),
-      name: String::new(),
+      worktree_name,
+      branch_name,
+      ai_context,
+      generating_branch: false,
+      error: None,
+      project_root,
       project_name,
       can_worktree,
       include_workspace,
@@ -115,6 +146,66 @@ impl AddDialog {
       }
       _ => {}
     }
+  }
+
+  fn confirm_worktree(&mut self, cx: &mut Context<Self>) {
+    let name = self.worktree_name.read(cx).value().trim().to_string();
+    if name.is_empty() {
+      self.error = Some("worktree name is required".to_string());
+      cx.notify();
+      return;
+    }
+    let branch = self.branch_name.read(cx).value().trim().to_string();
+    let effective = if branch.is_empty() { &name } else { &branch };
+    if !helix_agents::branch_name::is_valid(effective) {
+      self.error = Some(format!("git will not accept the branch name `{effective}`"));
+      cx.notify();
+      return;
+    }
+    self.error = None;
+    cx.emit(AddDialogEvent::CreateWorktree {
+      name,
+      branch: (!branch.is_empty()).then_some(branch),
+    });
+  }
+
+  fn generate_branch_name(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    if self.generating_branch {
+      return;
+    }
+    let context = self.ai_context.read(cx).value().trim().to_string();
+    if context.is_empty() {
+      self.error = Some("describe the work so the model has something to name".to_string());
+      cx.notify();
+      return;
+    }
+    self.generating_branch = true;
+    self.error = None;
+    cx.notify();
+
+    let root = self.project_root.clone();
+    let task = cx
+      .background_executor()
+      .spawn(async move { helix_agents::branch_name::generate(&root, &context, None) });
+
+    let this = cx.entity().downgrade();
+    window
+      .spawn(cx, async move |cx| {
+        let result = task.await;
+        this
+          .update_in(cx, |dialog, window, cx| {
+            dialog.generating_branch = false;
+            match result {
+              Ok(name) => dialog
+                .branch_name
+                .update(cx, |state, cx| state.set_value(name, window, cx)),
+              Err(err) => dialog.error = Some(err.to_string()),
+            }
+            cx.notify();
+          })
+          .ok();
+      })
+      .detach();
   }
 
   fn on_key_down(&mut self, event: &KeyDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
@@ -173,32 +264,13 @@ impl AddDialog {
           }
         }
       },
-      Step::Name => match event.keystroke.key.as_str() {
-        "escape" => {
+      Step::Name => {
+        if event.keystroke.key.as_str() == "escape" {
           self.step = Step::Choose;
+          self.error = None;
           cx.notify();
         }
-        "enter" => {
-          let name = self.name.trim().to_string();
-          if !name.is_empty() {
-            cx.emit(AddDialogEvent::CreateWorktree(name));
-          }
-        }
-        "backspace" => {
-          self.name.pop();
-          cx.notify();
-        }
-        _ => {
-          let mods = event.keystroke.modifiers;
-          if mods.platform || mods.control || mods.function {
-            return;
-          }
-          if let Some(text) = &event.keystroke.key_char {
-            self.name.push_str(text);
-            cx.notify();
-          }
-        }
-      },
+      }
     }
   }
 }
@@ -263,199 +335,276 @@ impl Render for AddDialog {
         )
     };
 
-    let body: gpui::AnyElement = match self.step {
-      Step::Choose => {
-        let mut list = div().flex().flex_col().gap_1().py_2();
-        for (ix, opt) in self.options().into_iter().enumerate() {
-          let element = match opt {
-            AddOption::Workspace => option(
-              ix,
-              IconName::FolderOpen,
-              "New Workspace",
-              "Open a folder on this computer as a project".to_string(),
-              true,
-              self.selected == ix,
-              cx,
-            ),
-            AddOption::NewWorktree => option(
-              ix,
-              IconName::GalleryVerticalEnd,
-              "New Worktree",
-              if self.can_worktree {
-                format!("Create a git worktree inside {}", self.project_name)
-              } else {
-                "Active project is not a git repository".to_string()
-              },
-              self.can_worktree,
-              self.selected == ix,
-              cx,
-            ),
-            AddOption::ExistingWorktree => option(
-              ix,
-              IconName::FolderClosed,
-              "Add Existing Worktree",
-              if self.existing.is_empty() {
-                "No unlisted worktrees found on disk".to_string()
-              } else {
-                format!("{} worktree(s) found on disk", self.existing.len())
-              },
-              !self.existing.is_empty(),
-              self.selected == ix,
-              cx,
-            ),
-          };
-          list = list.child(element);
+    let body: gpui::AnyElement =
+      match self.step {
+        Step::Choose => {
+          let mut list = div().flex().flex_col().gap_1().py_2();
+          for (ix, opt) in self.options().into_iter().enumerate() {
+            let element = match opt {
+              AddOption::Workspace => option(
+                ix,
+                IconName::FolderOpen,
+                "New Workspace",
+                "Open a folder on this computer as a project".to_string(),
+                true,
+                self.selected == ix,
+                cx,
+              ),
+              AddOption::NewWorktree => option(
+                ix,
+                IconName::GalleryVerticalEnd,
+                "New Worktree",
+                if self.can_worktree {
+                  format!("Create a git worktree inside {}", self.project_name)
+                } else {
+                  "Active project is not a git repository".to_string()
+                },
+                self.can_worktree,
+                self.selected == ix,
+                cx,
+              ),
+              AddOption::ExistingWorktree => option(
+                ix,
+                IconName::FolderClosed,
+                "Add Existing Worktree",
+                if self.existing.is_empty() {
+                  "No unlisted worktrees found on disk".to_string()
+                } else {
+                  format!("{} worktree(s) found on disk", self.existing.len())
+                },
+                !self.existing.is_empty(),
+                self.selected == ix,
+                cx,
+              ),
+            };
+            list = list.child(element);
+          }
+          list.into_any_element()
         }
-        list.into_any_element()
-      }
-      Step::Existing => {
-        let filtered = self.filtered_existing();
-        let selected_ix = self.existing_selected.min(filtered.len().saturating_sub(1));
-        let home = std::env::var("HOME").unwrap_or_default();
-        let mut list = div().flex().flex_col().gap_0p5().pb_2().child(
+        Step::Existing => {
+          let filtered = self.filtered_existing();
+          let selected_ix = self.existing_selected.min(filtered.len().saturating_sub(1));
+          let home = std::env::var("HOME").unwrap_or_default();
+          let mut list = div().flex().flex_col().gap_0p5().pb_2().child(
+            div()
+              .flex()
+              .items_center()
+              .gap_2()
+              .mx_2()
+              .mb_1()
+              .h(px(32.0))
+              .px_2()
+              .rounded_md()
+              .border_1()
+              .border_color(theme.active)
+              .bg(theme.elevated)
+              .child(
+                div()
+                  .flex_none()
+                  .text_color(theme.text_dim)
+                  .child(Icon::new(IconName::Search).size_4()),
+              )
+              .child(if self.existing_query.is_empty() {
+                div()
+                  .text_sm()
+                  .text_color(theme.text_dim)
+                  .child("Filter worktrees...")
+              } else {
+                div()
+                  .text_sm()
+                  .text_color(theme.text)
+                  .child(self.existing_query.clone())
+              })
+              .child(div().w(px(2.0)).h(px(14.0)).bg(theme.accent).rounded_sm())
+              .child(div().flex_1())
+              .child(
+                div()
+                  .text_xs()
+                  .text_color(theme.text_dim)
+                  .child(format!("{}", filtered.len())),
+              ),
+          );
+          if filtered.is_empty() {
+            list = list.child(
+              div()
+                .p_3()
+                .text_sm()
+                .text_color(theme.text_dim)
+                .child("No worktrees match"),
+            );
+          }
+          list = list.children(
+            filtered
+              .into_iter()
+              .enumerate()
+              .map(|(ix, (branch, path))| {
+                let is_selected = ix == selected_ix;
+                let target = path.clone();
+                let display_path = {
+                  let p = path.display().to_string();
+                  if !home.is_empty() && p.starts_with(&home) {
+                    format!("~{}", &p[home.len()..])
+                  } else {
+                    p
+                  }
+                };
+                div()
+                  .id(SharedString::from(format!("existing-{ix}")))
+                  .flex()
+                  .items_center()
+                  .gap_2()
+                  .mx_2()
+                  .px_3()
+                  .h(px(30.0))
+                  .rounded_md()
+                  .border_1()
+                  .cursor_pointer()
+                  .when(is_selected, |el| {
+                    el.border_color(theme.active).bg(theme.elevated)
+                  })
+                  .when(!is_selected, |el| {
+                    el.border_color(gpui::transparent_black())
+                      .hover(|s| s.bg(theme.hover))
+                  })
+                  .on_click(cx.listener(move |_, _, _, cx| {
+                    cx.emit(AddDialogEvent::AddExistingWorktree(target.clone()));
+                  }))
+                  .child(crate::components::git_branch_icon(theme.purple))
+                  .child(
+                    div()
+                      .flex_none()
+                      .text_sm()
+                      .font_weight(gpui::FontWeight::SEMIBOLD)
+                      .text_color(theme.text)
+                      .child(branch.clone()),
+                  )
+                  .child(
+                    div()
+                      .flex_1()
+                      .text_xs()
+                      .text_color(theme.text_dim)
+                      .overflow_hidden()
+                      .whitespace_nowrap()
+                      .child(display_path),
+                  )
+              }),
+          );
+          list.into_any_element()
+        }
+        Step::Name => {
+          let field = |label: &'static str, hint: &'static str, input: &Entity<InputState>| {
+            div()
+              .flex()
+              .flex_col()
+              .gap_1()
+              .child(
+                div()
+                  .flex()
+                  .items_center()
+                  .gap_2()
+                  .child(div().text_xs().text_color(theme.text_muted).child(label))
+                  .child(div().text_xs().text_color(theme.text_dim).child(hint)),
+              )
+              .child(
+                div()
+                  .px_2()
+                  .py_1()
+                  .rounded_md()
+                  .border_1()
+                  .border_color(theme.panel_border)
+                  .bg(theme.elevated)
+                  .child(Input::new(input).appearance(false)),
+              )
+          };
+
+          let can_generate = !self.generating_branch;
           div()
             .flex()
-            .items_center()
-            .gap_2()
-            .mx_2()
-            .mb_1()
-            .h(px(32.0))
-            .px_2()
-            .rounded_md()
-            .border_1()
-            .border_color(theme.active)
-            .bg(theme.elevated)
+            .flex_col()
+            .gap_3()
+            .p_3()
+            .child(field("Worktree", "directory name", &self.worktree_name))
+            .child(field(
+              "Branch",
+              "optional — defaults to the worktree name",
+              &self.branch_name,
+            ))
             .child(
               div()
-                .flex_none()
-                .text_color(theme.text_dim)
-                .child(Icon::new(IconName::Search).size_4()),
+                .flex()
+                .flex_col()
+                .gap_1()
+                .child(
+                  div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(
+                      div()
+                        .flex_1()
+                        .text_xs()
+                        .text_color(theme.text_muted)
+                        .child("Generate branch name"),
+                    )
+                    .child(
+                      div()
+                        .id("generate-branch")
+                        .px_2()
+                        .py_0p5()
+                        .rounded_md()
+                        .text_xs()
+                        .when(can_generate, |el| {
+                          el.text_color(theme.claude)
+                            .cursor_pointer()
+                            .hover(|s| s.bg(theme.hover))
+                            .on_click(cx.listener(|this, _, window, cx| {
+                              this.generate_branch_name(window, cx)
+                            }))
+                        })
+                        .when(!can_generate, |el| el.text_color(theme.text_dim))
+                        .child(if self.generating_branch {
+                          "Naming…"
+                        } else {
+                          "✦ Generate"
+                        }),
+                    ),
+                )
+                .child(
+                  div()
+                    .px_2()
+                    .py_1()
+                    .rounded_md()
+                    .border_1()
+                    .border_color(theme.panel_border)
+                    .bg(theme.elevated)
+                    .child(Input::new(&self.ai_context).appearance(false)),
+                ),
             )
-            .child(if self.existing_query.is_empty() {
-              div()
-                .text_sm()
-                .text_color(theme.text_dim)
-                .child("Filter worktrees...")
-            } else {
-              div()
-                .text_sm()
-                .text_color(theme.text)
-                .child(self.existing_query.clone())
-            })
-            .child(div().w(px(2.0)).h(px(14.0)).bg(theme.accent).rounded_sm())
-            .child(div().flex_1())
+            .children(
+              self
+                .error
+                .clone()
+                .map(|err| div().text_xs().text_color(theme.red).child(err)),
+            )
             .child(
               div()
-                .text_xs()
-                .text_color(theme.text_dim)
-                .child(format!("{}", filtered.len())),
-            ),
-        );
-        if filtered.is_empty() {
-          list = list.child(
-            div()
-              .p_3()
-              .text_sm()
-              .text_color(theme.text_dim)
-              .child("No worktrees match"),
-          );
-        }
-        list = list.children(
-          filtered
-            .into_iter()
-            .enumerate()
-            .map(|(ix, (branch, path))| {
-              let is_selected = ix == selected_ix;
-              let target = path.clone();
-              let display_path = {
-                let p = path.display().to_string();
-                if !home.is_empty() && p.starts_with(&home) {
-                  format!("~{}", &p[home.len()..])
-                } else {
-                  p
-                }
-              };
-              div()
-                .id(SharedString::from(format!("existing-{ix}")))
+                .id("create-worktree")
+                .h(px(28.0))
                 .flex()
                 .items_center()
-                .gap_2()
-                .mx_2()
-                .px_3()
-                .h(px(30.0))
+                .justify_center()
                 .rounded_md()
-                .border_1()
-                .cursor_pointer()
-                .when(is_selected, |el| {
-                  el.border_color(theme.active).bg(theme.elevated)
-                })
-                .when(!is_selected, |el| {
-                  el.border_color(gpui::transparent_black())
-                    .hover(|s| s.bg(theme.hover))
-                })
-                .on_click(cx.listener(move |_, _, _, cx| {
-                  cx.emit(AddDialogEvent::AddExistingWorktree(target.clone()));
-                }))
-                .child(crate::components::git_branch_icon(theme.purple))
-                .child(
-                  div()
-                    .flex_none()
-                    .text_sm()
-                    .font_weight(gpui::FontWeight::SEMIBOLD)
-                    .text_color(theme.text)
-                    .child(branch.clone()),
-                )
-                .child(
-                  div()
-                    .flex_1()
-                    .text_xs()
-                    .text_color(theme.text_dim)
-                    .overflow_hidden()
-                    .whitespace_nowrap()
-                    .child(display_path),
-                )
-            }),
-        );
-        list.into_any_element()
-      }
-      Step::Name => div()
-        .flex()
-        .flex_col()
-        .gap_2()
-        .p_3()
-        .child(
-          div()
-            .text_xs()
-            .text_color(theme.text_dim)
-            .child(format!("Branch / worktree name for {}", self.project_name)),
-        )
-        .child(
-          div()
-            .flex()
-            .items_center()
-            .gap_2()
-            .h(px(32.0))
-            .px_2()
-            .rounded_md()
-            .border_1()
-            .border_color(theme.active)
-            .bg(theme.elevated)
-            .child(crate::components::git_branch_icon(theme.purple))
-            .child(if self.name.is_empty() {
-              div()
-                .text_sm()
-                .text_color(theme.text_dim)
-                .child("feat/my-feature")
-            } else {
-              div()
-                .text_sm()
+                .bg(theme.elevated)
+                .text_xs()
                 .text_color(theme.text)
-                .child(self.name.clone())
-            })
-            .child(div().w(px(2.0)).h(px(14.0)).bg(theme.accent).rounded_sm()),
-        )
-        .into_any_element(),
-    };
+                .cursor_pointer()
+                .hover(|s| s.bg(theme.hover))
+                .on_click(cx.listener(|this, _, _, cx| this.confirm_worktree(cx)))
+                .child("Create worktree"),
+            )
+            .into_any_element()
+        }
+      };
 
     let hint = |key: &'static str, action: &'static str| {
       div()

@@ -772,10 +772,12 @@ impl HelixRoot {
       .collect();
     let dialog = cx.new(|cx| {
       AddDialog::new(
+        self.project.root.clone(),
         self.project.name.clone(),
         can_worktree,
         include_workspace,
         existing,
+        window,
         cx,
       )
     });
@@ -789,9 +791,9 @@ impl HelixRoot {
         this.pick_workspace(window, cx);
         cx.notify();
       }
-      AddDialogEvent::CreateWorktree(name) => {
+      AddDialogEvent::CreateWorktree { name, branch } => {
         this.add_dialog = None;
-        this.create_worktree(name.clone(), window, cx);
+        this.create_worktree(name.clone(), branch.clone(), window, cx);
         cx.notify();
       }
       AddDialogEvent::AddExistingWorktree(path) => {
@@ -831,11 +833,17 @@ impl HelixRoot {
     .detach();
   }
 
-  fn create_worktree(&mut self, name: String, window: &mut Window, cx: &mut Context<Self>) {
+  fn create_worktree(
+    &mut self,
+    name: String,
+    branch: Option<String>,
+    window: &mut Window,
+    cx: &mut Context<Self>,
+  ) {
     let root = self.project.root.clone();
     let task = cx.background_executor().spawn(async move {
       let owner = helix_worktree::primary_root(&root).unwrap_or_else(|| root.clone());
-      helix_worktree::create_worktree(&root, &name).map(|dest| {
+      helix_worktree::create_worktree(&root, &name, branch.as_deref()).map(|dest| {
         helix_state::config::add_worktree(&owner, &dest);
         dest
       })

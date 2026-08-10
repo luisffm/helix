@@ -137,20 +137,25 @@ pub fn delete_worktree(repo_root: &Path, worktree: &Path) -> Result<()> {
   Ok(())
 }
 
-pub fn create_worktree(repo_root: &Path, name: &str) -> Result<PathBuf> {
-  let branch: String = name
-    .trim()
-    .chars()
-    .map(|c| if c.is_whitespace() { '-' } else { c })
-    .collect();
-  if branch.is_empty() {
+/// `name` becomes the worktree directory suffix. `branch` is the git branch to
+/// create; when omitted the worktree name doubles as the branch name.
+pub fn create_worktree(repo_root: &Path, name: &str, branch: Option<&str>) -> Result<PathBuf> {
+  let slug = slugify(name);
+  if slug.is_empty() {
     anyhow::bail!("worktree name is empty");
+  }
+  let branch: String = match branch.map(str::trim).filter(|value| !value.is_empty()) {
+    Some(branch) => slugify(branch),
+    None => slug.clone(),
+  };
+  if branch.is_empty() {
+    anyhow::bail!("branch name is empty");
   }
   let root_name = repo_root
     .file_name()
     .map(|n| n.to_string_lossy().to_string())
     .unwrap_or_else(|| "worktree".to_string());
-  let dir_name = format!("{root_name}-{}", branch.replace('/', "-"));
+  let dir_name = format!("{root_name}-{}", slug.replace('/', "-"));
   let parent = repo_root
     .parent()
     .context("project root has no parent directory")?;
@@ -184,6 +189,14 @@ pub fn create_worktree(repo_root: &Path, name: &str) -> Result<PathBuf> {
     }
   }
   Ok(dest)
+}
+
+fn slugify(value: &str) -> String {
+  value
+    .trim()
+    .chars()
+    .map(|c| if c.is_whitespace() { '-' } else { c })
+    .collect()
 }
 
 fn branch_of(repo: &git2::Repository) -> String {

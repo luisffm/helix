@@ -63,6 +63,7 @@ pub struct ContextPanel {
   show_dotfiles: bool,
   commit_message: Entity<InputState>,
   generating_message: bool,
+  commits_open: bool,
   git_error: Option<String>,
   pr: Option<HostedReview>,
   pr_eligibility: Option<Eligibility>,
@@ -90,6 +91,7 @@ impl ContextPanel {
       show_dotfiles: false,
       commit_message,
       generating_message: false,
+      commits_open: false,
       git_error: None,
       pr: None,
       pr_eligibility: None,
@@ -739,16 +741,28 @@ impl ContextPanel {
               .child(format!("Commit ({})", git.staged.len())),
           )
           .child(
-            toolbar_button("stage-all-button", "Stage all", unstaged_total > 0, theme)
-              .when(unstaged_total > 0, |el| {
-                el.on_click(cx.listener(|this, _, _, cx| this.stage_all(cx)))
-              }),
+            icon_action(
+              "stage-all-button",
+              IconName::Plus,
+              "Stage all changes",
+              unstaged_total > 0,
+              theme,
+            )
+            .when(unstaged_total > 0, |el| {
+              el.on_click(cx.listener(|this, _, _, cx| this.stage_all(cx)))
+            }),
           )
           .child(
-            toolbar_button("unstage-all-button", "Unstage all", can_commit, theme)
-              .when(can_commit, |el| {
-                el.on_click(cx.listener(|this, _, _, cx| this.unstage_all(cx)))
-              }),
+            icon_action(
+              "unstage-all-button",
+              IconName::Minus,
+              "Unstage everything",
+              can_commit,
+              theme,
+            )
+            .when(can_commit, |el| {
+              el.on_click(cx.listener(|this, _, _, cx| this.unstage_all(cx)))
+            }),
           )
           .child({
             let can_write = can_commit && !self.generating_message;
@@ -826,6 +840,12 @@ impl ContextPanel {
         ));
     }
 
+    let commit_rows: Vec<helix_models::CommitInfo> = if self.commits_open {
+      git.recent_commits.clone()
+    } else {
+      Vec::new()
+    };
+
     content = content
       .child(section_label(
         format!("STAGED ({})", git.staged.len()),
@@ -852,8 +872,35 @@ impl ContextPanel {
         theme,
         cx,
       ))
-      .child(section_label("COMMITS", theme))
-      .children(git.recent_commits.iter().map(|commit| {
+      .child(
+        div()
+          .id("commits-toggle")
+          .flex()
+          .items_center()
+          .gap_1()
+          .px_1()
+          .pt_3()
+          .pb_1()
+          .rounded_md()
+          .cursor_pointer()
+          .text_xs()
+          .text_color(theme.text_dim)
+          .hover(|s| s.text_color(theme.text_muted))
+          .on_click(cx.listener(|this, _, _, cx| {
+            this.commits_open = !this.commits_open;
+            cx.notify();
+          }))
+          .child(
+            Icon::new(if self.commits_open {
+              IconName::ChevronDown
+            } else {
+              IconName::ChevronRight
+            })
+            .size_3(),
+          )
+          .child(format!("COMMITS ({})", git.recent_commits.len())),
+      )
+      .children(commit_rows.into_iter().map(|commit| {
         div()
           .flex()
           .flex_col()
@@ -1128,6 +1175,31 @@ fn toolbar_button(
     })
     .when(!enabled, |el| el.text_color(theme.text_dim))
     .child(label)
+}
+
+fn icon_action(
+  id: &'static str,
+  icon: IconName,
+  tooltip: &'static str,
+  enabled: bool,
+  theme: &Theme,
+) -> gpui::Stateful<gpui::Div> {
+  div()
+    .id(id)
+    .size(px(24.0))
+    .flex()
+    .flex_none()
+    .items_center()
+    .justify_center()
+    .rounded_md()
+    .when(enabled, |el| {
+      el.text_color(theme.text_muted)
+        .cursor_pointer()
+        .hover(|s| s.bg(theme.hover).text_color(theme.text))
+        .tooltip(move |window, cx| gpui_component::tooltip::Tooltip::new(tooltip).build(window, cx))
+    })
+    .when(!enabled, |el| el.text_color(theme.text_dim))
+    .child(Icon::new(icon).size_3p5())
 }
 
 fn primary_action_label(action: NextAction) -> Option<&'static str> {

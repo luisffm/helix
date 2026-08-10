@@ -1,3 +1,5 @@
+pub mod branch_name;
+pub mod claude_cli;
 pub mod commit_message;
 
 use helix_models::SessionKind;
