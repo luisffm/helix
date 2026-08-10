@@ -13,6 +13,8 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc::UnboundedSender;
 
+const SCROLLBACK_LINES: usize = 2000;
+
 #[derive(Clone)]
 pub struct EventProxy(UnboundedSender<TermEvent>);
 
@@ -62,8 +64,16 @@ impl TerminalBackend {
     };
 
     let proxy = EventProxy(event_tx);
+
+    // alacritty defaults to 10k lines of history, which on a wide terminal is
+    // tens of megabytes per tab and Helix keeps many tabs alive.
+    let config = Config {
+      scrolling_history: SCROLLBACK_LINES,
+      ..Config::default()
+    };
+
     let term = Arc::new(FairMutex::new(Term::new(
-      Config::default(),
+      config,
       &TermSize::new(opts.cols.max(2) as usize, opts.rows.max(2) as usize),
       proxy.clone(),
     )));
