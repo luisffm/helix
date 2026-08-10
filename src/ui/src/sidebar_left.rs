@@ -3,8 +3,8 @@ use crate::icons::HelixIcon;
 use crate::theme::Theme;
 use crate::workspace::Workspace;
 use gpui::{
-  Context, Entity, EntityId, EventEmitter, IntoElement, ParentElement, Render, SharedString,
-  Window, div, prelude::*, px,
+  Animation, AnimationExt, Context, Entity, EntityId, EventEmitter, IntoElement, ParentElement,
+  Render, SharedString, Window, div, prelude::*, px,
 };
 use gpui_component::menu::ContextMenuExt;
 use gpui_component::{Icon, IconName};
@@ -18,6 +18,8 @@ use helix_worktree::WorktreeEntry;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::time::Duration;
+
+const COLLAPSE_MS: u64 = 160;
 
 pub enum ProjectPanelEvent {
   OpenProject(PathBuf),
@@ -92,6 +94,7 @@ pub struct ProjectPanel {
   workspaces: HashMap<PathBuf, Entity<Workspace>>,
   observed: HashSet<EntityId>,
   expanded: HashSet<PathBuf>,
+  closing: HashSet<PathBuf>,
 }
 
 impl EventEmitter<ProjectPanelEvent> for ProjectPanel {}
@@ -148,7 +151,30 @@ impl ProjectPanel {
       workspaces: HashMap::new(),
       observed: HashSet::new(),
       expanded,
+      closing: HashSet::new(),
     }
+  }
+
+  fn toggle_project(&mut self, root: PathBuf, cx: &mut Context<Self>) {
+    if self.expanded.remove(&root) {
+      self.closing.insert(root.clone());
+      cx.spawn(async move |this, cx| {
+        cx.background_executor()
+          .timer(Duration::from_millis(COLLAPSE_MS))
+          .await;
+        this
+          .update(cx, |panel, cx| {
+            panel.closing.remove(&root);
+            cx.notify();
+          })
+          .ok();
+      })
+      .detach();
+    } else {
+      self.closing.remove(&root);
+      self.expanded.insert(root);
+    }
+    cx.notify();
   }
 
   pub fn set_state(
@@ -340,10 +366,7 @@ impl Render for ProjectPanel {
         .hover(|s| s.bg(theme.hover))
         .on_click(cx.listener(move |this, _, _, cx| {
           if has_worktrees {
-            if !this.expanded.insert(row_root.clone()) {
-              this.expanded.remove(&row_root);
-            }
-            cx.notify();
+            this.toggle_project(row_root.clone(), cx);
           } else {
             cx.emit(ProjectPanelEvent::OpenProject(row_root.clone()));
           }
@@ -361,19 +384,19 @@ impl Render for ProjectPanel {
             .hover(|s| s.bg(theme.hover))
             .on_click(cx.listener(move |this, _, _, cx| {
               cx.stop_propagation();
-              if !this.expanded.insert(chevron_root.clone()) {
-                this.expanded.remove(&chevron_root);
-              }
-              cx.notify();
+              this.toggle_project(chevron_root.clone(), cx);
             }))
-            .child(
-              Icon::new(if expanded {
-                IconName::ChevronDown
-              } else {
-                IconName::ChevronRight
-              })
-              .size_4(),
-            ),
+            .child(Icon::new(IconName::ChevronRight).size_4().with_animation(
+              SharedString::from(format!(
+                "project-chevron-{project_ix}-{}",
+                if expanded { "open" } else { "closed" }
+              )),
+              Animation::new(Duration::from_millis(COLLAPSE_MS)).with_easing(gpui::ease_in_out),
+              move |icon, delta| {
+                let turn = if expanded { delta } else { 1.0 - delta } * 0.25;
+                icon.transform(gpui::Transformation::rotate(gpui::percentage(turn)))
+              },
+            )),
         )
         .child(glyph_element)
         .child(
@@ -437,11 +460,13 @@ impl Render for ProjectPanel {
           )
       }));
 
-      if !expanded {
+      let closing = self.closing.contains(&project_root);
+      if !expanded && !closing {
         tree = tree.child(div().h(px(4.0)));
         continue;
       }
 
+      let mut cards: Vec<gpui::AnyElement> = Vec::new();
       for (ix, row) in worktree_list.clone().into_iter().enumerate() {
         let wt = row.entry.clone();
         let branch_label = row
@@ -737,8 +762,23 @@ impl Render for ProjectPanel {
         } else {
           card = card.child(branch_element);
         }
-        tree = tree.child(card);
+        cards.push(card.into_any_element());
       }
+
+      tree = tree.child(div().flex().flex_col().children(cards).with_animation(
+        SharedString::from(format!(
+          "worktrees-{project_ix}-{}",
+          if expanded { "open" } else { "closed" }
+        )),
+        Animation::new(Duration::from_millis(COLLAPSE_MS)).with_easing(gpui::ease_in_out),
+        move |block, delta| {
+          let progress = if expanded { delta } else { 1.0 - delta };
+          block
+            .opacity(progress)
+            .relative()
+            .top(px(-6.0 * (1.0 - progress)))
+        },
+      ));
 
       tree = tree.child(div().h(px(8.0)));
     }
