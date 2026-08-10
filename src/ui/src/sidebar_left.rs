@@ -232,12 +232,14 @@ impl ProjectPanel {
     }
   }
 
+  /// Second-granularity labels only earn a per-second tick while something is
+  /// actually running; otherwise they catch up on the slow tick.
   fn has_ticking_labels(&self, cx: &App) -> bool {
     self.workspaces.values().any(|workspace| {
       workspace
         .read(cx)
         .terminals()
-        .any(|(_, view)| view.read(cx).last_activity.elapsed() < Duration::from_secs(60))
+        .any(|(_, view)| view.read(cx).status() == AgentStatus::Running)
     })
   }
 
