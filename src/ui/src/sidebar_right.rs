@@ -6,7 +6,7 @@ use crate::icons::HelixIcon;
 use crate::theme::Theme;
 use gpui::{
   AnyElement, App, Context, Entity, EventEmitter, IntoElement, ParentElement, Render, SharedString,
-  Window, div, prelude::*, px,
+  Window, div, prelude::*, px, uniform_list,
 };
 use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::{Icon, IconName, Sizable};
@@ -1116,44 +1116,48 @@ impl ContextPanel {
       if self.rows.is_empty() {
         self.scanning_or_empty("No files in this workspace", theme)
       } else {
-        div()
-          .id("files-scroll")
-          .flex_1()
-          .min_h_0()
-          .overflow_y_scroll()
-          .py_2()
-          .px_1()
-          .flex()
-          .flex_col()
-          .children(
-            self
-              .rows
-              .iter()
-              .enumerate()
-              .map(|(ix, (node, depth))| self.render_row(ix, node, *depth, theme, cx)),
-          )
-          .into_any_element()
+        let entity = cx.entity();
+
+        uniform_list("files-scroll", self.rows.len(), move |range, _, cx| {
+          entity.update(cx, |panel, cx| {
+            let theme = Theme::of(cx).clone();
+
+            range
+              .filter_map(|ix| {
+                let (node, depth) = panel.rows.get(ix).map(|(n, d)| (n.clone(), *d))?;
+
+                Some(panel.render_row(ix, &node, depth, &theme, cx))
+              })
+              .collect()
+          })
+        })
+        .flex_1()
+        .min_h_0()
+        .px_1()
+        .into_any_element()
       }
     } else if self.matches.is_empty() {
       self.scanning_or_empty("No file matches", theme)
     } else {
-      div()
-        .id("files-matches")
-        .flex_1()
-        .min_h_0()
-        .overflow_y_scroll()
-        .py_2()
-        .px_1()
-        .flex()
-        .flex_col()
-        .children(
-          self
-            .matches
-            .iter()
-            .enumerate()
-            .map(|(ix, node)| self.render_match(ix, node, theme, cx)),
-        )
-        .into_any_element()
+      let entity = cx.entity();
+
+      uniform_list("files-matches", self.matches.len(), move |range, _, cx| {
+        entity.update(cx, |panel, cx| {
+          let theme = Theme::of(cx).clone();
+
+          range
+            .filter_map(|ix| {
+              let node = panel.matches.get(ix).cloned()?;
+
+              Some(panel.render_match(ix, &node, &theme, cx))
+            })
+            .collect()
+        })
+      })
+      .flex_1()
+      .min_h_0()
+      .px_1()
+      .into_any_element()
     };
 
     div()

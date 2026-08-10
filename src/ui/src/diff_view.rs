@@ -1,7 +1,7 @@
 use crate::theme::Theme;
 use gpui::{
   AnyElement, App, Context, FocusHandle, Focusable, Hsla, IntoElement, ParentElement, Render,
-  SharedString, StyledText, TextRun, Window, div, prelude::*, px,
+  SharedString, StyledText, TextRun, Window, div, prelude::*, px, uniform_list,
 };
 use gpui_component::highlighter::{HighlightTheme, SyntaxHighlighter};
 use gpui_component::input::Rope;
@@ -9,6 +9,48 @@ use helix_models::{DiffBase, DiffLineKind, DiffState, FileDiff};
 use std::path::PathBuf;
 
 const GUTTER_WIDTH: f32 = 92.0;
+const ROW_HEIGHT: f32 = 18.0;
+
+/// Hunks flattened into one row per rendered line so the body can be
+/// virtualized; headers carry their own label because their counts only change
+/// when the diff is reloaded.
+enum DiffRow {
+  Header(SharedString),
+  Line { hunk: usize, line: usize },
+}
+
+fn diff_rows(diff: &FileDiff) -> Vec<DiffRow> {
+  let mut rows = Vec::new();
+
+  for (hunk_ix, hunk) in diff.hunks.iter().enumerate() {
+    let old = hunk
+      .lines
+      .iter()
+      .filter(|line| line.kind != DiffLineKind::Added)
+      .count();
+
+    let new = hunk
+      .lines
+      .iter()
+      .filter(|line| line.kind != DiffLineKind::Removed)
+      .count();
+
+    rows.push(DiffRow::Header(
+      format!(
+        "@@ -{},{} +{},{} @@",
+        hunk.old_start, old, hunk.new_start, new
+      )
+      .into(),
+    ));
+
+    rows.extend((0..hunk.lines.len()).map(|line| DiffRow::Line {
+      hunk: hunk_ix,
+      line,
+    }));
+  }
+
+  rows
+}
 
 pub struct DiffView {
   pub root: PathBuf,
@@ -19,6 +61,7 @@ pub struct DiffView {
   error: Option<String>,
   old_styles: Vec<(std::ops::Range<usize>, Hsla)>,
   new_styles: Vec<(std::ops::Range<usize>, Hsla)>,
+  rows: Vec<DiffRow>,
   load_token: u64,
   focus_handle: FocusHandle,
 }
@@ -42,6 +85,7 @@ impl DiffView {
       error: None,
       old_styles: Vec::new(),
       new_styles: Vec::new(),
+      rows: Vec::new(),
       load_token: 0,
       focus_handle: cx.focus_handle(),
     };
@@ -82,11 +126,13 @@ impl DiffView {
             Ok((diff, old_styles, new_styles)) => {
               view.old_styles = old_styles;
               view.new_styles = new_styles;
+              view.rows = diff_rows(&diff);
               view.diff = Some(diff);
               view.error = None;
             }
             Err(err) => {
               view.diff = None;
+              view.rows = Vec::new();
               view.error = Some(err.to_string());
             }
           }
@@ -139,6 +185,7 @@ impl DiffView {
       .flex()
       .items_start()
       .w_full()
+      .h(px(ROW_HEIGHT))
       .when_some(bg, |el, bg| el.bg(bg))
       .child(
         div()
@@ -182,7 +229,31 @@ impl DiffView {
       .into_any_element()
   }
 
-  fn render_body(&mut self, theme: &Theme) -> AnyElement {
+  fn render_row(&self, ix: usize, theme: &Theme) -> Option<AnyElement> {
+    let diff = self.diff.as_ref()?;
+
+    match self.rows.get(ix)? {
+      DiffRow::Header(label) => Some(
+        div()
+          .flex()
+          .items_center()
+          .w_full()
+          .h(px(ROW_HEIGHT))
+          .px_2()
+          .bg(theme.elevated)
+          .text_color(theme.text_dim)
+          .child(label.clone())
+          .into_any_element(),
+      ),
+      DiffRow::Line { hunk, line } => {
+        let line = diff.hunks.get(*hunk)?.lines.get(*line)?;
+
+        Some(self.render_line(diff, line, theme))
+      }
+    }
+  }
+
+  fn render_body(&mut self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
     if let Some(error) = &self.error {
       return message(format!("Could not diff: {error}"), theme.red);
     }
@@ -205,49 +276,21 @@ impl DiffView {
       DiffState::Text => {}
     }
 
-    let mut body = div()
-      .id("diff-scroll")
-      .flex_1()
-      .min_h_0()
-      .overflow_scroll()
-      .flex()
-      .flex_col()
-      .font_family(theme.font_mono.clone())
-      .text_size(px(12.0))
-      .line_height(px(18.0));
+    let entity = cx.entity();
 
-    for hunk in &diff.hunks {
-      body = body.child(
-        div()
-          .flex()
-          .w_full()
-          .px_2()
-          .py(px(2.0))
-          .bg(theme.elevated)
-          .text_color(theme.text_dim)
-          .child(format!(
-            "@@ -{},{} +{},{} @@",
-            hunk.old_start,
-            hunk
-              .lines
-              .iter()
-              .filter(|l| l.kind != DiffLineKind::Added)
-              .count(),
-            hunk.new_start,
-            hunk
-              .lines
-              .iter()
-              .filter(|l| l.kind != DiffLineKind::Removed)
-              .count(),
-          )),
-      );
+    uniform_list("diff-scroll", self.rows.len(), move |range, _, cx| {
+      entity.update(cx, |view, cx| {
+        let theme = Theme::of(cx).clone();
 
-      for line in &hunk.lines {
-        body = body.child(self.render_line(diff, line, theme));
-      }
-    }
-
-    body.into_any_element()
+        range.filter_map(|ix| view.render_row(ix, &theme)).collect()
+      })
+    })
+    .flex_1()
+    .min_h_0()
+    .font_family(theme.font_mono.clone())
+    .text_size(px(12.0))
+    .line_height(px(ROW_HEIGHT))
+    .into_any_element()
   }
 }
 
@@ -256,7 +299,7 @@ impl Render for DiffView {
     let theme = Theme::of(cx).clone();
 
     let (added, removed) = self.stats();
-    let body = self.render_body(&theme);
+    let body = self.render_body(&theme, cx);
 
     div()
       .key_context("Diff")
