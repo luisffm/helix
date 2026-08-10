@@ -1,13 +1,10 @@
-use crate::components::{
-  HEADER_HEIGHT, SpinnerClock, Spinning, drive_spinner, git_branch_icon, icon_button, project_icon,
-  spinner,
-};
+use crate::components::{HEADER_HEIGHT, git_branch_icon, icon_button, project_icon, spinner};
 use crate::icons::HelixIcon;
 use crate::theme::Theme;
 use crate::workspace::Workspace;
 use gpui::{
-  Animation, AnimationExt, App, Context, Entity, EntityId, EventEmitter, IntoElement, ParentElement,
-  Render, SharedString, Window, div, prelude::*, px,
+  Animation, AnimationExt, App, Context, Entity, EntityId, EventEmitter, IntoElement,
+  ParentElement, Render, SharedString, Window, div, prelude::*, px,
 };
 use gpui_component::menu::ContextMenuExt;
 use gpui_component::{Icon, IconName};
@@ -76,26 +73,9 @@ pub struct ProjectPanel {
   observed: HashSet<EntityId>,
   expanded: HashSet<PathBuf>,
   closing: HashSet<PathBuf>,
-  spin: SpinnerClock,
 }
 
 impl EventEmitter<ProjectPanelEvent> for ProjectPanel {}
-
-impl Spinning for ProjectPanel {
-  fn spinner_clock(&mut self) -> &mut SpinnerClock {
-    &mut self.spin
-  }
-
-  fn spinner_active(&self, cx: &App) -> bool {
-    self.workspaces.values().any(|workspace| {
-      workspace.read(cx).terminals().any(|(_, view)| {
-        let view = view.read(cx);
-
-        view.agent_kind() == SessionKind::ClaudeCode && view.status() == AgentStatus::Running
-      })
-    })
-  }
-}
 
 fn load_project_entries() -> Vec<ProjectEntry> {
   helix_state::config::visible_projects()
@@ -172,7 +152,6 @@ impl ProjectPanel {
       observed: HashSet::new(),
       expanded,
       closing: HashSet::new(),
-      spin: SpinnerClock::default(),
     }
   }
 
@@ -291,10 +270,7 @@ impl ProjectPanel {
 
 impl Render for ProjectPanel {
   fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-    drive_spinner(self, cx);
-
     let theme = Theme::of(cx).clone();
-    let spin_step = self.spin.step();
     let active_root = self.active_root.clone();
     let active_canonical = self.active_canonical.clone();
 
@@ -442,9 +418,7 @@ impl Render for ProjectPanel {
             .flex()
             .items_center()
             .justify_center()
-            .rounded_sm()
             .text_color(theme.text_dim)
-            .hover(|s| s.bg(theme.hover))
             .on_click(cx.listener(move |this, _, _, cx| {
               cx.stop_propagation();
               this.toggle_project(chevron_root.clone(), cx);
@@ -551,7 +525,11 @@ impl Render for ProjectPanel {
           })
         });
         let branch_icon: gpui::AnyElement = if any_running {
-          spinner(spin_step, theme.yellow).into_any_element()
+          spinner(
+            SharedString::from(format!("branch-spin-{project_ix}-{ix}")),
+            theme.yellow,
+          )
+          .into_any_element()
         } else {
           git_branch_icon(icon_color).into_any_element()
         };
@@ -576,6 +554,7 @@ impl Render for ProjectPanel {
           .child(
             div()
               .flex_1()
+              .min_w_0()
               .text_size(px(13.0))
               .text_color(if is_active_card {
                 theme.text
@@ -583,6 +562,7 @@ impl Render for ProjectPanel {
                 theme.text_muted
               })
               .overflow_hidden()
+              .whitespace_nowrap()
               .child(branch_label.clone()),
           );
         if wt.is_primary {
@@ -739,7 +719,11 @@ impl Render for ProjectPanel {
                 AgentStatus::Running | AgentStatus::Waiting | AgentStatus::Thinking
               );
               let status_element: gpui::AnyElement = if loading {
-                spinner(spin_step, status_color).into_any_element()
+                spinner(
+                  SharedString::from(format!("agent-spin-{project_ix}-{tab_ix}")),
+                  status_color,
+                )
+                .into_any_element()
               } else {
                 div()
                   .flex_none()
@@ -783,20 +767,25 @@ impl Render for ProjectPanel {
                 )
                 .child(
                   div()
-                    .flex_none()
+                    .min_w_0()
+                    .flex_shrink()
                     .text_size(px(13.0))
                     .font_weight(gpui::FontWeight::SEMIBOLD)
                     .text_color(theme.text)
                     .overflow_hidden()
+                    .whitespace_nowrap()
+                    .text_ellipsis()
                     .child(title),
                 )
                 .child(
                   div()
                     .flex_1()
+                    .min_w_0()
                     .text_size(px(13.0))
                     .text_color(theme.text_dim)
                     .overflow_hidden()
                     .whitespace_nowrap()
+                    .text_ellipsis()
                     .child(format!("- {}", agent_description(status))),
                 )
                 .child(
