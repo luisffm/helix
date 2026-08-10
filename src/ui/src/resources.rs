@@ -2,7 +2,7 @@ use helix_models::SessionKind;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct SessionUsage {
   pub title: String,
   pub kind: SessionKind,
@@ -11,7 +11,7 @@ pub struct SessionUsage {
   pub rss_mb: f32,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct ProjectUsage {
   pub name: String,
   pub root: PathBuf,
@@ -20,7 +20,7 @@ pub struct ProjectUsage {
   pub sessions: Vec<SessionUsage>,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct UsageSnapshot {
   pub projects: Vec<ProjectUsage>,
   pub app_cpu: f32,
@@ -143,6 +143,14 @@ pub fn sample(targets: UsageTargets) -> UsageSnapshot {
     total_cpu,
     total_rss_mb: total_rss,
   }
+}
+
+pub fn status_summary(snapshot: &UsageSnapshot) -> String {
+  format!(
+    "{} · {:.1}%",
+    format_rss(snapshot.total_rss_mb),
+    snapshot.total_cpu
+  )
 }
 
 pub fn format_rss(rss_mb: f32) -> String {

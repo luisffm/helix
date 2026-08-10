@@ -159,13 +159,24 @@ impl HelixRoot {
 
   fn start_resource_monitor(&mut self, cx: &mut Context<Self>) {
     cx.spawn(async move |this, cx| {
+      let mut summary = String::new();
+      let mut tick: u32 = 0;
+
       loop {
         cx.background_executor()
           .timer(std::time::Duration::from_millis(2500))
           .await;
 
-        let Ok(targets) = this.update(cx, |root, cx| root.usage_targets(cx)) else {
+        tick = tick.wrapping_add(1);
+
+        let Ok(targets) = this.update(cx, |root, cx| {
+          (root.resources_open || tick % 4 == 0).then(|| root.usage_targets(cx))
+        }) else {
           break;
+        };
+
+        let Some(targets) = targets else {
+          continue;
         };
 
         let snapshot = cx
@@ -188,9 +199,19 @@ impl HelixRoot {
               }
             }
 
-            root.resources = snapshot.clone();
+            let next = crate::resources::status_summary(&snapshot);
+            let changed = if root.resources_open {
+              snapshot != root.resources
+            } else {
+              next != summary
+            };
 
-            cx.notify();
+            summary = next;
+            root.resources = snapshot;
+
+            if changed {
+              cx.notify();
+            }
           })
           .is_err()
         {
@@ -1269,11 +1290,7 @@ impl Render for HelixRoot {
               .flex_none()
               .child(gpui_component::Icon::new(gpui_component::IconName::ChartPie).size_3()),
           )
-          .child(format!(
-            "{} · {:.1}%",
-            format_rss(self.resources.total_rss_mb),
-            self.resources.total_cpu
-          )),
+          .child(crate::resources::status_summary(&self.resources)),
       )
       .child("Helix 0.1");
 
