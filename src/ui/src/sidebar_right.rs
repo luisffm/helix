@@ -118,6 +118,26 @@ impl GitAction {
   }
 }
 
+enum IndexOp {
+  Stage(String),
+  Unstage(String),
+  StageAll,
+  UnstageAll,
+  Discard(String),
+}
+
+impl IndexOp {
+  fn run(self, root: &Path) -> anyhow::Result<()> {
+    match self {
+      Self::Stage(relative) => helix_git::index::stage(root, &relative),
+      Self::Unstage(relative) => helix_git::index::unstage(root, &relative),
+      Self::StageAll => helix_git::index::stage_all(root),
+      Self::UnstageAll => helix_git::index::unstage_all(root),
+      Self::Discard(relative) => helix_git::index::discard(root, &relative),
+    }
+  }
+}
+
 fn perform_remote(
   action: GitAction,
   root: &Path,
@@ -468,13 +488,39 @@ impl ContextPanel {
       .child(Icon::new(icon).size_3())
   }
 
-  fn stage(&mut self, relative: String, cx: &mut Context<Self>) {
-    self.git_error = helix_git::index::stage(&self.root, &relative)
-      .err()
-      .map(|err| err.to_string());
+  /// Index writes are serialized behind `git_busy`: git2 rewrites the whole
+  /// index file, so two of them racing on one repository would lose work.
+  fn run_index_op(&mut self, op: IndexOp, cx: &mut Context<Self>) {
+    if self.git_busy {
+      return;
+    }
 
-    cx.emit(ContextPanelEvent::GitChanged);
+    self.git_busy = true;
+    self.git_error = None;
+
     cx.notify();
+
+    let root = self.root.clone();
+    let task = cx.background_executor().spawn(async move { op.run(&root) });
+
+    cx.spawn(async move |this, cx| {
+      let result = task.await;
+
+      this
+        .update(cx, |panel, cx| {
+          panel.git_busy = false;
+          panel.git_error = result.err().map(|err| err.to_string());
+
+          cx.emit(ContextPanelEvent::GitChanged);
+          cx.notify();
+        })
+        .ok();
+    })
+    .detach();
+  }
+
+  fn stage(&mut self, relative: String, cx: &mut Context<Self>) {
+    self.run_index_op(IndexOp::Stage(relative), cx);
   }
 
   fn run_git_action(&mut self, action: GitAction, window: &mut Window, cx: &mut Context<Self>) {
@@ -484,34 +530,10 @@ impl ContextPanel {
       return;
     }
 
-    if action.commits() {
-      let message = self.commit_message.read(cx).value().to_string();
-
-      match helix_git::index::commit(&self.root, &message) {
-        Ok(_) => {
-          self.git_error = None;
-
-          self
-            .commit_message
-            .update(cx, |state, cx| state.set_value("", window, cx));
-        }
-        Err(err) => {
-          self.git_error = Some(err.to_string());
-
-          cx.emit(ContextPanelEvent::GitChanged);
-          cx.notify();
-
-          return;
-        }
-      }
-    }
-
-    let Some(step) = action.remote_step() else {
-      cx.emit(ContextPanelEvent::GitChanged);
-      cx.notify();
-
-      return;
-    };
+    let message = action
+      .commits()
+      .then(|| self.commit_message.read(cx).value().to_string());
+    let step = action.remote_step();
 
     self.git_busy = true;
     self.git_error = None;
@@ -530,20 +552,37 @@ impl ContextPanel {
       .and_then(|git| git.upstream.clone())
       .unwrap_or_default();
 
-    let task = cx
-      .background_executor()
-      .spawn(async move { perform_remote(step, &root, &branch, &upstream) });
+    let task = cx.background_executor().spawn(async move {
+      if let Some(message) = &message {
+        if let Err(err) = helix_git::index::commit(&root, message) {
+          return (false, Err(err));
+        }
+      }
+
+      let result = match step {
+        Some(step) => perform_remote(step, &root, &branch, &upstream),
+        None => Ok(()),
+      };
+
+      (message.is_some(), result)
+    });
 
     let this = cx.entity().downgrade();
 
     window
       .spawn(cx, async move |cx| {
-        let result = task.await;
+        let (committed, result) = task.await;
 
         this
-          .update_in(cx, |panel, _, cx| {
+          .update_in(cx, |panel, window, cx| {
             panel.git_busy = false;
             panel.git_error = result.err().map(|err| err.to_string());
+
+            if committed && panel.git_error.is_none() {
+              panel
+                .commit_message
+                .update(cx, |state, cx| state.set_value("", window, cx));
+            }
 
             cx.emit(ContextPanelEvent::GitChanged);
             cx.notify();
@@ -555,39 +594,20 @@ impl ContextPanel {
 
   fn discard(&mut self, relative: String, cx: &mut Context<Self>) {
     self.discard_armed = None;
-    self.git_error = helix_git::index::discard(&self.root, &relative)
-      .err()
-      .map(|err| err.to_string());
 
-    cx.emit(ContextPanelEvent::GitChanged);
-    cx.notify();
+    self.run_index_op(IndexOp::Discard(relative), cx);
   }
 
   fn unstage(&mut self, relative: String, cx: &mut Context<Self>) {
-    self.git_error = helix_git::index::unstage(&self.root, &relative)
-      .err()
-      .map(|err| err.to_string());
-
-    cx.emit(ContextPanelEvent::GitChanged);
-    cx.notify();
+    self.run_index_op(IndexOp::Unstage(relative), cx);
   }
 
   fn stage_all(&mut self, cx: &mut Context<Self>) {
-    self.git_error = helix_git::index::stage_all(&self.root)
-      .err()
-      .map(|err| err.to_string());
-
-    cx.emit(ContextPanelEvent::GitChanged);
-    cx.notify();
+    self.run_index_op(IndexOp::StageAll, cx);
   }
 
   fn unstage_all(&mut self, cx: &mut Context<Self>) {
-    self.git_error = helix_git::index::unstage_all(&self.root)
-      .err()
-      .map(|err| err.to_string());
-
-    cx.emit(ContextPanelEvent::GitChanged);
-    cx.notify();
+    self.run_index_op(IndexOp::UnstageAll, cx);
   }
 
   fn generate_commit_message(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -2226,57 +2246,88 @@ impl ContextPanel {
   }
 
   fn run_primary_action(&mut self, action: NextAction, cx: &mut Context<Self>) {
+    match action {
+      NextAction::Commit => {
+        self.active = RightTab::Git;
+
+        cx.notify();
+
+        return;
+      }
+      NextAction::OpenExistingReview => {
+        if let Some(review) = &self.pr {
+          let _ = std::process::Command::new("open").arg(&review.url).spawn();
+        }
+
+        return;
+      }
+      NextAction::Retry => {
+        self.refresh_pull_request(cx);
+
+        return;
+      }
+      NextAction::Authenticate | NextAction::InstallGh | NextAction::None => return,
+      _ => {}
+    }
+
+    if self.pr_busy {
+      return;
+    }
+
+    self.pr_busy = true;
+    self.git_error = None;
+
+    cx.notify();
+
     let root = self.root.clone();
     let branch = self
       .git
       .as_ref()
       .map(|git| git.branch.clone())
       .unwrap_or_default();
-
-    let result = match action {
-      NextAction::Publish => helix_git::remote::publish(&root, &branch),
-      NextAction::Push => helix_git::remote::push(&root),
-      NextAction::Sync => helix_git::remote::sync(&root),
-      NextAction::Commit => {
-        self.active = RightTab::Git;
-
-        Ok(())
-      }
-      NextAction::Retry => Ok(()),
-      NextAction::OpenExistingReview => {
-        if let Some(review) = &self.pr {
-          let _ = std::process::Command::new("open").arg(&review.url).spawn();
-        }
-
-        Ok(())
-      }
-      NextAction::CreateReview => self.create_pull_request(&root, cx),
-      NextAction::Authenticate | NextAction::InstallGh | NextAction::None => Ok(()),
-    };
-
-    self.git_error = result.err().map(|err| err.to_string());
-
-    cx.emit(ContextPanelEvent::GitChanged);
-
-    self.refresh_pull_request(cx);
-    cx.notify();
-  }
-
-  fn create_pull_request(&mut self, root: &PathBuf, _cx: &mut Context<Self>) -> anyhow::Result<()> {
-    let base = helix_git::diff::default_base_ref(root)
-      .map(|base| base.trim_start_matches("origin/").to_string())
-      .unwrap_or_else(|| "main".to_string());
-
     let title = self
       .git
       .as_ref()
       .and_then(|git| git.recent_commits.first().map(|c| c.summary.clone()))
       .unwrap_or_else(|| "Update".to_string());
 
-    helix_github::review::create(root, &base, &title, "", false)?;
+    let task = cx.background_executor().spawn(async move {
+      match action {
+        NextAction::Publish => helix_git::remote::publish(&root, &branch),
+        NextAction::Push => helix_git::remote::push(&root),
+        NextAction::Sync => helix_git::remote::sync(&root),
+        NextAction::CreateReview => create_pull_request(&root, &title),
+        _ => Ok(()),
+      }
+    });
 
-    Ok(())
+    cx.spawn(async move |this, cx| {
+      let result = task.await;
+
+      this
+        .update(cx, |panel, cx| {
+          panel.pr_busy = false;
+          panel.git_error = result.err().map(|err| err.to_string());
+
+          cx.emit(ContextPanelEvent::GitChanged);
+
+          panel.refresh_pull_request(cx);
+          cx.notify();
+        })
+        .ok();
+    })
+    .detach();
   }
+}
+
+fn create_pull_request(root: &Path, title: &str) -> anyhow::Result<()> {
+  let base = helix_git::diff::default_base_ref(root)
+    .map(|base| base.trim_start_matches("origin/").to_string())
+    .unwrap_or_else(|| "main".to_string());
+
+  helix_github::review::create(root, &base, title, "", false)?;
+
+  Ok(())
 }
 
 fn primary_action_label(action: NextAction) -> Option<&'static str> {
