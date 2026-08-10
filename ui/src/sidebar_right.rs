@@ -123,12 +123,14 @@ impl ContextPanel {
     label: &'static str,
     count: usize,
     section: GitSection,
+    action: Option<AnyElement>,
     theme: &Theme,
     cx: &mut Context<Self>,
   ) -> AnyElement {
     let open = self.is_open(section);
     div()
       .id(id)
+      .group(SharedString::from(id))
       .flex()
       .items_center()
       .gap_1()
@@ -150,7 +152,41 @@ impl ContextPanel {
         .size_3(),
       )
       .child(format!("{label} ({count})"))
+      .child(div().flex_1())
+      .children(action)
       .into_any_element()
+  }
+
+  /// Bulk action shown on a section header. Kept mounted and dim rather than
+  /// hidden on hover: an invisible element still takes clicks, and an
+  /// accidental "unstage everything" is not worth the tidier header.
+  fn header_action(
+    &self,
+    id: &'static str,
+    group: &'static str,
+    icon: IconName,
+    tooltip: &'static str,
+    enabled: bool,
+    theme: &Theme,
+  ) -> gpui::Stateful<gpui::Div> {
+    div()
+      .id(id)
+      .size(px(18.0))
+      .flex()
+      .flex_none()
+      .items_center()
+      .justify_center()
+      .rounded_sm()
+      .text_color(theme.text_dim)
+      .when(enabled, |el| {
+        el.cursor_pointer()
+          .group_hover(group, |s| s.text_color(theme.text_muted))
+          .hover(|s| s.bg(theme.hover).text_color(theme.text))
+          .tooltip(move |window, cx| {
+            gpui_component::tooltip::Tooltip::new(tooltip).build(window, cx)
+          })
+      })
+      .child(Icon::new(icon).size_3())
   }
 
   fn stage(&mut self, relative: String, cx: &mut Context<Self>) {
@@ -749,54 +785,35 @@ impl ContextPanel {
     cx: &mut Context<Self>,
   ) -> AnyElement {
     let can_commit = !git.staged.is_empty();
-    let unstaged_total = git.unstaged.len() + git.untracked.len();
     let can_write = can_commit && !self.generating_message;
 
-    let actions = div()
+    let write = div()
+      .id("generate-message-button")
+      .size(px(20.0))
       .flex()
+      .flex_none()
       .items_center()
-      .gap_1()
-      .child(
-        icon_action(
-          "stage-all-button",
-          IconName::Plus,
-          "Stage all changes",
-          unstaged_total > 0,
-          theme,
-        )
-        .when(unstaged_total > 0, |el| {
-          el.on_click(cx.listener(|this, _, _, cx| this.stage_all(cx)))
-        }),
-      )
-      .child(
-        icon_action(
-          "unstage-all-button",
-          IconName::Minus,
-          "Unstage everything",
-          can_commit,
-          theme,
-        )
-        .when(can_commit, |el| {
-          el.on_click(cx.listener(|this, _, _, cx| this.unstage_all(cx)))
-        }),
-      )
-      .child(div().flex_1())
-      .child(
-        toolbar_button(
-          "generate-message-button",
-          if self.generating_message {
-            "Writing…"
-          } else {
-            "✦ Write"
-          },
-          can_write,
-          theme,
-        )
-        .when(can_write, |el| {
-          el.text_color(theme.claude)
-            .on_click(cx.listener(|this, _, window, cx| this.generate_commit_message(window, cx)))
-        }),
-      );
+      .justify_center()
+      .rounded_sm()
+      .when(self.generating_message, |el| el.text_color(theme.text_dim))
+      .when(!self.generating_message && !can_write, |el| {
+        el.text_color(theme.text_dim)
+      })
+      .when(can_write, |el| {
+        el.text_color(theme.claude)
+          .cursor_pointer()
+          .hover(|s| s.bg(theme.hover))
+          .tooltip(move |window, cx| {
+            gpui_component::tooltip::Tooltip::new("Write the message from the staged diff")
+              .build(window, cx)
+          })
+          .on_click(cx.listener(|this, _, window, cx| this.generate_commit_message(window, cx)))
+      })
+      .child(if self.generating_message {
+        "…"
+      } else {
+        "✦"
+      });
 
     div()
       .flex()
@@ -807,7 +824,6 @@ impl ContextPanel {
       .py_2()
       .border_b_1()
       .border_color(theme.panel_border)
-      .child(actions)
       .child(
         div()
           .rounded_md()
@@ -815,7 +831,11 @@ impl ContextPanel {
           .border_color(theme.panel_border)
           .bg(theme.elevated)
           .px_1()
-          .child(Input::new(&self.commit_message).appearance(false)),
+          .child(
+            Input::new(&self.commit_message)
+              .appearance(false)
+              .suffix(write),
+          ),
       )
       .child(
         div()
@@ -927,23 +947,63 @@ impl ContextPanel {
     };
 
     content = content
-      .child(self.section_toggle(
-        "staged-toggle",
-        "STAGED",
-        git.staged.len(),
-        GitSection::Staged,
-        theme,
-        cx,
-      ))
+      .child(
+        self.section_toggle(
+          "staged-toggle",
+          "STAGED",
+          git.staged.len(),
+          GitSection::Staged,
+          Some(
+            self
+              .header_action(
+                "unstage-all-button",
+                "staged-toggle",
+                IconName::Minus,
+                "Unstage everything",
+                !git.staged.is_empty(),
+                theme,
+              )
+              .when(!git.staged.is_empty(), |el| {
+                el.on_click(cx.listener(|this, _, _, cx| {
+                  cx.stop_propagation();
+                  this.unstage_all(cx);
+                }))
+              })
+              .into_any_element(),
+          ),
+          theme,
+          cx,
+        ),
+      )
       .children(staged)
-      .child(self.section_toggle(
-        "changes-toggle",
-        "CHANGES",
-        git.unstaged.len() + git.untracked.len(),
-        GitSection::Changes,
-        theme,
-        cx,
-      ))
+      .child(
+        self.section_toggle(
+          "changes-toggle",
+          "CHANGES",
+          git.unstaged.len() + git.untracked.len(),
+          GitSection::Changes,
+          Some(
+            self
+              .header_action(
+                "stage-all-button",
+                "changes-toggle",
+                IconName::Plus,
+                "Stage all changes",
+                git.unstaged.len() + git.untracked.len() > 0,
+                theme,
+              )
+              .when(git.unstaged.len() + git.untracked.len() > 0, |el| {
+                el.on_click(cx.listener(|this, _, _, cx| {
+                  cx.stop_propagation();
+                  this.stage_all(cx);
+                }))
+              })
+              .into_any_element(),
+          ),
+          theme,
+          cx,
+        ),
+      )
       .children(unstaged)
       .children(untracked)
       .child(self.section_toggle(
@@ -951,6 +1011,7 @@ impl ContextPanel {
         "COMMITS",
         git.recent_commits.len(),
         GitSection::Commits,
+        None,
         theme,
         cx,
       ))
@@ -1205,55 +1266,6 @@ impl ContextPanel {
     helix_github::review::create(root, &base, &title, "", false)?;
     Ok(())
   }
-}
-
-fn toolbar_button(
-  id: &'static str,
-  label: &'static str,
-  enabled: bool,
-  theme: &Theme,
-) -> gpui::Stateful<gpui::Div> {
-  div()
-    .id(id)
-    .h(px(24.0))
-    .px_2()
-    .flex()
-    .flex_none()
-    .items_center()
-    .rounded_md()
-    .text_xs()
-    .when(enabled, |el| {
-      el.text_color(theme.text_muted)
-        .cursor_pointer()
-        .hover(|s| s.bg(theme.hover).text_color(theme.text))
-    })
-    .when(!enabled, |el| el.text_color(theme.text_dim))
-    .child(label)
-}
-
-fn icon_action(
-  id: &'static str,
-  icon: IconName,
-  tooltip: &'static str,
-  enabled: bool,
-  theme: &Theme,
-) -> gpui::Stateful<gpui::Div> {
-  div()
-    .id(id)
-    .size(px(24.0))
-    .flex()
-    .flex_none()
-    .items_center()
-    .justify_center()
-    .rounded_md()
-    .when(enabled, |el| {
-      el.text_color(theme.text_muted)
-        .cursor_pointer()
-        .hover(|s| s.bg(theme.hover).text_color(theme.text))
-        .tooltip(move |window, cx| gpui_component::tooltip::Tooltip::new(tooltip).build(window, cx))
-    })
-    .when(!enabled, |el| el.text_color(theme.text_dim))
-    .child(Icon::new(icon).size_3p5())
 }
 
 fn primary_action_label(action: NextAction) -> Option<&'static str> {
