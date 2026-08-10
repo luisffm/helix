@@ -432,6 +432,38 @@ impl HelixRoot {
     .detach();
   }
 
+  fn close_session(
+    &mut self,
+    root: PathBuf,
+    pid: u32,
+    window: &mut Window,
+    cx: &mut Context<Self>,
+  ) {
+    let Some(workspace) = self.workspaces.get(&root).cloned() else {
+      return;
+    };
+    let terminals: Vec<_> = workspace
+      .read(cx)
+      .terminals()
+      .map(|(ix, view)| (ix, view.clone()))
+      .collect();
+    let Some(ix) = terminals
+      .into_iter()
+      .find_map(|(ix, view)| (view.read(cx).shell_pid() == Some(pid)).then_some(ix))
+    else {
+      return;
+    };
+    workspace.update(cx, |workspace, cx| {
+      workspace.close_tab(ix, window, cx);
+    });
+    for project in &mut self.resources.projects {
+      if project.root == root {
+        project.sessions.retain(|session| session.pid != pid);
+      }
+    }
+    cx.notify();
+  }
+
   fn render_resource_panel(&mut self, cx: &mut Context<Self>) -> gpui::AnyElement {
     let theme = Theme::of(cx).clone();
     let snapshot = self.resources.clone();
@@ -519,6 +551,9 @@ impl HelixRoot {
             helix_models::SessionKind::ClaudeCode => theme.claude,
             helix_models::SessionKind::Terminal => theme.green,
           };
+          let close_root = project.root.clone();
+          let close_pid = session.pid;
+          let close_title = session.title.clone();
           list = list.child(
             div()
               .id(gpui::SharedString::from(format!(
@@ -533,6 +568,7 @@ impl HelixRoot {
               .px_2()
               .h(px(24.0))
               .rounded_md()
+              .hover(|s| s.bg(theme.hover))
               .child(crate::components::status_dot(color))
               .child(
                 div()
@@ -548,7 +584,31 @@ impl HelixRoot {
                 theme.text_dim,
                 48.0,
               ))
-              .child(row_text(format_rss(session.rss_mb), theme.text_muted, 64.0)),
+              .child(row_text(format_rss(session.rss_mb), theme.text_muted, 64.0))
+              .child(
+                div()
+                  .id(gpui::SharedString::from(format!(
+                    "res-close-{}-{ix}",
+                    project.root.display()
+                  )))
+                  .size(px(18.0))
+                  .flex()
+                  .flex_none()
+                  .items_center()
+                  .justify_center()
+                  .rounded_sm()
+                  .cursor_pointer()
+                  .text_color(theme.text_dim)
+                  .hover(|s| s.bg(theme.elevated).text_color(theme.text))
+                  .tooltip(move |window, cx| {
+                    gpui_component::tooltip::Tooltip::new(format!("Close {close_title}"))
+                      .build(window, cx)
+                  })
+                  .on_click(cx.listener(move |this, _, window, cx| {
+                    this.close_session(close_root.clone(), close_pid, window, cx);
+                  }))
+                  .child(gpui_component::Icon::new(gpui_component::IconName::Close).size_3()),
+              ),
           );
         }
       }
@@ -759,9 +819,10 @@ impl HelixRoot {
     window: &mut Window,
     cx: &mut Context<Self>,
   ) {
-    let can_worktree = self.git.is_some();
-    let owner =
-      helix_worktree::primary_root(&self.project.root).unwrap_or_else(|| self.project.root.clone());
+    let active_owner = helix_worktree::primary_root(&self.project.root);
+    let owner = active_owner
+      .clone()
+      .unwrap_or_else(|| self.project.root.clone());
     let listed: Vec<PathBuf> = self
       .worktrees
       .iter()
@@ -775,6 +836,36 @@ impl HelixRoot {
       })
       .map(|wt| (wt.branch, wt.path))
       .collect();
+    let mut targets: Vec<(String, PathBuf)> = Vec::new();
+    for project in helix_state::config::load().projects {
+      let Some(primary) = helix_worktree::primary_root(&project.path) else {
+        continue;
+      };
+      if targets.iter().any(|(_, path)| *path == primary) {
+        continue;
+      }
+      let name = project.display_name.clone().unwrap_or_else(|| {
+        primary
+          .file_name()
+          .map(|n| n.to_string_lossy().to_string())
+          .unwrap_or_else(|| primary.display().to_string())
+      });
+      targets.push((name, primary));
+    }
+    if let Some(active_owner) = &active_owner {
+      if targets.iter().all(|(_, path)| path != active_owner) {
+        let name = active_owner
+          .file_name()
+          .map(|n| n.to_string_lossy().to_string())
+          .unwrap_or_else(|| active_owner.display().to_string());
+        targets.insert(0, (name, active_owner.clone()));
+      }
+    }
+    let active_target = active_owner
+      .as_ref()
+      .and_then(|owner| targets.iter().position(|(_, path)| path == owner))
+      .unwrap_or(0);
+    let can_worktree = !targets.is_empty();
     let dialog = cx.new(|cx| {
       AddDialog::new(
         self.project.root.clone(),
@@ -782,6 +873,8 @@ impl HelixRoot {
         can_worktree,
         include_workspace,
         existing,
+        targets,
+        active_target,
         window,
         cx,
       )
@@ -796,9 +889,13 @@ impl HelixRoot {
         this.pick_workspace(window, cx);
         cx.notify();
       }
-      AddDialogEvent::CreateWorktree { name, branch } => {
+      AddDialogEvent::CreateWorktree {
+        owner,
+        name,
+        branch,
+      } => {
         this.add_dialog = None;
-        this.create_worktree(name.clone(), branch.clone(), window, cx);
+        this.create_worktree(owner.clone(), name.clone(), branch.clone(), window, cx);
         cx.notify();
       }
       AddDialogEvent::AddExistingWorktree(path) => {
@@ -840,15 +937,14 @@ impl HelixRoot {
 
   fn create_worktree(
     &mut self,
+    owner: PathBuf,
     name: String,
     branch: Option<String>,
     window: &mut Window,
     cx: &mut Context<Self>,
   ) {
-    let root = self.project.root.clone();
     let task = cx.background_executor().spawn(async move {
-      let owner = helix_worktree::primary_root(&root).unwrap_or_else(|| root.clone());
-      helix_worktree::create_worktree(&root, &name, branch.as_deref()).map(|dest| {
+      helix_worktree::create_worktree(&owner, &name, branch.as_deref()).map(|dest| {
         helix_state::config::add_worktree(&owner, &dest);
         dest
       })

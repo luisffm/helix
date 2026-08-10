@@ -5,13 +5,15 @@ use gpui::{
 };
 use gpui_component::checkbox::Checkbox;
 use gpui_component::input::{Input, InputEvent, InputState};
-use gpui_component::{Icon, IconName, Sizable};
+use gpui_component::select::{Select, SelectState};
+use gpui_component::{Icon, IconName, IndexPath, Sizable};
 use std::path::PathBuf;
 
 pub enum AddDialogEvent {
   Dismissed,
   ChooseWorkspace,
   CreateWorktree {
+    owner: PathBuf,
     name: String,
     branch: Option<String>,
   },
@@ -40,6 +42,8 @@ pub struct AddDialog {
   worktree_name: Entity<InputState>,
   branch_name: Entity<InputState>,
   ai_context: Entity<InputState>,
+  targets: Vec<(String, PathBuf)>,
+  target_select: Entity<SelectState<Vec<String>>>,
   create_branch: bool,
   describing: bool,
   generating_branch: bool,
@@ -67,9 +71,14 @@ impl AddDialog {
     can_worktree: bool,
     include_workspace: bool,
     existing: Vec<(String, PathBuf)>,
+    targets: Vec<(String, PathBuf)>,
+    active_target: usize,
     window: &mut Window,
     cx: &mut Context<Self>,
   ) -> Self {
+    let titles: Vec<String> = targets.iter().map(|(name, _)| name.clone()).collect();
+    let target_select =
+      cx.new(|cx| SelectState::new(titles, Some(IndexPath::new(active_target)), window, cx));
     let worktree_name = cx.new(|cx| InputState::new(window, cx).placeholder("payments-refactor"));
     let branch_name = cx.new(|cx| InputState::new(window, cx).placeholder("feat/my-feature"));
     let ai_context =
@@ -100,6 +109,8 @@ impl AddDialog {
       worktree_name,
       branch_name,
       ai_context,
+      targets,
+      target_select,
       create_branch: false,
       describing: false,
       generating_branch: false,
@@ -161,7 +172,22 @@ impl AddDialog {
     }
   }
 
+  fn selected_target(&self, cx: &App) -> Option<PathBuf> {
+    let row = self
+      .target_select
+      .read(cx)
+      .selected_index(cx)
+      .map(|index| index.row)
+      .unwrap_or(0);
+    self.targets.get(row).map(|(_, path)| path.clone())
+  }
+
   fn confirm_worktree(&mut self, cx: &mut Context<Self>) {
+    let Some(owner) = self.selected_target(cx) else {
+      self.error = Some("no git project to create a worktree in".to_string());
+      cx.notify();
+      return;
+    };
     let name = self.worktree_name.read(cx).value().trim().to_string();
     if name.is_empty() {
       self.error = Some("worktree name is required".to_string());
@@ -186,7 +212,11 @@ impl AddDialog {
       return;
     }
     self.error = None;
-    cx.emit(AddDialogEvent::CreateWorktree { name, branch });
+    cx.emit(AddDialogEvent::CreateWorktree {
+      owner,
+      name,
+      branch,
+    });
   }
 
   fn ask_for_a_name(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -392,7 +422,7 @@ impl Render for AddDialog {
               if self.can_worktree {
                 format!("Create a git worktree inside {}", self.project_name)
               } else {
-                "Active project is not a git repository".to_string()
+                "No git project to create a worktree in".to_string()
               },
               self.can_worktree,
               self.selected == ix,
@@ -557,6 +587,21 @@ impl Render for AddDialog {
           .flex_col()
           .gap_3()
           .p_3()
+          .when(self.targets.len() > 1, |el| {
+            el.child(
+              div()
+                .flex()
+                .flex_col()
+                .gap_1()
+                .child(
+                  div()
+                    .text_xs()
+                    .text_color(theme.text_muted)
+                    .child("Project"),
+                )
+                .child(Select::new(&self.target_select).xsmall().w_full()),
+            )
+          })
           .child(field("Worktree", "directory name", &self.worktree_name))
           .child(
             Checkbox::new("create-branch")

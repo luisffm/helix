@@ -6,6 +6,7 @@ use std::path::PathBuf;
 pub struct SessionUsage {
   pub title: String,
   pub kind: SessionKind,
+  pub pid: u32,
   pub cpu: f32,
   pub rss_mb: f32,
 }
@@ -99,6 +100,7 @@ pub fn sample(targets: UsageTargets) -> UsageSnapshot {
       project.sessions.push(SessionUsage {
         title,
         kind,
+        pid,
         cpu,
         rss_mb,
       });
