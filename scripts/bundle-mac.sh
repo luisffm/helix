@@ -7,15 +7,18 @@ ICONSET_SRC="${ICONSET:-assets/icon.iconset}"
 BUNDLE_ID="${BUNDLE_ID:-com.luisffm.helix}"
 PROFILE="${PROFILE:-release}"
 SIGN="${SIGN:-1}"
+BUILD="${BUILD:-1}"
 APP="target/Helix.app"
 ICNS="$APP/Contents/Resources/helix.icns"
 VERSION="$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)"
 
 if [ "$PROFILE" = "debug" ]; then
   BUILD_FLAGS=""
+  BUILD_HINT="cargo build"
   PROFILE_DIR="debug"
 else
   BUILD_FLAGS="--release"
+  BUILD_HINT="cargo build --release"
   PROFILE_DIR="release"
 fi
 
@@ -36,7 +39,15 @@ if [ ! -d "$ICONSET_SRC" ]; then
   fi
 fi
 
-cargo build $BUILD_FLAGS
+if [ "$BUILD" = "1" ]; then
+  cargo build $BUILD_FLAGS
+fi
+
+BIN="target/$PROFILE_DIR/helix"
+if [ ! -x "$BIN" ]; then
+  echo "bundle-mac: no binary at $BIN — run '$BUILD_HINT' first" >&2
+  exit 1
+fi
 
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 
@@ -57,7 +68,7 @@ if [ ! -f "$ICNS" ] || [ "$ICONSET_SRC" -nt "$ICNS" ] || [ "$ICON" -nt "$ICNS" ]
   rm -rf "$STAGE"
 fi
 
-cp "target/$PROFILE_DIR/helix" "$APP/Contents/MacOS/helix"
+cp "$BIN" "$APP/Contents/MacOS/helix"
 
 cat >"$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>

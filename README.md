@@ -49,7 +49,7 @@ cargo run -- /path/to/project    # defaults to the current directory
 ./scripts/dev.sh /path/to/project    # defaults to the repo itself
 ```
 
-It runs the `.app`, not the bare binary, so the icon and the name are the same in development as in a release. Bundling a debug build costs about half a second on top of the Rust rebuild — the `.icns` is only regenerated when the artwork changes, and signing is skipped.
+`cargo watch` owns the build and chains into the bundler with `BUILD=0`, so nothing compiles twice. It runs the `.app` rather than the bare binary, which is why the icon and the name are identical in development and in a release. Bundling costs ~0.2s on top of the rebuild: the `.icns` is reused unless the artwork changed, and signing is skipped.
 
 ### macOS app bundle
 
@@ -60,7 +60,9 @@ A Dock and Finder icon needs a real `.app`. Put a square 1024×1024 PNG at `asse
 open target/Helix.app --args /path/to/project
 ```
 
-Pre-rendered sizes in `assets/icon.iconset/` are used as-is; without that directory the script downscales `icon.png` with `sips`, which is visibly softer at 16px. `ICON`, `ICONSET`, `BUNDLE_ID`, `PROFILE` and `SIGN` override the defaults.
+Pre-rendered sizes in `assets/icon.iconset/` are used as-is; without that directory the script downscales `icon.png` with `sips`, which is visibly softer at 16px.
+
+`ICON`, `ICONSET`, `BUNDLE_ID`, `PROFILE` (`release`/`debug`), `SIGN` and `BUILD` override the defaults. `BUILD=0` bundles whatever is already in `target/`, which is how the dev loop avoids building twice.
 
 The icon and the name both come from `Info.plist` (`CFBundleIconFile`, `CFBundleName`) — there is no runtime code for either, which is why the dev loop runs the bundle too.
 
