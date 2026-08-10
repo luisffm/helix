@@ -14,6 +14,7 @@ pub mod sidebar_left;
 pub mod sidebar_right;
 pub mod terminal_view;
 pub mod theme;
+pub mod window_frame;
 pub mod workspace;
 pub mod worktree_dialog;
 

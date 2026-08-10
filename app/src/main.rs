@@ -65,6 +65,7 @@ fn main() {
         cx.new(|cx| gpui_component::Root::new(view, window, cx))
       })
       .expect("failed to open window");
+      helix_ui::window_frame::restore_and_autosave("HelixMainWindow");
       helix_ui::macos_blur::apply_blur_material();
       cx.activate(true);
     });

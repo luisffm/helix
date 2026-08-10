@@ -825,16 +825,26 @@ impl ContextPanel {
       .border_b_1()
       .border_color(theme.panel_border)
       .child(
+        // The sparkle is an overlay rather than Input::suffix: the suffix slot
+        // is vertically centred (wrong for a multi-line field) and the input
+        // captures the mouse on press for drag-selection, so a click there
+        // never completes. `occlude` keeps the press off the editor below.
         div()
+          .relative()
           .rounded_md()
           .border_1()
           .border_color(theme.panel_border)
           .bg(theme.elevated)
-          .px_1()
+          .pl_1()
+          .pr(px(24.0))
+          .child(Input::new(&self.commit_message).appearance(false))
           .child(
-            Input::new(&self.commit_message)
-              .appearance(false)
-              .suffix(write),
+            div()
+              .absolute()
+              .top(px(3.0))
+              .right(px(3.0))
+              .occlude()
+              .child(write),
           ),
       )
       .child(
