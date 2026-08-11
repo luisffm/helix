@@ -103,6 +103,15 @@ pub fn sync_component_theme(cx: &mut App) {
 
   colors.list_hover = ours.hover;
   colors.list_active = ours.active;
+  colors.list_active_border = ours.active;
+
+  // Read by the components already in use, and left at the library's own dark
+  // palette until they are set here.
+  colors.caret = ours.accent;
+  colors.selection = ours.term.selection;
+  colors.scrollbar = Hsla::transparent_black();
+  colors.scrollbar_thumb = ours.panel_border;
+  colors.scrollbar_thumb_hover = ours.text_dim;
 }
 
 pub fn appearance_for_level(level: &str) -> gpui::WindowBackgroundAppearance {
