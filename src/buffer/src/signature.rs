@@ -1,32 +1,26 @@
-const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
-const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
+use xxhash_rust::xxh3::Xxh3;
 
+/// Only ever compared against another digest taken in the same run, never
+/// stored, so the hash is chosen for speed alone: a byte-at-a-time FNV read
+/// 1MB in 2.8ms, which is too long for a keystroke to wait on.
+///
 /// Hashing in pieces lets a caller holding a chunked buffer avoid flattening it
 /// into one string first. The digest matches `of` over the same bytes.
 pub struct Hasher {
-  hash: u64,
-  len: usize,
+  inner: Xxh3,
 }
 
 impl Hasher {
   pub fn new() -> Self {
-    Self {
-      hash: FNV_OFFSET,
-      len: 0,
-    }
+    Self { inner: Xxh3::new() }
   }
 
   pub fn write(&mut self, text: &str) {
-    for byte in text.as_bytes() {
-      self.hash ^= *byte as u64;
-      self.hash = self.hash.wrapping_mul(FNV_PRIME);
-    }
-
-    self.len += text.len();
+    self.inner.update(text.as_bytes());
   }
 
   pub fn finish(self) -> u64 {
-    self.hash ^ (self.len as u64).rotate_left(32)
+    self.inner.digest()
   }
 }
 
