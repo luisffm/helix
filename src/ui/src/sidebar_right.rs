@@ -1085,7 +1085,7 @@ impl ContextPanel {
         .track_scroll(self.rows_scroll.clone())
         .flex_1()
         .min_h_0()
-        .px_1()
+        .px_2()
         .into_any_element()
       }
     } else if self.matches.is_empty() {
@@ -1109,7 +1109,7 @@ impl ContextPanel {
       .track_scroll(self.matches_scroll.clone())
       .flex_1()
       .min_h_0()
-      .px_1()
+      .px_2()
       .into_any_element()
     };
 
@@ -1121,6 +1121,7 @@ impl ContextPanel {
       .min_h_0()
       .flex()
       .flex_col()
+      .gap_2()
       .child(filter)
       .child(body)
       .into_any_element()
