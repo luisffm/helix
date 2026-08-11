@@ -1,6 +1,7 @@
 pub mod branch_name;
 pub mod claude_cli;
 pub mod commit_message;
+pub mod title_status;
 
 use helix_models::SessionKind;
 use std::path::Path;

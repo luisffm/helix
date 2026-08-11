@@ -15,7 +15,7 @@ use gpui::{
   point, prelude::*, px,
 };
 use helix_agents::launch_spec;
-use helix_models::{AgentStatus, SessionId, SessionKind};
+use helix_models::{AgentStatus, SessionId, SessionKind, TitleStatus};
 use helix_terminal::mouse::{
   BUTTON_LEFT, BUTTON_MIDDLE, BUTTON_RIGHT, BUTTON_WHEEL_DOWN, BUTTON_WHEEL_UP, MouseReport,
   alternate_scroll, encode as encode_mouse, reports_motion,
@@ -50,6 +50,7 @@ pub struct TerminalView {
   pub id: SessionId,
   pub kind: SessionKind,
   pub title: SharedString,
+  title_status: Option<TitleStatus>,
   pub exited: Option<i32>,
   pub last_activity: Instant,
   pub started_at: SystemTime,
@@ -262,6 +263,7 @@ impl TerminalView {
       id,
       kind,
       title: title.into(),
+      title_status: None,
       exited: None,
       last_activity: Instant::now(),
       started_at: SystemTime::now(),
@@ -289,7 +291,7 @@ impl TerminalView {
   }
 
   pub fn status(&self) -> AgentStatus {
-    helix_state::activity_status(self.last_activity, self.exited)
+    helix_state::activity_status(self.last_activity, self.exited, self.title_status)
   }
 
   pub fn shell_pid(&self) -> Option<u32> {
@@ -428,8 +430,13 @@ impl TerminalView {
         self.schedule_flush(cx);
       }
       AlacEvent::Title(title) => {
+        self.title_status = helix_agents::title_status::from_title(&title);
         self.title = title.into();
         cx.emit(TerminalViewEvent::Retitled);
+        cx.notify();
+      }
+      AlacEvent::ResetTitle => {
+        self.title_status = None;
         cx.notify();
       }
       AlacEvent::ChildExit(status) => {

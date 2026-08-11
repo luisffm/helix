@@ -26,6 +26,13 @@ impl AgentStatus {
   }
 }
 
+/// What an agent claims about itself through its terminal title.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum TitleStatus {
+  Working,
+  Idle,
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum SessionKind {
   Terminal,
