@@ -1,3 +1,4 @@
+use crate::components::key_hint;
 use crate::theme::Theme;
 use gpui::{
   AnyElement, App, Context, Entity, EventEmitter, FocusHandle, Focusable, IntoElement,
@@ -1144,25 +1145,6 @@ impl Render for AddDialog {
       }
     };
 
-    let hint = |key: &'static str, action: &'static str| {
-      div()
-        .flex()
-        .items_center()
-        .gap_1()
-        .child(
-          div()
-            .px_1p5()
-            .py_0p5()
-            .rounded_sm()
-            .border_1()
-            .border_color(theme.panel_border)
-            .text_xs()
-            .text_color(theme.text_muted)
-            .child(key),
-        )
-        .child(div().text_xs().text_color(theme.text_dim).child(action))
-    };
-
     let footer = div()
       .flex()
       .flex_none()
@@ -1173,15 +1155,16 @@ impl Render for AddDialog {
       .px_3()
       .border_t_1()
       .border_color(theme.panel_border)
-      .child(hint(
-        "Enter",
+      .child(key_hint(
+        "enter",
         if self.step == Step::Choose {
           "Select"
         } else {
           "Create"
         },
+        &theme,
       ))
-      .child(hint("Esc", "Back"));
+      .child(key_hint("escape", "Back", &theme));
 
     div()
       .id("add-dialog")

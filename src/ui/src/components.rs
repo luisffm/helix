@@ -1,9 +1,11 @@
 use crate::theme::Theme;
+use gpui::Keystroke;
 use gpui::{
   Animation, AnimationExt, Div, ElementId, Hsla, IntoElement, SharedString, Transformation, div,
   percentage, prelude::*, px,
 };
 use gpui_component::button::{Button, ButtonVariants as _};
+use gpui_component::kbd::Kbd;
 use gpui_component::{Icon, IconName, Sizable as _};
 use std::time::Duration;
 
@@ -97,6 +99,22 @@ pub fn spinner(id: impl Into<ElementId>, color: Hsla) -> impl IntoElement {
       |icon, delta| icon.transform(Transformation::rotate(percentage(delta))),
     ),
   )
+}
+
+/// A footer hint: the key caps for `keys`, space separated, then what they do.
+/// The caps render with the platform's own glyphs.
+pub fn key_hint(keys: &str, action: &'static str, theme: &Theme) -> Div {
+  div()
+    .flex()
+    .items_center()
+    .gap_1()
+    .children(
+      keys
+        .split_whitespace()
+        .filter_map(|key| Keystroke::parse(key).ok())
+        .map(Kbd::new),
+    )
+    .child(div().text_xs().text_color(theme.text_dim).child(action))
 }
 
 pub fn icon_button(id: impl Into<SharedString>, icon: impl Into<Icon>, theme: &Theme) -> Button {

@@ -1,3 +1,4 @@
+use crate::components::key_hint;
 use crate::icons::HelixIcon;
 use crate::theme::Theme;
 use gpui::{
@@ -142,25 +143,6 @@ impl Render for WorktreeEditDialog {
       );
     }
 
-    let hint = |key: &'static str, action: &'static str| {
-      div()
-        .flex()
-        .items_center()
-        .gap_1()
-        .child(
-          div()
-            .px_1p5()
-            .py_0p5()
-            .rounded_sm()
-            .border_1()
-            .border_color(theme.panel_border)
-            .text_xs()
-            .text_color(theme.text_muted)
-            .child(key),
-        )
-        .child(div().text_xs().text_color(theme.text_dim).child(action))
-    };
-
     div()
       .id("worktree-edit-dialog")
       .occlude()
@@ -212,9 +194,9 @@ impl Render for WorktreeEditDialog {
           .px_3()
           .border_t_1()
           .border_color(theme.panel_border)
-          .child(hint("Tab", "Next field"))
-          .child(hint("Enter", "Save"))
-          .child(hint("Esc", "Cancel")),
+          .child(key_hint("tab", "Next field", &theme))
+          .child(key_hint("enter", "Save", &theme))
+          .child(key_hint("escape", "Cancel", &theme)),
       )
   }
 }
