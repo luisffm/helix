@@ -1,14 +1,19 @@
 use crate::components::query_matches;
 use crate::theme::Theme;
 use gpui::{
-  App, Context, Entity, EventEmitter, FocusHandle, Focusable, IntoElement, KeyDownEvent,
-  ParentElement, Render, SharedString, Window, div, prelude::*, px,
+  AnyElement, App, Context, Entity, EventEmitter, FocusHandle, Focusable, IntoElement,
+  KeyDownEvent, ParentElement, Render, ScrollStrategy, SharedString, UniformListScrollHandle,
+  Window, div, prelude::*, px, uniform_list,
 };
-use gpui_component::checkbox::Checkbox;
 use gpui_component::input::{Input, InputEvent, InputState};
-use gpui_component::select::{Select, SelectState};
+use gpui_component::radio::Radio;
+use gpui_component::select::{Select, SelectEvent, SelectState};
 use gpui_component::{Icon, IconName, IndexPath, Sizable};
+use helix_worktree::{BranchRef, BranchSource};
 use std::path::PathBuf;
+
+const VISIBLE_BRANCHES: usize = 8;
+const BRANCH_ROW_HEIGHT: f32 = 26.0;
 
 pub enum AddDialogEvent {
   Dismissed,
@@ -16,7 +21,7 @@ pub enum AddDialogEvent {
   CreateWorktree {
     owner: PathBuf,
     name: String,
-    branch: Option<String>,
+    source: BranchSource,
   },
   AddExistingWorktree(PathBuf),
 }
@@ -25,6 +30,12 @@ pub enum AddDialogEvent {
 enum Step {
   Choose,
   Name,
+  Existing,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum BranchMode {
+  New,
   Existing,
 }
 
@@ -45,7 +56,12 @@ pub struct AddDialog {
   ai_context: Entity<InputState>,
   targets: Vec<(String, PathBuf)>,
   target_select: Entity<SelectState<Vec<String>>>,
-  create_branch: bool,
+  branch_mode: BranchMode,
+  branches: Vec<BranchRef>,
+  branch_filter: Entity<InputState>,
+  branch_scroll: UniformListScrollHandle,
+  branch_selected: usize,
+  loading_branches: bool,
   describing: bool,
   generating_branch: bool,
   error: Option<String>,
@@ -85,8 +101,9 @@ impl AddDialog {
     let branch_name = cx.new(|cx| InputState::new(window, cx).placeholder("feat/my-feature"));
     let ai_context =
       cx.new(|cx| InputState::new(window, cx).placeholder("what should this branch do?"));
+    let branch_filter = cx.new(|cx| InputState::new(window, cx).placeholder("filter branches..."));
 
-    for input in [&worktree_name, &branch_name] {
+    for input in [&worktree_name, &branch_name, &branch_filter] {
       cx.subscribe(input, |this, _, event: &InputEvent, cx| {
         if matches!(event, InputEvent::PressEnter { .. }) {
           this.confirm_worktree(cx);
@@ -95,6 +112,15 @@ impl AddDialog {
       .detach();
     }
 
+    cx.subscribe(&branch_filter, |this, _, event: &InputEvent, cx| {
+      if matches!(event, InputEvent::Change) {
+        this.branch_selected = 0;
+
+        cx.notify();
+      }
+    })
+    .detach();
+
     cx.subscribe_in(
       &ai_context,
       window,
@@ -102,6 +128,26 @@ impl AddDialog {
         if matches!(event, InputEvent::PressEnter { .. }) {
           this.generate_branch_name(window, cx);
         }
+      },
+    )
+    .detach();
+
+    cx.subscribe_in(
+      &target_select,
+      window,
+      |this, _, _: &SelectEvent<Vec<String>>, window, cx| {
+        this.branches.clear();
+        this.branch_selected = 0;
+
+        this
+          .branch_filter
+          .update(cx, |state, cx| state.set_value("", window, cx));
+
+        if this.branch_mode == BranchMode::Existing {
+          this.load_branches(cx);
+        }
+
+        cx.notify();
       },
     )
     .detach();
@@ -116,7 +162,12 @@ impl AddDialog {
       ai_context,
       targets,
       target_select,
-      create_branch: false,
+      branch_mode: BranchMode::New,
+      branches: Vec::new(),
+      branch_filter,
+      branch_scroll: UniformListScrollHandle::new(),
+      branch_selected: 0,
+      loading_branches: false,
       describing: false,
       generating_branch: false,
       error: None,
@@ -191,6 +242,124 @@ impl AddDialog {
     self.targets.get(row).map(|(_, path)| path.clone())
   }
 
+  fn filtered_branches(&self, cx: &App) -> Vec<BranchRef> {
+    let query = self.branch_filter.read(cx).value().trim().to_lowercase();
+
+    if query.is_empty() {
+      return self.branches.clone();
+    }
+
+    self
+      .branches
+      .iter()
+      .filter(|branch| query_matches(&query, &[&branch.label()]))
+      .cloned()
+      .collect()
+  }
+
+  fn selected_branch(&self, cx: &App) -> Option<BranchRef> {
+    let filtered = self.filtered_branches(cx);
+    let ix = self.branch_selected.min(filtered.len().saturating_sub(1));
+
+    filtered.get(ix).cloned()
+  }
+
+  fn load_branches(&mut self, cx: &mut Context<Self>) {
+    let Some(owner) = self.selected_target(cx) else {
+      return;
+    };
+
+    self.loading_branches = true;
+
+    let task = cx
+      .background_executor()
+      .spawn(async move { helix_worktree::available_branches(&owner) });
+
+    cx.spawn(async move |this, cx| {
+      let branches = task.await;
+
+      this
+        .update(cx, |dialog, cx| {
+          dialog.branches = branches;
+          dialog.branch_selected = 0;
+          dialog.loading_branches = false;
+
+          cx.notify();
+        })
+        .ok();
+    })
+    .detach();
+  }
+
+  fn render_branch_row(
+    &self,
+    ix: usize,
+    branch: &BranchRef,
+    selected: bool,
+    theme: &Theme,
+    cx: &mut Context<Self>,
+  ) -> AnyElement {
+    div()
+      .id(SharedString::from(format!("branch-{ix}")))
+      .flex()
+      .items_center()
+      .gap_2()
+      .px_2()
+      .h(px(BRANCH_ROW_HEIGHT))
+      .rounded_md()
+      .border_1()
+      .cursor_pointer()
+      .when(selected, |el| {
+        el.border_color(theme.active).bg(theme.elevated)
+      })
+      .when(!selected, |el| {
+        el.border_color(gpui::transparent_black())
+          .hover(|s| s.bg(theme.hover))
+      })
+      .on_click(cx.listener(move |this, _, _, cx| {
+        this.branch_selected = ix;
+        this.error = None;
+
+        cx.notify();
+      }))
+      .child(crate::components::git_branch_icon(theme.purple))
+      .child(
+        div()
+          .flex_1()
+          .text_xs()
+          .text_color(theme.text)
+          .overflow_hidden()
+          .whitespace_nowrap()
+          .child(branch.name.clone()),
+      )
+      .children(branch.remote.clone().map(|remote| {
+        div()
+          .flex_none()
+          .text_xs()
+          .text_color(theme.text_dim)
+          .child(remote)
+      }))
+      .into_any_element()
+  }
+
+  fn set_branch_mode(&mut self, mode: BranchMode, window: &mut Window, cx: &mut Context<Self>) {
+    self.branch_mode = mode;
+    self.error = None;
+
+    match mode {
+      BranchMode::New => window.focus(&self.branch_name.read(cx).focus_handle(cx)),
+      BranchMode::Existing => {
+        window.focus(&self.branch_filter.read(cx).focus_handle(cx));
+
+        if self.branches.is_empty() && !self.loading_branches {
+          self.load_branches(cx);
+        }
+      }
+    }
+
+    cx.notify();
+  }
+
   fn confirm_worktree(&mut self, cx: &mut Context<Self>) {
     let Some(owner) = self.selected_target(cx) else {
       self.error = Some("no git project to create a worktree in".to_string());
@@ -199,45 +368,51 @@ impl AddDialog {
       return;
     };
 
-    let name = self.worktree_name.read(cx).value().trim().to_string();
+    let mut name = self.worktree_name.read(cx).value().trim().to_string();
 
-    if name.is_empty() {
-      self.error = Some("worktree name is required".to_string());
-      cx.notify();
+    let source = match self.branch_mode {
+      BranchMode::New => {
+        if name.is_empty() {
+          self.error = Some("worktree name is required".to_string());
+          cx.notify();
 
-      return;
-    }
+          return;
+        }
 
-    let branch = if self.create_branch {
-      let branch = self.branch_name.read(cx).value().trim().to_string();
+        let branch = self.branch_name.read(cx).value().trim().to_string();
+        let effective = if branch.is_empty() { &name } else { &branch };
 
-      if branch.is_empty() {
-        self.error = Some("branch name is required".to_string());
-        cx.notify();
+        if !helix_agents::branch_name::is_valid(effective) {
+          self.error = Some(format!("git will not accept the branch name `{effective}`"));
+          cx.notify();
 
-        return;
+          return;
+        }
+
+        BranchSource::New((!branch.is_empty()).then_some(branch))
       }
+      BranchMode::Existing => {
+        let Some(branch) = self.selected_branch(cx) else {
+          self.error = Some("pick a branch to check out".to_string());
+          cx.notify();
 
-      Some(branch)
-    } else {
-      None
+          return;
+        };
+
+        if name.is_empty() {
+          name = branch.name.clone();
+        }
+
+        BranchSource::Existing(branch)
+      }
     };
-
-    let effective = branch.as_deref().unwrap_or(&name);
-
-    if !helix_agents::branch_name::is_valid(effective) {
-      self.error = Some(format!("git will not accept the branch name `{effective}`"));
-      cx.notify();
-
-      return;
-    }
 
     self.error = None;
 
     cx.emit(AddDialogEvent::CreateWorktree {
       owner,
       name,
-      branch,
+      source,
     });
   }
 
@@ -386,6 +561,36 @@ impl AddDialog {
 
           window.focus(&self.focus_handle);
           cx.notify();
+
+          return;
+        }
+
+        if self.branch_mode != BranchMode::Existing {
+          return;
+        }
+
+        match event.keystroke.key.as_str() {
+          "up" => {
+            let count = self.filtered_branches(cx).len().max(1);
+
+            self.branch_selected = (self.branch_selected + count - 1) % count;
+
+            self
+              .branch_scroll
+              .scroll_to_item(self.branch_selected, ScrollStrategy::Top);
+            cx.notify();
+          }
+          "down" => {
+            let count = self.filtered_branches(cx).len().max(1);
+
+            self.branch_selected = (self.branch_selected + 1) % count;
+
+            self
+              .branch_scroll
+              .scroll_to_item(self.branch_selected, ScrollStrategy::Bottom);
+            cx.notify();
+          }
+          _ => {}
         }
       }
     }
@@ -625,6 +830,17 @@ impl Render for AddDialog {
             )
         };
 
+        let mode_radio =
+          |id: &'static str, label: &'static str, mode: BranchMode, cx: &mut Context<Self>| {
+            Radio::new(id)
+              .label(label)
+              .xsmall()
+              .checked(self.branch_mode == mode)
+              .on_click(cx.listener(move |this, _: &bool, window, cx| {
+                this.set_branch_mode(mode, window, cx);
+              }))
+          };
+
         let mut form = div()
           .flex()
           .flex_col()
@@ -645,23 +861,34 @@ impl Render for AddDialog {
                 .child(Select::new(&self.target_select).xsmall().w_full()),
             )
           })
-          .child(field("Worktree", "directory name", &self.worktree_name))
+          .child(field(
+            "Worktree",
+            match self.branch_mode {
+              BranchMode::New => "directory name",
+              BranchMode::Existing => "directory name, defaults to the branch",
+            },
+            &self.worktree_name,
+          ))
           .child(
-            Checkbox::new("create-branch")
-              .label("Create a new branch")
-              .xsmall()
-              .checked(self.create_branch)
-              .on_click(cx.listener(|this, checked: &bool, window, cx| {
-                this.create_branch = *checked;
-                this.error = None;
-                if *checked {
-                  window.focus(&this.branch_name.read(cx).focus_handle(cx));
-                }
-                cx.notify();
-              })),
+            div()
+              .flex()
+              .items_center()
+              .gap_4()
+              .child(mode_radio(
+                "branch-mode-new",
+                "New branch",
+                BranchMode::New,
+                cx,
+              ))
+              .child(mode_radio(
+                "branch-mode-existing",
+                "Existing branch",
+                BranchMode::Existing,
+                cx,
+              )),
           );
 
-        if self.create_branch {
+        if self.branch_mode == BranchMode::New {
           let describing = self.describing;
           let sparkle = div()
             .id("generate-branch")
@@ -701,7 +928,7 @@ impl Render for AddDialog {
                     div()
                       .text_xs()
                       .text_color(theme.text_dim)
-                      .child("git will create this branch"),
+                      .child("git will create it, defaults to the worktree name"),
                   ),
               )
               .child(
@@ -750,6 +977,74 @@ impl Render for AddDialog {
                 )
               }),
           );
+        } else {
+          let filtered = self.filtered_branches(cx);
+
+          let mut picker = div()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .child(
+              div()
+                .flex()
+                .items_center()
+                .gap_2()
+                .child(div().text_xs().text_color(theme.text_muted).child("Branch"))
+                .child(div().text_xs().text_color(theme.text_dim).child(
+                  if self.loading_branches {
+                    "reading the repository…".to_string()
+                  } else {
+                    format!("{} ready to check out", self.branches.len())
+                  },
+                )),
+            )
+            .child(
+              div()
+                .px_2()
+                .py_1()
+                .rounded_md()
+                .border_1()
+                .border_color(theme.panel_border)
+                .bg(theme.elevated)
+                .child(Input::new(&self.branch_filter).appearance(false).xsmall()),
+            );
+
+          if filtered.is_empty() {
+            if !self.loading_branches {
+              picker = picker.child(div().text_xs().text_color(theme.text_dim).child(
+                if self.branches.is_empty() {
+                  "Every branch is already checked out somewhere"
+                } else {
+                  "No branch matches"
+                },
+              ));
+            }
+          } else {
+            let height = px(BRANCH_ROW_HEIGHT * filtered.len().min(VISIBLE_BRANCHES) as f32);
+            let entity = cx.entity();
+            let rows = filtered;
+
+            picker = picker.child(
+              uniform_list("branch-list", rows.len(), move |range, _, cx| {
+                entity.update(cx, |dialog, cx| {
+                  let theme = Theme::of(cx).clone();
+                  let selected_ix = dialog.branch_selected.min(rows.len() - 1);
+
+                  range
+                    .filter_map(|ix| {
+                      let branch = rows.get(ix)?;
+
+                      Some(dialog.render_branch_row(ix, branch, ix == selected_ix, &theme, cx))
+                    })
+                    .collect()
+                })
+              })
+              .track_scroll(self.branch_scroll.clone())
+              .h(height),
+            );
+          }
+
+          form = form.child(picker);
         }
 
         form
@@ -867,9 +1162,14 @@ impl Render for AddDialog {
               .text_color(theme.text_dim)
               .child(match self.step {
                 Step::Choose => "Choose what to add to Helix".to_string(),
-                Step::Name => {
-                  format!("Creates a branch + worktree in {}", self.project_name)
-                }
+                Step::Name => match self.branch_mode {
+                  BranchMode::New => {
+                    format!("Creates a branch + worktree in {}", self.project_name)
+                  }
+                  BranchMode::Existing => {
+                    format!("Checks an existing branch out in {}", self.project_name)
+                  }
+                },
                 Step::Existing => "Type to filter worktrees found on disk".to_string(),
               }),
           ),

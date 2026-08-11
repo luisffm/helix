@@ -1102,11 +1102,11 @@ impl HelixRoot {
       AddDialogEvent::CreateWorktree {
         owner,
         name,
-        branch,
+        source,
       } => {
         this.add_dialog = None;
 
-        this.create_worktree(owner.clone(), name.clone(), branch.clone(), window, cx);
+        this.create_worktree(owner.clone(), name.clone(), source.clone(), window, cx);
         cx.notify();
       }
       AddDialogEvent::AddExistingWorktree(path) => {
@@ -1159,12 +1159,12 @@ impl HelixRoot {
     &mut self,
     owner: PathBuf,
     name: String,
-    branch: Option<String>,
+    source: helix_worktree::BranchSource,
     window: &mut Window,
     cx: &mut Context<Self>,
   ) {
     let task = cx.background_executor().spawn(async move {
-      helix_worktree::create_worktree(&owner, &name, branch.as_deref()).map(|dest| {
+      helix_worktree::create_worktree(&owner, &name, &source).map(|dest| {
         helix_state::config::add_worktree(&owner, &dest);
 
         dest

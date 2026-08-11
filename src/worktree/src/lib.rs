@@ -1,9 +1,11 @@
+pub mod branches;
 pub mod rows;
 
 use anyhow::{Context, Result};
 use helix_models::ProjectInfo;
 use std::path::{Path, PathBuf};
 
+pub use branches::{BranchRef, available_branches};
 pub use rows::{WorktreeRow, canonical_path, rows_for_projects, worktree_rows};
 
 #[derive(Clone, Debug)]
@@ -151,24 +153,45 @@ pub fn delete_worktree(repo_root: &Path, worktree: &Path) -> Result<()> {
   Ok(())
 }
 
-/// `name` becomes the worktree directory suffix. `branch` is the git branch to
-/// create; when omitted the worktree name doubles as the branch name.
-pub fn create_worktree(repo_root: &Path, name: &str, branch: Option<&str>) -> Result<PathBuf> {
+/// Which branch a new worktree checks out: a branch git still has to create, or
+/// one that already exists locally or on a remote.
+#[derive(Clone, Debug)]
+pub enum BranchSource {
+  New(Option<String>),
+  Existing(BranchRef),
+}
+
+/// `name` becomes the worktree directory suffix. For a new branch left
+/// unnamed, the worktree name doubles as the branch name.
+pub fn create_worktree(repo_root: &Path, name: &str, source: &BranchSource) -> Result<PathBuf> {
   let slug = slugify(name);
 
   if slug.is_empty() {
     anyhow::bail!("worktree name is empty");
   }
 
-  let branch: String = match branch.map(str::trim).filter(|value| !value.is_empty()) {
-    Some(branch) => slugify(branch),
-    None => slug.clone(),
-  };
+  let dest = destination(repo_root, &slug)?;
 
-  if branch.is_empty() {
-    anyhow::bail!("branch name is empty");
+  match source {
+    BranchSource::New(branch) => {
+      let branch = match branch.as_deref().map(str::trim).filter(|v| !v.is_empty()) {
+        Some(branch) => slugify(branch),
+        None => slug,
+      };
+
+      if branch.is_empty() {
+        anyhow::bail!("branch name is empty");
+      }
+
+      add_new_branch(repo_root, &dest, &branch)?;
+    }
+    BranchSource::Existing(branch) => add_existing_branch(repo_root, &dest, branch)?,
   }
 
+  Ok(dest)
+}
+
+fn destination(repo_root: &Path, slug: &str) -> Result<PathBuf> {
   let root_name = repo_root
     .file_name()
     .map(|n| n.to_string_lossy().to_string())
@@ -184,12 +207,16 @@ pub fn create_worktree(repo_root: &Path, name: &str, branch: Option<&str>) -> Re
     anyhow::bail!("destination already exists: {}", dest.display());
   }
 
+  Ok(dest)
+}
+
+fn add_new_branch(repo_root: &Path, dest: &Path, branch: &str) -> Result<()> {
   let created = std::process::Command::new("git")
     .arg("-C")
     .arg(repo_root)
     .args(["worktree", "add"])
-    .arg(&dest)
-    .args(["-b", &branch])
+    .arg(dest)
+    .args(["-b", branch])
     .output()
     .context("failed to run git")?;
 
@@ -198,8 +225,8 @@ pub fn create_worktree(repo_root: &Path, name: &str, branch: Option<&str>) -> Re
       .arg("-C")
       .arg(repo_root)
       .args(["worktree", "add"])
-      .arg(&dest)
-      .arg(&branch)
+      .arg(dest)
+      .arg(branch)
       .output()
       .context("failed to run git")?;
 
@@ -211,7 +238,36 @@ pub fn create_worktree(repo_root: &Path, name: &str, branch: Option<&str>) -> Re
     }
   }
 
-  Ok(dest)
+  Ok(())
+}
+
+fn add_existing_branch(repo_root: &Path, dest: &Path, branch: &BranchRef) -> Result<()> {
+  let mut command = std::process::Command::new("git");
+
+  command.arg("-C").arg(repo_root).args(["worktree", "add"]);
+
+  match &branch.remote {
+    Some(remote) => {
+      command
+        .args(["--track", "-b", &branch.name])
+        .arg(dest)
+        .arg(format!("{remote}/{}", branch.name));
+    }
+    None => {
+      command.arg(dest).arg(&branch.name);
+    }
+  }
+
+  let output = command.output().context("failed to run git")?;
+
+  if !output.status.success() {
+    anyhow::bail!(
+      "git worktree add failed: {}",
+      String::from_utf8_lossy(&output.stderr).trim()
+    );
+  }
+
+  Ok(())
 }
 
 fn slugify(value: &str) -> String {
