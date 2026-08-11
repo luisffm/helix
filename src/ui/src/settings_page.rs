@@ -4,8 +4,9 @@ use gpui::{
   AnyElement, App, Context, Div, Entity, EventEmitter, FocusHandle, Focusable, IntoElement,
   KeyDownEvent, ParentElement, Render, SharedString, Window, div, prelude::*, px,
 };
+use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::input::{Input, InputEvent, InputState};
-use gpui_component::{Icon, IconName};
+use gpui_component::{Icon, IconName, Selectable as _, Sizable as _};
 use std::path::PathBuf;
 
 pub enum SettingsEvent {
@@ -168,31 +169,17 @@ impl SettingsPage {
           let selected = self.blur_level == *level_id;
           let level = level_id.to_string();
 
-          div()
-            .id(SharedString::from(format!("blur-{level_id}")))
-            .px_3()
-            .py_1()
-            .rounded_md()
-            .border_1()
-            .text_sm()
-            .cursor_pointer()
-            .when(selected, |el| {
-              el.border_color(theme.active)
-                .bg(theme.elevated)
-                .text_color(theme.text)
-            })
-            .when(!selected, |el| {
-              el.border_color(theme.panel_border)
-                .text_color(theme.text_muted)
-                .hover(|s| s.bg(theme.hover))
-            })
+          Button::new(SharedString::from(format!("blur-{level_id}")))
+            .label(*label)
+            .outline()
+            .small()
+            .selected(selected)
             .on_click(cx.listener(move |this, _, _, cx| {
               this.blur_level = level.clone();
               helix_state::config::set_blur_level(&level);
               cx.emit(SettingsEvent::Changed);
               cx.notify();
             }))
-            .child(*label)
         }));
 
     let size_control = div()
@@ -200,25 +187,16 @@ impl SettingsPage {
       .items_center()
       .gap_2()
       .child(
-        div()
-          .id("font-size-minus")
-          .size(px(24.0))
-          .flex()
-          .items_center()
-          .justify_center()
-          .rounded_md()
-          .border_1()
-          .border_color(theme.panel_border)
-          .text_color(theme.text_muted)
-          .cursor_pointer()
-          .hover(|s| s.bg(theme.hover))
+        Button::new("font-size-minus")
+          .label("−")
+          .outline()
+          .with_size(px(24.0))
           .on_click(cx.listener(|this, _, _, cx| {
             this.font_size = (this.font_size - 1.0).max(9.0);
             helix_state::config::set_terminal_font_size(this.font_size);
             cx.emit(SettingsEvent::Changed);
             cx.notify();
-          }))
-          .child("−"),
+          })),
       )
       .child(
         div()
@@ -230,25 +208,16 @@ impl SettingsPage {
           .child(format!("{:.0}", self.font_size)),
       )
       .child(
-        div()
-          .id("font-size-plus")
-          .size(px(24.0))
-          .flex()
-          .items_center()
-          .justify_center()
-          .rounded_md()
-          .border_1()
-          .border_color(theme.panel_border)
-          .text_color(theme.text_muted)
-          .cursor_pointer()
-          .hover(|s| s.bg(theme.hover))
+        Button::new("font-size-plus")
+          .label("+")
+          .outline()
+          .with_size(px(24.0))
           .on_click(cx.listener(|this, _, _, cx| {
             this.font_size = (this.font_size + 1.0).min(22.0);
             helix_state::config::set_terminal_font_size(this.font_size);
             cx.emit(SettingsEvent::Changed);
             cx.notify();
-          }))
-          .child("+"),
+          })),
       );
 
     div()
@@ -353,23 +322,15 @@ impl SettingsPage {
         .gap_1()
         .children(
           [(GlyphTab::Icon, "Icon"), (GlyphTab::Emoji, "Emoji")].map(|(tab, label)| {
-            let selected = self.glyph_tab == tab;
-            div()
-              .id(SharedString::from(format!("glyph-tab-{label}")))
-              .px_3()
-              .py_1()
-              .rounded_md()
-              .text_sm()
-              .cursor_pointer()
-              .when(selected, |el| el.bg(theme.elevated).text_color(theme.text))
-              .when(!selected, |el| {
-                el.text_color(theme.text_dim).hover(|s| s.bg(theme.hover))
-              })
+            Button::new(SharedString::from(format!("glyph-tab-{label}")))
+              .label(label)
+              .ghost()
+              .small()
+              .selected(self.glyph_tab == tab)
               .on_click(cx.listener(move |this, _, _, cx| {
                 this.glyph_tab = tab;
                 cx.notify();
               }))
-              .child(label)
           }),
         );
 
