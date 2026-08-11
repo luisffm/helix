@@ -108,8 +108,6 @@ pub fn sync_component_theme(cx: &mut App) {
   // Read by the components already in use, and left at the library's own dark
   // palette until they are set here.
   colors.caret = ours.accent;
-  colors.tab_foreground = ours.text_dim;
-  colors.tab_active_foreground = ours.text;
   colors.selection = ours.term.selection;
   colors.scrollbar = Hsla::transparent_black();
   colors.scrollbar_thumb = ours.panel_border;

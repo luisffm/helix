@@ -8,10 +8,8 @@ use gpui::{
   AnyElement, App, Context, Entity, EventEmitter, FocusHandle, Focusable, Hsla, IntoElement,
   ParentElement, Render, SharedString, Window, div, prelude::*, px,
 };
-use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::menu::DropdownMenu as _;
-use gpui_component::tab::{Tab, TabBar};
-use gpui_component::{Icon, IconName, Selectable as _, Sizable as _};
+use gpui_component::{Icon, IconName};
 use helix_models::{AgentStatus, DiffBase, SessionKind};
 use std::path::PathBuf;
 use std::time::Duration;
@@ -531,56 +529,7 @@ impl Render for Workspace {
   fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
     let theme = Theme::of(cx).clone();
 
-    let entity = cx.entity().downgrade();
-    let tabs = self.tabs.iter().enumerate().map(|(ix, tab)| {
-      let title = tab.title(cx);
-      let (kind_icon, icon_color) = tab.icon(cx, &theme);
-      let preview = tab.preview;
-      let activate = entity.clone();
-      let close = entity.clone();
-
-      Tab::new()
-        .pill()
-        .selected(ix == self.active)
-        .h(px(24.0))
-        .text_xs()
-        .when(preview, |el| el.italic())
-        .prefix(
-          div()
-            .flex_none()
-            .text_color(icon_color)
-            .child(kind_icon.size_3p5()),
-        )
-        .label(title)
-        .suffix(
-          Button::new(SharedString::from(format!("tab-close-{ix}")))
-            .icon(Icon::new(IconName::Close).size_3())
-            .ghost()
-            .with_size(px(14.0))
-            .on_click(move |_, window, cx| {
-              cx.stop_propagation();
-
-              close
-                .update(cx, |workspace, cx| workspace.close_tab(ix, window, cx))
-                .ok();
-            }),
-        )
-        .on_click(move |event, window, cx| {
-          activate
-            .update(cx, |workspace, cx| {
-              if event.click_count() >= 2 {
-                if let Some(tab) = workspace.tabs.get_mut(ix) {
-                  tab.preview = false;
-                }
-              }
-
-              workspace.activate(ix, window, cx);
-            })
-            .ok();
-        })
-    });
-
-    let tab_bar = div()
+    let mut tab_bar = div()
       .id("tab-bar")
       .window_control_area(gpui::WindowControlArea::Drag)
       .flex()
@@ -590,21 +539,81 @@ impl Render for Workspace {
       .px_2()
       .gap_1()
       .border_b_1()
-      .border_color(theme.panel_border)
-      .when(!self.left_sidebar_open, |el| {
-        el.child(div().w(px(68.0)).flex_none()).child(
-          icon_button("reopen-left", IconName::PanelLeftOpen, &theme).on_click(|_, window, cx| {
-            window.dispatch_action(Box::new(helix_commands::ToggleLeftSidebar), cx);
-          }),
-        )
-      })
-      .child(
-        TabBar::new("tabs")
-          .pill()
-          .flex_none()
-          .selected_index(self.active)
-          .children(tabs),
-      )
+      .border_color(theme.panel_border);
+
+    if !self.left_sidebar_open {
+      tab_bar = tab_bar.child(div().w(px(68.0)).flex_none()).child(
+        icon_button("reopen-left", IconName::PanelLeftOpen, &theme).on_click(|_, window, cx| {
+          window.dispatch_action(Box::new(helix_commands::ToggleLeftSidebar), cx);
+        }),
+      );
+    }
+
+    let tab_bar = tab_bar
+      .children(self.tabs.iter().enumerate().map(|(ix, tab)| {
+        let is_active = ix == self.active;
+        let title = tab.title(cx);
+        let (kind_icon, icon_color) = tab.icon(cx, &theme);
+        let preview = tab.preview;
+
+        div()
+          .id(SharedString::from(format!("tab-{ix}")))
+          .flex()
+          .items_center()
+          .gap_1p5()
+          .px_2()
+          .h(px(24.0))
+          .rounded_md()
+          .border_1()
+          .cursor_pointer()
+          .when(is_active, |el| {
+            el.border_color(theme.active)
+              .bg(theme.elevated)
+              .text_color(theme.text)
+          })
+          .when(!is_active, |el| {
+            el.border_color(gpui::transparent_black())
+              .text_color(theme.text_dim)
+              .hover(|s| s.bg(theme.hover))
+          })
+          .when(preview, |el| el.italic())
+          .text_xs()
+          .on_click(
+            cx.listener(move |this, event: &gpui::ClickEvent, window, cx| {
+              if event.click_count() >= 2 {
+                if let Some(tab) = this.tabs.get_mut(ix) {
+                  tab.preview = false;
+                }
+              }
+              this.activate(ix, window, cx);
+            }),
+          )
+          .child(
+            div()
+              .flex_none()
+              .text_color(icon_color)
+              .child(kind_icon.size_3p5()),
+          )
+          .child(title)
+          .child(
+            div()
+              .id(SharedString::from(format!("tab-close-{ix}")))
+              .ml_0p5()
+              .size(px(14.0))
+              .flex()
+              .items_center()
+              .justify_center()
+              .rounded_sm()
+              .text_xs()
+              .text_color(theme.text_dim)
+              .hover(|s| s.bg(theme.hover).text_color(theme.text))
+              .on_click(cx.listener(move |this, _, window, cx| {
+                cx.stop_propagation();
+                this.close_tab(ix, window, cx);
+              }))
+              .child(Icon::new(IconName::Close).size_3()),
+          )
+      }))
       .child(
         icon_button("new-tab", IconName::Plus, &theme).dropdown_menu(|menu, _window, _cx| {
           menu
