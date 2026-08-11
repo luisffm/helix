@@ -1,9 +1,10 @@
 use crate::theme::Theme;
 use gpui::{
-  Animation, AnimationExt, Div, ElementId, Hsla, IntoElement, SharedString, Stateful,
-  Transformation, div, percentage, prelude::*, px,
+  Animation, AnimationExt, Div, ElementId, Hsla, IntoElement, SharedString, Transformation, div,
+  percentage, prelude::*, px,
 };
-use gpui_component::{Icon, IconName};
+use gpui_component::button::{Button, ButtonVariants as _};
+use gpui_component::{Icon, IconName, Sizable as _};
 use std::time::Duration;
 
 pub const HEADER_HEIGHT: f32 = 42.0;
@@ -98,25 +99,12 @@ pub fn spinner(id: impl Into<ElementId>, color: Hsla) -> impl IntoElement {
   )
 }
 
-pub fn icon_button(
-  id: impl Into<SharedString>,
-  icon: impl Into<Icon>,
-  theme: &Theme,
-) -> Stateful<Div> {
-  icon_button_base(id, theme).child(Icon::new(icon).size_3p5())
-}
-
-fn icon_button_base(id: impl Into<SharedString>, theme: &Theme) -> Stateful<Div> {
-  div()
-    .id(id.into())
-    .size(px(22.0))
-    .flex()
-    .items_center()
-    .justify_center()
-    .rounded_sm()
+pub fn icon_button(id: impl Into<SharedString>, icon: impl Into<Icon>, theme: &Theme) -> Button {
+  Button::new(id.into())
+    .icon(Icon::new(icon).size_3p5())
+    .ghost()
+    .with_size(px(22.0))
     .text_color(theme.text_muted)
-    .hover(|style| style.bg(theme.hover).text_color(theme.text))
-    .cursor_pointer()
 }
 
 pub fn elapsed_label(secs: u64) -> String {
