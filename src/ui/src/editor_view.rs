@@ -3,8 +3,9 @@ use gpui::{
   AnyElement, App, Context, Entity, EventEmitter, FocusHandle, Focusable, IntoElement,
   ParentElement, Render, SharedString, Window, div, img, prelude::*, px,
 };
+use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::input::{Input, InputEvent, InputState};
-use gpui_component::{Icon, IconName};
+use gpui_component::{Icon, IconName, Sizable as _};
 use helix_buffer::FileContent;
 use std::path::{Path, PathBuf};
 
@@ -368,34 +369,24 @@ impl EditorView {
 
     if mutation == ExternalMutation::Changed {
       banner = banner.child(
-        div()
-          .id("editor-reload")
-          .px_2()
-          .py_1()
-          .rounded_md()
-          .text_xs()
-          .cursor_pointer()
+        Button::new("editor-reload")
+          .label("Reload from disk")
+          .ghost()
+          .xsmall()
           .text_color(theme.text_muted)
-          .hover(|s| s.bg(theme.hover).text_color(theme.text))
-          .on_click(cx.listener(|this, _, window, cx| this.reload_from_disk(window, cx)))
-          .child("Reload from disk"),
+          .on_click(cx.listener(|this, _, window, cx| this.reload_from_disk(window, cx))),
       );
     }
 
     Some(
       banner
         .child(
-          div()
-            .id("editor-keep")
-            .px_2()
-            .py_1()
-            .rounded_md()
-            .text_xs()
-            .cursor_pointer()
+          Button::new("editor-keep")
+            .label("Keep my edits")
+            .ghost()
+            .xsmall()
             .text_color(theme.text_muted)
-            .hover(|s| s.bg(theme.hover).text_color(theme.text))
-            .on_click(cx.listener(|this, _, _, cx| this.keep_local_edits(cx)))
-            .child("Keep my edits"),
+            .on_click(cx.listener(|this, _, _, cx| this.keep_local_edits(cx))),
         )
         .into_any_element(),
     )

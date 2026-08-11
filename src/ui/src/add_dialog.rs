@@ -5,6 +5,7 @@ use gpui::{
   KeyDownEvent, ParentElement, Render, ScrollStrategy, SharedString, Task, UniformListScrollHandle,
   WeakEntity, Window, div, prelude::*, px, uniform_list,
 };
+use gpui_component::button::Button;
 use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::list::{List, ListDelegate, ListItem, ListState};
 use gpui_component::radio::Radio;
@@ -1126,20 +1127,11 @@ impl Render for AddDialog {
               .map(|err| div().text_xs().text_color(theme.red).child(err)),
           )
           .child(
-            div()
-              .id("create-worktree")
-              .h(px(28.0))
-              .flex()
-              .items_center()
-              .justify_center()
-              .rounded_md()
-              .bg(theme.elevated)
-              .text_xs()
-              .text_color(theme.text)
-              .cursor_pointer()
-              .hover(|s| s.bg(theme.hover))
-              .on_click(cx.listener(|this, _, _, cx| this.confirm_worktree(cx)))
-              .child("Create worktree"),
+            Button::new("create-worktree")
+              .label("Create worktree")
+              .small()
+              .w_full()
+              .on_click(cx.listener(|this, _, _, cx| this.confirm_worktree(cx))),
           )
           .into_any_element()
       }
