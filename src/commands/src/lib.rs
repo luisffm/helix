@@ -111,6 +111,8 @@ pub fn default_bindings() -> Vec<KeyBinding> {
     // anything that does not handle them falls back through to the caret.
     KeyBinding::new("up", SelectPrev, Some("Input")),
     KeyBinding::new("down", SelectNext, Some("Input")),
+    KeyBinding::new("up", SelectPrev, Some("FileTree")),
+    KeyBinding::new("down", SelectNext, Some("FileTree")),
   ];
 
   for slot in 0..SLOTS {

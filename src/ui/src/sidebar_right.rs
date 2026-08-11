@@ -3,8 +3,8 @@ use crate::file_icons;
 use crate::icons::HelixIcon;
 use crate::theme::Theme;
 use gpui::{
-  AnyElement, Context, Entity, EventEmitter, IntoElement, ParentElement, Render, SharedString,
-  Window, div, prelude::*, px, uniform_list,
+  AnyElement, Context, Entity, EventEmitter, IntoElement, ParentElement, Render, ScrollStrategy,
+  SharedString, UniformListScrollHandle, Window, div, prelude::*, px, uniform_list,
 };
 use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::{Icon, IconName, Sizable};
@@ -133,6 +133,8 @@ pub struct ContextPanel {
   rows_generation: u64,
   rows: Vec<(Rc<FileNode>, usize)>,
   matches: Vec<Rc<FileNode>>,
+  rows_scroll: UniformListScrollHandle,
+  matches_scroll: UniformListScrollHandle,
   filter_token: u64,
   filtering: bool,
   git: Option<GitSnapshot>,
@@ -170,11 +172,14 @@ impl ContextPanel {
 
     let file_filter = cx.new(|cx| InputState::new(window, cx).placeholder("Find files"));
 
-    cx.subscribe(&file_filter, |panel, _, event: &InputEvent, cx| {
-      if matches!(event, InputEvent::Change) {
-        panel.schedule_filter(cx);
-      }
-    })
+    cx.subscribe(
+      &file_filter,
+      |panel, _, event: &InputEvent, cx| match event {
+        InputEvent::Change => panel.schedule_filter(cx),
+        InputEvent::PressEnter { .. } => panel.activate_selection(cx),
+        _ => {}
+      },
+    )
     .detach();
 
     Self {
@@ -188,6 +193,8 @@ impl ContextPanel {
       rows_generation: u64::MAX,
       rows: Vec::new(),
       matches: Vec::new(),
+      rows_scroll: UniformListScrollHandle::new(),
+      matches_scroll: UniformListScrollHandle::new(),
       filter_token: 0,
       filtering: false,
       git: None,
@@ -682,6 +689,101 @@ impl ContextPanel {
     self.invalidate_rows();
   }
 
+  fn select_prev(
+    &mut self,
+    _: &helix_commands::SelectPrev,
+    _window: &mut Window,
+    cx: &mut Context<Self>,
+  ) {
+    self.step_file_selection(-1, cx);
+  }
+
+  fn select_next(
+    &mut self,
+    _: &helix_commands::SelectNext,
+    _window: &mut Window,
+    cx: &mut Context<Self>,
+  ) {
+    self.step_file_selection(1, cx);
+  }
+
+  /// The filter input usually holds the focus, so walking the file list arrives
+  /// as an action rather than a key event. Whichever list is on screen — the
+  /// tree or the filter matches — is the one that moves.
+  fn step_file_selection(&mut self, delta: isize, cx: &mut Context<Self>) {
+    if self.active != RightTab::Files {
+      cx.propagate();
+
+      return;
+    }
+
+    let filtering = !self.file_filter.read(cx).value().trim().is_empty();
+
+    let paths: Vec<&PathBuf> = if filtering {
+      self.matches.iter().map(|node| &node.path).collect()
+    } else {
+      self.rows.iter().map(|(node, _)| &node.path).collect()
+    };
+
+    if paths.is_empty() {
+      cx.propagate();
+
+      return;
+    }
+
+    let current = self
+      .selected
+      .as_ref()
+      .and_then(|selected| paths.iter().position(|path| *path == selected));
+
+    let next = match current {
+      Some(ix) => (ix + (paths.len() as isize + delta) as usize) % paths.len(),
+      None if delta > 0 => 0,
+      None => paths.len() - 1,
+    };
+
+    self.selected = Some(paths[next].clone());
+
+    let scroll = if filtering {
+      &self.matches_scroll
+    } else {
+      &self.rows_scroll
+    };
+
+    scroll.scroll_to_item(next, ScrollStrategy::Center);
+    cx.notify();
+  }
+
+  /// Enter opens the selected file, or folds the selected directory the way a
+  /// click on it would.
+  fn activate_selection(&mut self, cx: &mut Context<Self>) {
+    let Some(path) = self.selected.clone() else {
+      return;
+    };
+
+    let is_dir = self
+      .rows
+      .iter()
+      .find(|(node, _)| node.path == path)
+      .map(|(node, _)| node.is_dir)
+      .unwrap_or(false);
+
+    if is_dir {
+      if !self.expanded.insert(path.clone()) {
+        self.expanded.remove(&path);
+      }
+
+      self.invalidate_rows();
+    } else {
+      cx.emit(ContextPanelEvent::OpenFile {
+        path,
+        preview: true,
+      });
+    }
+
+    cx.notify();
+  }
+
   fn invalidate_rows(&mut self) {
     self.generation = self.generation.wrapping_add(1);
   }
@@ -980,6 +1082,7 @@ impl ContextPanel {
               .collect()
           })
         })
+        .track_scroll(self.rows_scroll.clone())
         .flex_1()
         .min_h_0()
         .px_1()
@@ -1003,6 +1106,7 @@ impl ContextPanel {
             .collect()
         })
       })
+      .track_scroll(self.matches_scroll.clone())
       .flex_1()
       .min_h_0()
       .px_1()
@@ -1010,6 +1114,9 @@ impl ContextPanel {
     };
 
     div()
+      .key_context("FileTree")
+      .on_action(cx.listener(Self::select_prev))
+      .on_action(cx.listener(Self::select_next))
       .flex_1()
       .min_h_0()
       .flex()

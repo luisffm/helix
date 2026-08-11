@@ -108,7 +108,7 @@ fn every_default_binding_parses_and_matches_itself() {
     let name = binding.action().name().to_string();
 
     let contexts: &[&str] = if binding.predicate().is_some() {
-      &["Terminal", "Editor", "Input"]
+      &["Terminal", "Editor", "Input", "FileTree"]
     } else {
       &[]
     };
