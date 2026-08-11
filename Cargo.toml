@@ -32,6 +32,7 @@ git2 = "0.21"
 ignore = "0.4"
 notify = "8"
 nucleo = "0.5"
+mimalloc = "0.1"
 rustc-hash = "2"
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
 sysinfo = { version = "0.39", default-features = false, features = ["system"] }
