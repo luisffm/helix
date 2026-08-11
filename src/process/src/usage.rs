@@ -1,6 +1,8 @@
 use helix_models::SessionKind;
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 use std::path::PathBuf;
+use std::sync::{Mutex, OnceLock};
+use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, RefreshKind, System};
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct SessionUsage {
@@ -31,38 +33,43 @@ pub struct UsageSnapshot {
 
 pub type UsageTargets = Vec<(String, PathBuf, Vec<(String, SessionKind, u32)>)>;
 
+/// CPU is only meaningful over an interval, so the process table outlives a
+/// single sample and each refresh reports the share used since the previous one.
+/// Dead processes are dropped on every refresh, which keeps the table bounded
+/// and stops it from pinning handles for processes that are already gone.
+static SYSTEM: OnceLock<Mutex<System>> = OnceLock::new();
+
+fn process_refresh() -> ProcessRefreshKind {
+  ProcessRefreshKind::nothing()
+    .with_cpu()
+    .with_memory()
+    .without_tasks()
+}
+
 pub fn sample(targets: UsageTargets) -> UsageSnapshot {
-  let Ok(output) = std::process::Command::new("ps")
-    .args(["-axo", "pid=,ppid=,rss=,pcpu="])
-    .output()
-  else {
+  let system = SYSTEM.get_or_init(|| {
+    Mutex::new(System::new_with_specifics(
+      RefreshKind::nothing().with_processes(process_refresh()),
+    ))
+  });
+
+  let Ok(mut system) = system.lock() else {
     return UsageSnapshot::default();
   };
 
-  let text = String::from_utf8_lossy(&output.stdout);
+  system.refresh_processes_specifics(ProcessesToUpdate::All, true, process_refresh());
 
-  let mut info: HashMap<u32, (f32, f32)> = HashMap::new();
-  let mut children: HashMap<u32, Vec<u32>> = HashMap::new();
-  for line in text.lines() {
-    let mut parts = line.split_whitespace();
+  let mut info: FxHashMap<u32, (f32, f32)> = FxHashMap::default();
+  let mut children: FxHashMap<u32, Vec<u32>> = FxHashMap::default();
 
-    let (Some(pid), Some(ppid), Some(rss), Some(cpu)) =
-      (parts.next(), parts.next(), parts.next(), parts.next())
-    else {
-      continue;
-    };
+  for (pid, process) in system.processes() {
+    let pid = pid.as_u32();
 
-    let (Ok(pid), Ok(ppid), Ok(rss), Ok(cpu)) = (
-      pid.parse::<u32>(),
-      ppid.parse::<u32>(),
-      rss.parse::<f32>(),
-      cpu.parse::<f32>(),
-    ) else {
-      continue;
-    };
+    info.insert(pid, (process.memory() as f32 / 1024.0, process.cpu_usage()));
 
-    info.insert(pid, (rss, cpu));
-    children.entry(ppid).or_default().push(pid);
+    if let Some(parent) = process.parent() {
+      children.entry(parent.as_u32()).or_default().push(pid);
+    }
   }
 
   let subtree = |start: u32| -> (f32, f32) {
