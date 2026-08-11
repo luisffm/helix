@@ -23,8 +23,10 @@ use helix_process::usage::{UsageSnapshot, UsageTargets, format_rss};
 use helix_worktree::{WorktreeRow, canonical_path, rows_for_projects};
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
 const RETAINED_WORKSPACES: usize = 4;
+const REVIEW_MIN_INTERVAL: Duration = Duration::from_secs(60);
 
 #[derive(Clone, Copy, PartialEq)]
 enum ResizingSide {
@@ -57,6 +59,8 @@ pub struct HelixRoot {
   resources: UsageSnapshot,
   resources_history: HashMap<PathBuf, Vec<f32>>,
   resources_open: bool,
+  reviews_busy: bool,
+  reviews_at: HashMap<PathBuf, Instant>,
   resources_expanded: std::collections::HashSet<PathBuf>,
   focus_handle: FocusHandle,
   _watcher: Option<FsWatcher>,
@@ -146,6 +150,8 @@ impl HelixRoot {
       resources: UsageSnapshot::default(),
       resources_history: HashMap::new(),
       resources_open: false,
+      reviews_busy: false,
+      reviews_at: HashMap::new(),
       resources_expanded: std::collections::HashSet::new(),
       focus_handle: cx.focus_handle(),
       _watcher: None,
@@ -407,6 +413,45 @@ impl HelixRoot {
     }
   }
 
+  /// One listing covers every branch the sidebar draws, so it is tied to
+  /// project-level refreshes rather than to watcher batches.
+  fn refresh_reviews(&mut self, owner: PathBuf, cx: &mut Context<Self>) {
+    let fresh = self
+      .reviews_at
+      .get(&owner)
+      .is_some_and(|at| at.elapsed() < REVIEW_MIN_INTERVAL);
+
+    if self.reviews_busy || fresh {
+      return;
+    }
+
+    self.reviews_busy = true;
+    self.reviews_at.insert(owner.clone(), Instant::now());
+
+    let task = cx
+      .background_executor()
+      .spawn(async move { (helix_github::review::list_for_repo(&owner, 100), owner) });
+
+    cx.spawn(async move |this, cx| {
+      let (listed, owner) = task.await;
+
+      this
+        .update(cx, |root_view, cx| {
+          root_view.reviews_busy = false;
+
+          let Ok(reviews) = listed else { return };
+
+          let states = helix_github::review::states_by_branch(reviews);
+
+          root_view.project_panel.update(cx, |panel, cx| {
+            panel.set_reviews(owner, states, cx);
+          });
+        })
+        .ok();
+    })
+    .detach();
+  }
+
   fn refresh_git(&mut self, cx: &mut Context<Self>) {
     self.refresh_git_for(None, cx);
   }
@@ -446,6 +491,10 @@ impl HelixRoot {
             panel.set_git(snapshot, cx);
             panel.refresh_files(changed.as_deref(), cx);
           });
+
+          if every_project {
+            root_view.refresh_reviews(owner, cx);
+          }
 
           cx.notify();
         })

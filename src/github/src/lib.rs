@@ -3,8 +3,10 @@ pub mod gh;
 pub mod probe;
 pub mod review;
 
-pub use eligibility::{BlockedReason, Eligibility, NextAction, ReviewLookupOutcome};
-pub use review::{CheckStatus, HostedReview, ReviewState};
+pub use eligibility::{
+  BlockedReason, Eligibility, MergeReadiness, NextAction, ReviewLookupOutcome, merge_readiness,
+};
+pub use review::{CheckStatus, HostedReview, ReviewCheck, ReviewState};
 
 #[derive(Clone, Debug)]
 pub struct PullRequestInfo {

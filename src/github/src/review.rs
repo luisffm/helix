@@ -1,6 +1,7 @@
 use crate::gh;
 use anyhow::Result;
 use serde::Deserialize;
+use std::collections::HashMap;
 use std::path::Path;
 
 const LOOKUP_FIELDS: &str = "number,title,state,url,statusCheckRollup,updatedAt,isDraft,mergeable,reviewDecision,mergeStateStatus,baseRefName,headRefName,headRefOid";
@@ -33,6 +34,13 @@ impl CheckStatus {
 }
 
 #[derive(Clone, Debug)]
+pub struct ReviewCheck {
+  pub name: String,
+  pub status: CheckStatus,
+  pub url: Option<String>,
+}
+
+#[derive(Clone, Debug)]
 pub struct HostedReview {
   pub number: u64,
   pub title: String,
@@ -43,6 +51,25 @@ pub struct HostedReview {
   pub head_ref: String,
   pub review_decision: Option<String>,
   pub conflicting: bool,
+  pub check_runs: Vec<ReviewCheck>,
+}
+
+impl HostedReview {
+  pub fn checks_running(&self) -> bool {
+    self.checks == CheckStatus::Pending
+  }
+}
+
+/// The sidebar draws one row per branch, so a listing collapses to the state
+/// of the newest review each branch has.
+pub fn states_by_branch(reviews: Vec<HostedReview>) -> HashMap<String, ReviewState> {
+  let mut states = HashMap::new();
+
+  for review in reviews {
+    states.entry(review.head_ref).or_insert(review.state);
+  }
+
+  states
 }
 
 #[derive(Deserialize)]
@@ -77,6 +104,38 @@ pub struct RawCheck {
   conclusion: Option<String>,
   #[serde(default)]
   state: Option<String>,
+  #[serde(default)]
+  name: Option<String>,
+  #[serde(default)]
+  context: Option<String>,
+  #[serde(default)]
+  workflow_name: Option<String>,
+  #[serde(default)]
+  details_url: Option<String>,
+  #[serde(default)]
+  target_url: Option<String>,
+}
+
+pub fn classify_check(check: &RawCheck) -> CheckStatus {
+  let verdict = check
+    .conclusion
+    .as_deref()
+    .or(check.state.as_deref())
+    .unwrap_or_default()
+    .to_ascii_uppercase();
+  let status = check
+    .status
+    .as_deref()
+    .unwrap_or_default()
+    .to_ascii_uppercase();
+
+  match verdict.as_str() {
+    "FAILURE" | "TIMED_OUT" | "CANCELLED" | "ACTION_REQUIRED" | "STARTUP_FAILURE" | "STALE"
+    | "ERROR" => CheckStatus::Failing,
+    "SUCCESS" | "NEUTRAL" | "SKIPPED" => CheckStatus::Passing,
+    _ if status == "COMPLETED" && !verdict.is_empty() => CheckStatus::Passing,
+    _ => CheckStatus::Pending,
+  }
 }
 
 pub fn derive_check_status(checks: &[RawCheck]) -> CheckStatus {
@@ -87,27 +146,10 @@ pub fn derive_check_status(checks: &[RawCheck]) -> CheckStatus {
   let mut pending = false;
 
   for check in checks {
-    let verdict = check
-      .conclusion
-      .as_deref()
-      .or(check.state.as_deref())
-      .unwrap_or_default()
-      .to_ascii_uppercase();
-    let status = check
-      .status
-      .as_deref()
-      .unwrap_or_default()
-      .to_ascii_uppercase();
-
-    match verdict.as_str() {
-      "FAILURE" | "TIMED_OUT" | "CANCELLED" | "ACTION_REQUIRED" | "STARTUP_FAILURE" | "STALE"
-      | "ERROR" => return CheckStatus::Failing,
-      "SUCCESS" | "NEUTRAL" | "SKIPPED" => {}
-      _ => {
-        if status != "COMPLETED" || verdict.is_empty() {
-          pending = true;
-        }
-      }
+    match classify_check(check) {
+      CheckStatus::Failing => return CheckStatus::Failing,
+      CheckStatus::Pending => pending = true,
+      _ => {}
     }
   }
 
@@ -118,7 +160,30 @@ pub fn derive_check_status(checks: &[RawCheck]) -> CheckStatus {
   }
 }
 
-fn map(raw: RawReview) -> HostedReview {
+pub fn check_runs(checks: &[RawCheck]) -> Vec<ReviewCheck> {
+  checks
+    .iter()
+    .map(|check| ReviewCheck {
+      name: check
+        .name
+        .as_deref()
+        .or(check.context.as_deref())
+        .or(check.workflow_name.as_deref())
+        .unwrap_or("check")
+        .to_string(),
+      status: classify_check(check),
+      url: check
+        .details_url
+        .clone()
+        .or_else(|| check.target_url.clone())
+        .filter(|url| !url.is_empty()),
+    })
+    .collect()
+}
+
+fn map(mut raw: RawReview) -> HostedReview {
+  let rollup = raw.status_check_rollup.take().unwrap_or_default();
+
   let state = match raw.state.to_ascii_uppercase().as_str() {
     "MERGED" => ReviewState::Merged,
     "CLOSED" => ReviewState::Closed,
@@ -134,7 +199,8 @@ fn map(raw: RawReview) -> HostedReview {
     title: raw.title,
     url: raw.url,
     state,
-    checks: derive_check_status(raw.status_check_rollup.as_deref().unwrap_or_default()),
+    checks: derive_check_status(&rollup),
+    check_runs: check_runs(&rollup),
     base_ref: raw.base_ref_name,
     head_ref: raw.head_ref_name,
     review_decision: raw.review_decision.filter(|value| !value.is_empty()),
@@ -162,6 +228,36 @@ pub fn for_branch(cwd: &Path, branch: &str) -> Result<Option<HostedReview>> {
   let raws: Vec<RawReview> = serde_json::from_str(output.trim())?;
 
   Ok(raws.into_iter().next().map(map))
+}
+
+/// One listing per repository instead of one lookup per worktree: the sidebar
+/// needs a state for every branch it draws, and each gh call is a subprocess
+/// plus a round trip.
+pub fn list_for_repo(cwd: &Path, limit: usize) -> Result<Vec<HostedReview>> {
+  let limit = limit.to_string();
+  let output = gh::run(
+    cwd,
+    &[
+      "pr",
+      "list",
+      "--state",
+      "all",
+      "--limit",
+      &limit,
+      "--json",
+      LOOKUP_FIELDS,
+    ],
+  )?;
+
+  let raws: Vec<RawReview> = serde_json::from_str(output.trim())?;
+
+  Ok(raws.into_iter().map(map).collect())
+}
+
+pub fn merge(cwd: &Path, number: u64) -> Result<()> {
+  gh::run(cwd, &["pr", "merge", &number.to_string(), "--merge"])?;
+
+  Ok(())
 }
 
 pub fn create(
@@ -226,7 +322,51 @@ mod tests {
       status: status.map(str::to_string),
       conclusion: conclusion.map(str::to_string),
       state: None,
+      name: None,
+      context: None,
+      workflow_name: None,
+      details_url: None,
+      target_url: None,
     }
+  }
+
+  fn review(head_ref: &str, state: ReviewState) -> HostedReview {
+    HostedReview {
+      number: 1,
+      title: String::new(),
+      url: String::new(),
+      state,
+      checks: CheckStatus::None,
+      base_ref: "main".to_string(),
+      head_ref: head_ref.to_string(),
+      review_decision: None,
+      conflicting: false,
+      check_runs: Vec::new(),
+    }
+  }
+
+  #[test]
+  fn a_branch_keeps_the_first_review_listed() {
+    let states = states_by_branch(vec![
+      review("feature", ReviewState::Open),
+      review("feature", ReviewState::Closed),
+      review("other", ReviewState::Merged),
+    ]);
+
+    assert_eq!(states.get("feature"), Some(&ReviewState::Open));
+    assert_eq!(states.get("other"), Some(&ReviewState::Merged));
+  }
+
+  #[test]
+  fn a_running_suite_is_the_only_thing_worth_polling() {
+    let mut pending = review("feature", ReviewState::Open);
+    pending.checks = CheckStatus::Pending;
+
+    assert!(pending.checks_running());
+
+    pending.checks = CheckStatus::Passing;
+
+    assert!(!pending.checks_running());
   }
 
   #[test]
@@ -249,6 +389,25 @@ mod tests {
     let checks = [check(Some("IN_PROGRESS"), None)];
 
     assert_eq!(derive_check_status(&checks), CheckStatus::Pending);
+  }
+
+  #[test]
+  fn a_run_falls_back_to_its_context_for_a_name() {
+    let mut raw = check(Some("COMPLETED"), Some("SUCCESS"));
+    raw.context = Some("ci/circleci".to_string());
+
+    let runs = check_runs(&[raw]);
+
+    assert_eq!(runs[0].name, "ci/circleci");
+    assert_eq!(runs[0].status, CheckStatus::Passing);
+  }
+
+  #[test]
+  fn a_run_without_any_label_still_lists() {
+    let runs = check_runs(&[check(Some("IN_PROGRESS"), None)]);
+
+    assert_eq!(runs[0].name, "check");
+    assert_eq!(runs[0].status, CheckStatus::Pending);
   }
 
   #[test]

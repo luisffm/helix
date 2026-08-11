@@ -30,6 +30,30 @@ Before adding a dependency or an abstraction, check what it costs at runtime and
 in binary size. Measure before and after; a change that cannot be measured is not
 a performance change.
 
+Crate Boundaries
+
+Every crate under src/ owns one subject and nothing else. A crate never absorbs
+work that belongs to another just because that was the shorter path from where
+the code happened to be written.
+
+helix-ui draws and nothing more. It maps domain values to colours, icons,
+labels and layout, and it routes input. It never decides. Whether a pull request
+can be merged, whether a branch is eligible for review, how a rollup of checks
+collapses into one verdict, how a listing folds into a per-branch map: all of
+that is domain logic and lives in the crate that owns the subject.
+
+The test is whether the rule survives without a window. If a decision would
+still be true in a headless run, it belongs in a domain crate, behind a name,
+with tests. If the answer changes when the theme or the layout changes, it
+belongs in helix-ui.
+
+Domain crates do not reach the other way either. helix-git, helix-github,
+helix-terminal, helix-worktree and helix-state depend on gpui for nothing. They
+return plain values and let the UI decide how to draw them.
+
+A helper placed in the wrong crate is a defect even when it compiles and the
+tests pass. Move it rather than duplicating it.
+
 Code Style
 Rust
 

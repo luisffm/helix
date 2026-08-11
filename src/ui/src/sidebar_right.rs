@@ -11,7 +11,9 @@ use gpui_component::{Icon, IconName, Sizable};
 use helix_filesystem::scan::{FileNode, scan_dir, scan_matches};
 use helix_git::IgnoreProbe;
 use helix_git::ops::{GitAction, IndexOp, perform_remote};
-use helix_github::{BlockedReason, Eligibility, HostedReview, NextAction};
+use helix_github::{
+  BlockedReason, CheckStatus, Eligibility, HostedReview, NextAction, ReviewCheck, merge_readiness,
+};
 use helix_models::{DiffBase, GitFileKind, GitFileStatus, GitSnapshot};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -19,6 +21,7 @@ use std::rc::Rc;
 use std::time::Duration;
 
 const ROW_HEIGHT: f32 = 24.0;
+const CHECK_POLL_INTERVAL: Duration = Duration::from_secs(30);
 const INDENT: f32 = 16.0;
 const BASE_PAD: f32 = 8.0;
 const MAX_ROWS: usize = 2000;
@@ -149,6 +152,10 @@ pub struct ContextPanel {
   pr: Option<HostedReview>,
   pr_eligibility: Option<Eligibility>,
   pr_busy: bool,
+  pr_error: Option<String>,
+  merge_armed: bool,
+  merge_busy: bool,
+  checks_polling: bool,
 }
 
 impl EventEmitter<ContextPanelEvent> for ContextPanel {}
@@ -200,6 +207,10 @@ impl ContextPanel {
       pr: None,
       pr_eligibility: None,
       pr_busy: false,
+      pr_error: None,
+      merge_armed: false,
+      merge_busy: false,
+      checks_polling: false,
     }
   }
 
@@ -485,6 +496,77 @@ impl ContextPanel {
       .detach();
   }
 
+  fn checks_pending(&self) -> bool {
+    self.active == RightTab::Pr && self.pr.as_ref().is_some_and(HostedReview::checks_running)
+  }
+
+  /// A running suite is the only thing worth re-polling for, so the timer only
+  /// exists while one is running and stops itself once the rollup settles.
+  fn schedule_check_poll(&mut self, cx: &mut Context<Self>) {
+    if self.checks_polling || !self.checks_pending() {
+      return;
+    }
+
+    self.checks_polling = true;
+
+    cx.spawn(async move |this, cx| {
+      loop {
+        cx.background_executor().timer(CHECK_POLL_INTERVAL).await;
+
+        let polled = this.update(cx, |panel, cx| {
+          if !panel.checks_pending() {
+            panel.checks_polling = false;
+
+            return false;
+          }
+
+          panel.refresh_pull_request(cx);
+
+          true
+        });
+
+        if !matches!(polled, Ok(true)) {
+          break;
+        }
+      }
+    })
+    .detach();
+  }
+
+  fn merge_pull_request(&mut self, cx: &mut Context<Self>) {
+    if self.merge_busy {
+      return;
+    }
+
+    let Some(number) = self.pr.as_ref().map(|review| review.number) else {
+      return;
+    };
+
+    self.merge_busy = true;
+    self.merge_armed = false;
+    self.pr_error = None;
+
+    let root = self.root.clone();
+
+    let task = cx
+      .background_executor()
+      .spawn(async move { helix_github::review::merge(&root, number) });
+
+    cx.spawn(async move |this, cx| {
+      let result = task.await;
+
+      this
+        .update(cx, |panel, cx| {
+          panel.merge_busy = false;
+          panel.pr_error = result.err().map(|err| err.to_string());
+
+          panel.refresh_pull_request(cx);
+        })
+        .ok();
+    })
+    .detach();
+  }
+
   pub fn refresh_pull_request(&mut self, cx: &mut Context<Self>) {
     if self.pr_busy {
       return;
@@ -511,7 +593,16 @@ impl ContextPanel {
         .update(cx, |panel, cx| {
           panel.pr_busy = false;
           panel.pr_eligibility = Some(eligibility);
+
+          if panel.pr.as_ref().map(|current| current.number)
+            != review.as_ref().map(|next| next.number)
+          {
+            panel.merge_armed = false;
+          }
+
           panel.pr = review;
+
+          panel.schedule_check_poll(cx);
 
           cx.notify();
         })
@@ -1920,6 +2011,17 @@ impl ContextPanel {
             .text_color(theme.text_dim)
             .child(format!("{} → {}", review.head_ref, review.base_ref)),
         );
+      if !review.check_runs.is_empty() {
+        panel = panel.child(
+          div().flex().flex_col().gap_0p5().children(
+            review
+              .check_runs
+              .iter()
+              .enumerate()
+              .map(|(ix, run)| self.render_check_run(ix, run, theme, cx)),
+          ),
+        );
+      }
       if let Some(decision) = review.review_decision.clone() {
         panel = panel.child(div().text_color(theme.text_muted).child(decision));
       }
@@ -1932,6 +2034,14 @@ impl ContextPanel {
           .overflow_hidden()
           .child(review.url.clone()),
       );
+
+      if let Some(button) = self.render_merge_button(&review, theme, cx) {
+        panel = panel.child(button);
+      }
+    }
+
+    if let Some(error) = &self.pr_error {
+      panel = panel.child(div().text_color(theme.red).child(error.clone()));
     }
 
     match &self.pr_eligibility {
@@ -1981,6 +2091,118 @@ impl ContextPanel {
     }
 
     panel.into_any_element()
+  }
+
+  fn render_check_run(
+    &self,
+    ix: usize,
+    run: &ReviewCheck,
+    theme: &Theme,
+    cx: &mut Context<Self>,
+  ) -> AnyElement {
+    let color = check_color(run.status, theme);
+    let url = run.url.clone();
+
+    let mut row = div()
+      .id(SharedString::from(format!("pr-check-{ix}")))
+      .flex()
+      .items_center()
+      .gap_1p5()
+      .h(px(20.0))
+      .px_1()
+      .rounded_sm();
+
+    row = match run.status {
+      CheckStatus::Pending => row.child(spinner(
+        SharedString::from(format!("pr-check-spin-{ix}")),
+        color,
+      )),
+      _ => row.child(
+        div()
+          .flex_none()
+          .text_color(color)
+          .child(Icon::new(check_icon(run.status)).size_3()),
+      ),
+    };
+
+    row
+      .child(
+        div()
+          .flex_1()
+          .min_w_0()
+          .overflow_hidden()
+          .whitespace_nowrap()
+          .text_ellipsis()
+          .text_color(theme.text_muted)
+          .child(run.name.clone()),
+      )
+      .when_some(url, |el, url| {
+        el.cursor_pointer()
+          .hover(|s| s.bg(theme.hover))
+          .on_click(cx.listener(move |_, _, _, cx| {
+            let url = url.clone();
+
+            cx.background_executor()
+              .spawn(async move { helix_process::open_url(&url) })
+              .detach();
+          }))
+      })
+      .into_any_element()
+  }
+
+  fn render_merge_button(
+    &self,
+    review: &HostedReview,
+    theme: &Theme,
+    cx: &mut Context<Self>,
+  ) -> Option<AnyElement> {
+    let readiness = merge_readiness(review)?;
+    let ready = readiness.is_ready();
+    let label = if self.merge_busy {
+      "Merging…"
+    } else if self.merge_armed {
+      "Confirm merge"
+    } else {
+      readiness.label()
+    };
+
+    let mut button = div()
+      .id("pr-merge")
+      .h(px(26.0))
+      .px_3()
+      .flex()
+      .items_center()
+      .justify_center()
+      .gap_1p5()
+      .rounded_md();
+
+    button = if ready && !self.merge_busy {
+      button
+        .bg(if self.merge_armed {
+          theme.yellow
+        } else {
+          theme.green
+        })
+        .text_color(theme.bg)
+        .cursor_pointer()
+        .on_click(cx.listener(|this, _, _, cx| {
+          if this.merge_armed {
+            this.merge_pull_request(cx);
+          } else {
+            this.merge_armed = true;
+          }
+
+          cx.notify();
+        }))
+    } else {
+      button.bg(theme.elevated).text_color(theme.text_dim)
+    };
+
+    if self.merge_busy {
+      button = button.child(spinner("pr-merge-spin", theme.text_dim));
+    }
+
+    Some(button.child(label).into_any_element())
   }
 
   fn render_pr_toolbar(&self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
@@ -2100,6 +2322,22 @@ impl ContextPanel {
   }
 }
 
+fn check_color(status: CheckStatus, theme: &Theme) -> gpui::Hsla {
+  match status {
+    CheckStatus::Passing => theme.green,
+    CheckStatus::Failing => theme.red,
+    CheckStatus::Pending => theme.yellow,
+    CheckStatus::None => theme.text_dim,
+  }
+}
+
+fn check_icon(status: CheckStatus) -> IconName {
+  match status {
+    CheckStatus::Failing => IconName::CircleX,
+    _ => IconName::CircleCheck,
+  }
+}
+
 fn primary_action_label(action: NextAction) -> Option<&'static str> {
   match action {
     NextAction::InstallGh => None,
@@ -2155,8 +2393,13 @@ impl Render for ContextPanel {
               })
               .on_click(cx.listener(move |this, _, _, cx| {
                 this.active = tab;
-                if tab == RightTab::Pr && this.pr_eligibility.is_none() {
-                  this.refresh_pull_request(cx);
+                this.merge_armed = false;
+                if tab == RightTab::Pr {
+                  if this.pr_eligibility.is_none() {
+                    this.refresh_pull_request(cx);
+                  }
+
+                  this.schedule_check_poll(cx);
                 }
                 cx.notify();
               }))

@@ -1,4 +1,4 @@
-use crate::review::HostedReview;
+use crate::review::{CheckStatus, HostedReview, ReviewState};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ReviewLookupOutcome {
@@ -42,6 +42,47 @@ impl BlockedReason {
       }
     }
   }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum MergeReadiness {
+  Ready,
+  ChecksRunning,
+  ChecksFailing,
+  Conflicting,
+}
+
+impl MergeReadiness {
+  pub fn is_ready(&self) -> bool {
+    matches!(self, MergeReadiness::Ready)
+  }
+
+  pub fn label(&self) -> &'static str {
+    match self {
+      MergeReadiness::Ready => "Merge pull request",
+      MergeReadiness::ChecksRunning => "Waiting on checks",
+      MergeReadiness::ChecksFailing => "Checks failing",
+      MergeReadiness::Conflicting => "Resolve conflicts first",
+    }
+  }
+}
+
+/// A closed or merged review has nothing left to decide, so it has no
+/// readiness at all rather than a blocked one.
+pub fn merge_readiness(review: &HostedReview) -> Option<MergeReadiness> {
+  if review.state != ReviewState::Open {
+    return None;
+  }
+
+  if review.conflicting {
+    return Some(MergeReadiness::Conflicting);
+  }
+
+  Some(match review.checks {
+    CheckStatus::Failing => MergeReadiness::ChecksFailing,
+    CheckStatus::Pending => MergeReadiness::ChecksRunning,
+    CheckStatus::Passing | CheckStatus::None => MergeReadiness::Ready,
+  })
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -169,6 +210,72 @@ mod tests {
       behind: 0,
       commits_ahead_of_base: 3,
     }
+  }
+
+  fn open_review() -> HostedReview {
+    HostedReview {
+      number: 7,
+      title: "feat: ship it".to_string(),
+      url: "https://example.test/pull/7".to_string(),
+      state: ReviewState::Open,
+      checks: CheckStatus::Passing,
+      base_ref: "main".to_string(),
+      head_ref: "feature".to_string(),
+      review_decision: None,
+      conflicting: false,
+      check_runs: Vec::new(),
+    }
+  }
+
+  #[test]
+  fn a_passing_open_review_is_ready() {
+    assert_eq!(merge_readiness(&open_review()), Some(MergeReadiness::Ready));
+  }
+
+  #[test]
+  fn a_review_without_checks_is_ready() {
+    let mut review = open_review();
+    review.checks = CheckStatus::None;
+
+    assert_eq!(merge_readiness(&review), Some(MergeReadiness::Ready));
+  }
+
+  #[test]
+  fn running_and_failing_checks_block_the_merge() {
+    let mut review = open_review();
+    review.checks = CheckStatus::Pending;
+
+    assert_eq!(
+      merge_readiness(&review),
+      Some(MergeReadiness::ChecksRunning)
+    );
+
+    review.checks = CheckStatus::Failing;
+
+    assert_eq!(
+      merge_readiness(&review),
+      Some(MergeReadiness::ChecksFailing)
+    );
+  }
+
+  #[test]
+  fn conflicts_outrank_a_green_suite() {
+    let mut review = open_review();
+    review.conflicting = true;
+
+    assert_eq!(merge_readiness(&review), Some(MergeReadiness::Conflicting));
+  }
+
+  #[test]
+  fn a_merged_review_has_no_readiness() {
+    let mut review = open_review();
+    review.state = ReviewState::Merged;
+
+    assert_eq!(merge_readiness(&review), None);
+
+    review.state = ReviewState::Closed;
+
+    assert_eq!(merge_readiness(&review), None);
   }
 
   #[test]

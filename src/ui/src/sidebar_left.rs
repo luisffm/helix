@@ -12,7 +12,7 @@ use helix_commands::{
   CopyPathAction, DeleteWorktreeAction, EditWorktreeAction, OpenInFinderAction, OpenInZedAction,
   OpenProjectSettingsAction, RemoveProjectAction, RemoveWorktreeAction,
 };
-use helix_github::short_ref;
+use helix_github::{ReviewState, short_ref};
 use helix_models::AgentStatus;
 use helix_models::{GitSnapshot, ProjectInfo, SessionKind};
 use helix_worktree::{WorktreeRow, canonical_path};
@@ -46,6 +46,15 @@ fn agent_status_visual(status: AgentStatus, theme: &Theme) -> (IconName, gpui::H
   }
 }
 
+fn review_color(state: Option<ReviewState>, theme: &Theme) -> gpui::Hsla {
+  match state {
+    Some(ReviewState::Open) => theme.green,
+    Some(ReviewState::Merged) => theme.purple,
+    Some(ReviewState::Closed) => theme.red,
+    Some(ReviewState::Draft) | None => theme.text_dim,
+  }
+}
+
 fn agent_description(status: AgentStatus) -> &'static str {
   match status {
     AgentStatus::Running => "Working…",
@@ -73,6 +82,7 @@ pub struct ProjectPanel {
   observed: HashSet<EntityId>,
   expanded: HashSet<PathBuf>,
   closing: HashSet<PathBuf>,
+  reviews: HashMap<PathBuf, HashMap<String, ReviewState>>,
 }
 
 impl EventEmitter<ProjectPanelEvent> for ProjectPanel {}
@@ -152,6 +162,7 @@ impl ProjectPanel {
       observed: HashSet::new(),
       expanded,
       closing: HashSet::new(),
+      reviews: HashMap::new(),
     }
   }
 
@@ -204,6 +215,21 @@ impl ProjectPanel {
       self.closing.remove(&root);
       self.expanded.insert(root);
     }
+
+    cx.notify();
+  }
+
+  pub fn set_reviews(
+    &mut self,
+    owner: PathBuf,
+    states: HashMap<String, ReviewState>,
+    cx: &mut Context<Self>,
+  ) {
+    if self.reviews.get(&owner) == Some(&states) {
+      return;
+    }
+
+    self.reviews.insert(owner, states);
 
     cx.notify();
   }
@@ -512,11 +538,14 @@ impl Render for ProjectPanel {
           .unwrap_or_else(|| wt.branch.clone());
         let is_active_card = row.canonical == active_canonical;
         let workspace = self.workspaces.get(&row.canonical).cloned();
-        let icon_color = if is_active_card {
-          theme.green
-        } else {
-          theme.purple
-        };
+        let icon_color = review_color(
+          self
+            .reviews
+            .get(&project_root)
+            .and_then(|states| states.get(&wt.branch))
+            .copied(),
+          &theme,
+        );
 
         let any_running = workspace.as_ref().is_some_and(|ws| {
           ws.read(cx).terminals().any(|(_, view)| {
