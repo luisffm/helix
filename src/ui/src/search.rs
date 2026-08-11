@@ -1,11 +1,14 @@
 use crate::theme::Theme;
 use gpui::{
-  App, Context, EventEmitter, FocusHandle, Focusable, IntoElement, KeyDownEvent, ParentElement,
-  Render, SharedString, Window, div, prelude::*, px,
+  AnyElement, App, Context, EventEmitter, FocusHandle, Focusable, IntoElement, KeyDownEvent,
+  ParentElement, Render, ScrollStrategy, SharedString, UniformListScrollHandle, Window, div,
+  prelude::*, px, uniform_list,
 };
 use gpui_component::{Icon, IconName};
 use helix_fuzzy::Ranker;
 use std::path::PathBuf;
+
+const ROW_HEIGHT: f32 = 34.0;
 
 #[derive(Clone, Debug)]
 pub enum SearchTarget {
@@ -61,10 +64,21 @@ pub enum SearchEvent {
   Selected(SearchTarget),
 }
 
+/// The list mixes section headers with results, and `uniform_list` needs one
+/// height for every row, so both are laid out as rows of `ROW_HEIGHT`.
+#[derive(Clone, Copy)]
+enum Row {
+  Header(&'static str),
+  Result(usize),
+}
+
 pub struct SearchDialog {
   items: Vec<SearchItem>,
   haystacks: Vec<String>,
   matches: Vec<usize>,
+  rows: Vec<Row>,
+  match_rows: Vec<usize>,
+  scroll: UniformListScrollHandle,
   ranker: Ranker,
   query: String,
   selected: usize,
@@ -82,17 +96,23 @@ impl Focusable for SearchDialog {
 impl SearchDialog {
   pub fn new(items: Vec<SearchItem>, cx: &mut Context<Self>) -> Self {
     let haystacks = items.iter().map(haystack_of).collect();
-    let matches = (0..items.len()).collect();
 
-    Self {
+    let mut dialog = Self {
       items,
       haystacks,
-      matches,
+      matches: Vec::new(),
+      rows: Vec::new(),
+      match_rows: Vec::new(),
+      scroll: UniformListScrollHandle::new(),
       ranker: Ranker::new(),
       query: String::new(),
       selected: 0,
       focus_handle: cx.focus_handle(),
-    }
+    };
+
+    dialog.refresh_matches();
+
+    dialog
   }
 
   /// Matching runs over the prebuilt haystacks and yields indices, so a
@@ -108,6 +128,119 @@ impl SearchDialog {
     self
       .matches
       .sort_by_key(|ix| self.items[*ix].target.section_order());
+
+    self.rebuild_rows();
+  }
+
+  fn rebuild_rows(&mut self) {
+    self.rows.clear();
+    self.match_rows.clear();
+
+    let mut last_section = "";
+
+    for (position, ix) in self.matches.iter().enumerate() {
+      let section = self.items[*ix].target.section();
+
+      if section != last_section {
+        last_section = section;
+
+        self.rows.push(Row::Header(section));
+      }
+
+      self.match_rows.push(self.rows.len());
+      self.rows.push(Row::Result(position));
+    }
+  }
+
+  fn render_row(
+    &self,
+    row: Row,
+    selected: usize,
+    theme: &Theme,
+    cx: &mut Context<Self>,
+  ) -> AnyElement {
+    let position = match row {
+      Row::Header(section) => {
+        return div()
+          .flex()
+          .items_center()
+          .h(px(ROW_HEIGHT))
+          .px_3()
+          .text_xs()
+          .text_color(theme.text_dim)
+          .child(section)
+          .into_any_element();
+      }
+      Row::Result(position) => position,
+    };
+
+    let Some(item) = self
+      .matches
+      .get(position)
+      .and_then(|ix| self.items.get(*ix))
+    else {
+      return div().h(px(ROW_HEIGHT)).into_any_element();
+    };
+
+    let is_selected = position == selected;
+    let target = item.target.clone();
+
+    div()
+      .id(SharedString::from(format!("search-item-{position}")))
+      .flex()
+      .items_center()
+      .gap_2()
+      .mx_2()
+      .px_2()
+      .h(px(ROW_HEIGHT))
+      .rounded_md()
+      .cursor_pointer()
+      .when(is_selected, |el| {
+        el.bg(theme.elevated).border_1().border_color(theme.active)
+      })
+      .when(!is_selected, |el| el.hover(|s| s.bg(theme.hover)))
+      .on_click(cx.listener(move |_, _, _, cx| {
+        cx.emit(SearchEvent::Selected(target.clone()));
+      }))
+      .child(
+        div()
+          .flex_none()
+          .text_color(theme.text_dim)
+          .child(Icon::new(item.target.icon()).size_4()),
+      )
+      .child(
+        div()
+          .text_sm()
+          .text_color(theme.text)
+          .child(item.label.clone()),
+      )
+      .child(
+        div()
+          .flex_1()
+          .text_xs()
+          .text_color(theme.text_dim)
+          .overflow_hidden()
+          .child(item.detail.clone()),
+      )
+      .child(
+        div()
+          .flex_none()
+          .px_1p5()
+          .py_0p5()
+          .rounded_sm()
+          .border_1()
+          .border_color(theme.panel_border)
+          .text_xs()
+          .text_color(theme.text_muted)
+          .child(item.badge.clone()),
+      )
+      .into_any_element()
+  }
+
+  fn reveal_selection(&mut self) {
+    if let Some(row) = self.match_rows.get(self.selected) {
+      self.scroll.scroll_to_item(*row, ScrollStrategy::Center);
+    }
   }
 
   fn on_key_down(&mut self, event: &KeyDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
@@ -132,6 +265,7 @@ impl SearchDialog {
       "up" => {
         if count > 0 {
           self.selected = (self.selected + count - 1) % count;
+          self.reveal_selection();
         }
 
         cx.notify();
@@ -141,6 +275,7 @@ impl SearchDialog {
       "down" => {
         if count > 0 {
           self.selected = (self.selected + 1) % count;
+          self.reveal_selection();
         }
 
         cx.notify();
@@ -215,99 +350,33 @@ impl Render for SearchDialog {
       })
       .child(div().w(px(2.0)).h(px(16.0)).bg(theme.accent).rounded_sm());
 
-    let mut list = div()
-      .id("search-results")
+    let list: AnyElement = if self.rows.is_empty() {
+      div()
+        .flex_1()
+        .p_4()
+        .text_sm()
+        .text_color(theme.text_dim)
+        .child("No results")
+        .into_any_element()
+    } else {
+      let rows = self.rows.clone();
+      let entity = cx.entity();
+
+      uniform_list("search-results", rows.len(), move |range, _, cx| {
+        entity.update(cx, |dialog, cx| {
+          let theme = Theme::of(cx).clone();
+
+          range
+            .filter_map(|ix| Some(dialog.render_row(*rows.get(ix)?, selected, &theme, cx)))
+            .collect()
+        })
+      })
+      .track_scroll(self.scroll.clone())
       .flex_1()
       .min_h_0()
-      .overflow_y_scroll()
-      .flex()
-      .flex_col()
-      .py_1();
-
-    let mut last_section = "";
-    for (ix, item_ix) in self.matches.iter().enumerate() {
-      let item = &self.items[*item_ix];
-      let section = item.target.section();
-
-      if section != last_section {
-        last_section = section;
-
-        list = list.child(
-          div()
-            .px_3()
-            .pt_2()
-            .pb_1()
-            .text_xs()
-            .text_color(theme.text_dim)
-            .child(SharedString::from(section.to_string())),
-        );
-      }
-
-      let is_selected = ix == selected;
-      let target = item.target.clone();
-
-      list = list.child(
-        div()
-          .id(SharedString::from(format!("search-item-{ix}")))
-          .flex()
-          .items_center()
-          .gap_2()
-          .mx_2()
-          .px_2()
-          .h(px(34.0))
-          .rounded_md()
-          .cursor_pointer()
-          .when(is_selected, |el| {
-            el.bg(theme.elevated).border_1().border_color(theme.active)
-          })
-          .when(!is_selected, |el| el.hover(|s| s.bg(theme.hover)))
-          .on_click(cx.listener(move |_, _, _, cx| {
-            cx.emit(SearchEvent::Selected(target.clone()));
-          }))
-          .child(
-            div()
-              .flex_none()
-              .text_color(theme.text_dim)
-              .child(Icon::new(item.target.icon()).size_4()),
-          )
-          .child(
-            div()
-              .text_sm()
-              .text_color(theme.text)
-              .child(item.label.clone()),
-          )
-          .child(
-            div()
-              .flex_1()
-              .text_xs()
-              .text_color(theme.text_dim)
-              .overflow_hidden()
-              .child(item.detail.clone()),
-          )
-          .child(
-            div()
-              .flex_none()
-              .px_1p5()
-              .py_0p5()
-              .rounded_sm()
-              .border_1()
-              .border_color(theme.panel_border)
-              .text_xs()
-              .text_color(theme.text_muted)
-              .child(item.badge.clone()),
-          ),
-      );
-    }
-
-    if self.matches.is_empty() {
-      list = list.child(
-        div()
-          .p_4()
-          .text_sm()
-          .text_color(theme.text_dim)
-          .child("No results"),
-      );
-    }
+      .py_1()
+      .into_any_element()
+    };
 
     let hint = |key: &'static str, action: &'static str| {
       div()
