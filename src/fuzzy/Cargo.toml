@@ -1,0 +1,7 @@
+[package]
+name = "helix-fuzzy"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+nucleo.workspace = true

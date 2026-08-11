@@ -875,11 +875,9 @@ impl ContextPanel {
       let found = cx
         .background_executor()
         .spawn(async move {
-          let needle = query.to_lowercase();
-          let by_path = needle.contains('/');
           let probe = IgnoreProbe::open(&root);
 
-          scan_matches(&root, &needle, by_path, show_dotfiles, &|path, is_dir| {
+          scan_matches(&root, &query, show_dotfiles, &|path, is_dir| {
             probe
               .as_ref()
               .is_some_and(|probe| probe.is_ignored(path, is_dir))

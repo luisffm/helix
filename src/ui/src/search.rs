@@ -1,10 +1,10 @@
-use crate::components::query_matches;
 use crate::theme::Theme;
 use gpui::{
   App, Context, EventEmitter, FocusHandle, Focusable, IntoElement, KeyDownEvent, ParentElement,
   Render, SharedString, Window, div, prelude::*, px,
 };
 use gpui_component::{Icon, IconName};
+use helix_fuzzy::Ranker;
 use std::path::PathBuf;
 
 #[derive(Clone, Debug)]
@@ -23,6 +23,17 @@ impl SearchTarget {
       SearchTarget::Tab(_) => "OPEN TABS",
       SearchTarget::Project(_) => "PROJECTS",
       SearchTarget::NewTerminal | SearchTarget::NewClaude => "ACTIONS",
+    }
+  }
+
+  /// Ranking reorders items by score, so the section a row belongs to has to
+  /// keep its place explicitly or the headers would repeat down the list.
+  fn section_order(&self) -> u8 {
+    match self {
+      SearchTarget::Worktree(_) => 0,
+      SearchTarget::Tab(_) => 1,
+      SearchTarget::Project(_) => 2,
+      SearchTarget::NewTerminal | SearchTarget::NewClaude => 3,
     }
   }
 
@@ -52,6 +63,9 @@ pub enum SearchEvent {
 
 pub struct SearchDialog {
   items: Vec<SearchItem>,
+  haystacks: Vec<String>,
+  matches: Vec<usize>,
+  ranker: Ranker,
   query: String,
   selected: usize,
   focus_handle: FocusHandle,
@@ -67,31 +81,37 @@ impl Focusable for SearchDialog {
 
 impl SearchDialog {
   pub fn new(items: Vec<SearchItem>, cx: &mut Context<Self>) -> Self {
+    let haystacks = items.iter().map(haystack_of).collect();
+    let matches = (0..items.len()).collect();
+
     Self {
       items,
+      haystacks,
+      matches,
+      ranker: Ranker::new(),
       query: String::new(),
       selected: 0,
       focus_handle: cx.focus_handle(),
     }
   }
 
-  fn filtered(&self) -> Vec<SearchItem> {
-    if self.query.is_empty() {
-      return self.items.clone();
-    }
+  /// Matching runs over the prebuilt haystacks and yields indices, so a
+  /// keystroke never clones the item list and `render` never filters.
+  fn refresh_matches(&mut self) {
+    self.selected = 0;
 
-    let query = self.query.to_lowercase();
+    self.ranker.set_query(&self.query);
+    self
+      .ranker
+      .rank_into(self.haystacks.iter().map(String::as_str), &mut self.matches);
 
     self
-      .items
-      .iter()
-      .filter(|item| query_matches(&query, &[&item.label, &item.detail, &item.badge]))
-      .cloned()
-      .collect()
+      .matches
+      .sort_by_key(|ix| self.items[*ix].target.section_order());
   }
 
   fn on_key_down(&mut self, event: &KeyDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
-    let count = self.filtered().len();
+    let count = self.matches.len();
 
     match event.keystroke.key.as_str() {
       "escape" => {
@@ -99,7 +119,11 @@ impl SearchDialog {
         return;
       }
       "enter" => {
-        if let Some(item) = self.filtered().get(self.selected) {
+        if let Some(item) = self
+          .matches
+          .get(self.selected)
+          .and_then(|ix| self.items.get(*ix))
+        {
           cx.emit(SearchEvent::Selected(item.target.clone()));
         }
 
@@ -125,7 +149,7 @@ impl SearchDialog {
       }
       "backspace" => {
         self.query.pop();
-        self.selected = 0;
+        self.refresh_matches();
 
         cx.notify();
 
@@ -142,17 +166,26 @@ impl SearchDialog {
 
     if let Some(text) = &event.keystroke.key_char {
       self.query.push_str(text);
-      self.selected = 0;
+      self.refresh_matches();
+
       cx.notify();
     }
   }
 }
 
+fn haystack_of(item: &SearchItem) -> String {
+  [
+    item.label.as_str(),
+    item.detail.as_str(),
+    item.badge.as_str(),
+  ]
+  .join(" ")
+}
+
 impl Render for SearchDialog {
   fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
     let theme = Theme::of(cx).clone();
-    let filtered = self.filtered();
-    let selected = self.selected.min(filtered.len().saturating_sub(1));
+    let selected = self.selected.min(self.matches.len().saturating_sub(1));
 
     let input_row = div()
       .flex()
@@ -192,7 +225,8 @@ impl Render for SearchDialog {
       .py_1();
 
     let mut last_section = "";
-    for (ix, item) in filtered.iter().enumerate() {
+    for (ix, item_ix) in self.matches.iter().enumerate() {
+      let item = &self.items[*item_ix];
       let section = item.target.section();
 
       if section != last_section {
@@ -265,7 +299,7 @@ impl Render for SearchDialog {
       );
     }
 
-    if filtered.is_empty() {
+    if self.matches.is_empty() {
       list = list.child(
         div()
           .p_4()

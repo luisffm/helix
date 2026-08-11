@@ -1,8 +1,8 @@
+use helix_fuzzy::Ranker;
 use std::path::{Path, PathBuf};
 
 const FILTER_MAX_MATCHES: usize = 300;
 const FILTER_MAX_DIRS: usize = 4000;
-const IGNORED_RANK_PENALTY: u8 = 3;
 
 #[derive(Clone)]
 pub struct FileNode {
@@ -11,28 +11,6 @@ pub struct FileNode {
   pub lower: String,
   pub is_dir: bool,
   pub ignored: bool,
-}
-
-/// `needle` must already be lowercase. `by_path` widens the match to the
-/// workspace-relative path, which only helps once the query has a separator.
-pub fn match_rank(name: &str, relative: &str, needle: &str, by_path: bool) -> Option<u8> {
-  rank_lowered(&name.to_lowercase(), relative, needle, by_path)
-}
-
-fn rank_lowered(name: &str, relative: &str, needle: &str, by_path: bool) -> Option<u8> {
-  if name.starts_with(needle) {
-    return Some(0);
-  }
-
-  if name.contains(needle) {
-    return Some(1);
-  }
-
-  if by_path && relative.to_lowercase().contains(needle) {
-    return Some(2);
-  }
-
-  None
 }
 
 fn name_cmp(a: &FileNode, b: &FileNode) -> std::cmp::Ordering {
@@ -78,14 +56,21 @@ pub fn scan_dir(
   nodes
 }
 
+/// A query holding a separator is scored against the workspace-relative path,
+/// anything else against the file name alone. Ignored files stay eligible but
+/// always sort below the tracked ones.
 pub fn scan_matches(
   root: &Path,
-  needle: &str,
-  by_path: bool,
+  query: &str,
   show_dotfiles: bool,
   ignored: &dyn Fn(&Path, bool) -> bool,
 ) -> Vec<FileNode> {
-  let mut ranked: Vec<(u8, FileNode)> = Vec::new();
+  let mut ranker = Ranker::for_paths();
+
+  ranker.set_query(query);
+
+  let by_path = query.contains('/');
+  let mut ranked: Vec<(u32, FileNode)> = Vec::new();
   let mut queue = std::collections::VecDeque::from([root.to_path_buf()]);
   let mut dirs = 0usize;
 
@@ -105,26 +90,29 @@ pub fn scan_matches(
         continue;
       }
 
-      let relative = node
-        .path
-        .strip_prefix(root)
-        .unwrap_or(&node.path)
-        .to_string_lossy()
-        .to_string();
+      let score = if by_path {
+        let relative = node.path.strip_prefix(root).unwrap_or(&node.path);
 
-      let Some(mut rank) = rank_lowered(&node.lower, &relative, needle, by_path) else {
+        ranker.score(&relative.to_string_lossy())
+      } else {
+        ranker.score(&node.name)
+      };
+
+      let Some(score) = score else {
         continue;
       };
 
-      if node.ignored {
-        rank += IGNORED_RANK_PENALTY;
-      }
-
-      ranked.push((rank, node));
+      ranked.push((score, node));
     }
   }
 
-  ranked.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| name_cmp(&a.1, &b.1)));
+  ranked.sort_by(|a, b| {
+    a.1
+      .ignored
+      .cmp(&b.1.ignored)
+      .then_with(|| b.0.cmp(&a.0))
+      .then_with(|| name_cmp(&a.1, &b.1))
+  });
 
   ranked.into_iter().map(|(_, node)| node).collect()
 }

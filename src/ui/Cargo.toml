@@ -10,6 +10,7 @@ alacritty_terminal.workspace = true
 tokio.workspace = true
 anyhow.workspace = true
 helix-buffer.workspace = true
+helix-fuzzy.workspace = true
 helix-models.workspace = true
 helix-events.workspace = true
 helix-git.workspace = true

@@ -4,5 +4,6 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
+helix-fuzzy.workspace = true
 notify.workspace = true
 tokio.workspace = true
