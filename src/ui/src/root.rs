@@ -1240,7 +1240,7 @@ impl HelixRoot {
       target: SearchTarget::NewClaude,
     });
 
-    let dialog = cx.new(|cx| SearchDialog::new(items, cx));
+    let dialog = cx.new(|cx| SearchDialog::new(items, window, cx));
 
     cx.subscribe_in(&dialog, window, |this, _, event, window, cx| match event {
       SearchEvent::Dismissed => {

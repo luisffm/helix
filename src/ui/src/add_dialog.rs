@@ -50,7 +50,7 @@ pub struct AddDialog {
   step: Step,
   selected: usize,
   existing_selected: usize,
-  existing_query: String,
+  existing_filter: Entity<InputState>,
   existing_haystacks: Vec<String>,
   existing_matches: Vec<usize>,
   branch_haystacks: Vec<String>,
@@ -107,6 +107,26 @@ impl AddDialog {
     let ai_context =
       cx.new(|cx| InputState::new(window, cx).placeholder("what should this branch do?"));
     let branch_filter = cx.new(|cx| InputState::new(window, cx).placeholder("filter branches..."));
+    let existing_filter =
+      cx.new(|cx| InputState::new(window, cx).placeholder("filter worktrees..."));
+
+    cx.subscribe(
+      &existing_filter,
+      |this, _, event: &InputEvent, cx| match event {
+        InputEvent::Change => {
+          this.refresh_existing_matches(cx);
+
+          cx.notify();
+        }
+        InputEvent::PressEnter { .. } => {
+          if let Some((_, path)) = this.existing_at(this.existing_selected) {
+            cx.emit(AddDialogEvent::AddExistingWorktree(path.clone()));
+          }
+        }
+        _ => {}
+      },
+    )
+    .detach();
 
     for input in [&worktree_name, &branch_name, &branch_filter] {
       cx.subscribe(input, |this, _, event: &InputEvent, cx| {
@@ -163,7 +183,7 @@ impl AddDialog {
       step: Step::Choose,
       selected: 0,
       existing_selected: 0,
-      existing_query: String::new(),
+      existing_filter,
       existing_haystacks: existing
         .iter()
         .map(|(branch, path)| format!("{branch} {}", path.display()))
@@ -209,9 +229,11 @@ impl AddDialog {
 
   /// Both pickers keep their matches as indices into the list they came from, so
   /// filtering never clones a row and `render` never filters.
-  fn refresh_existing_matches(&mut self) {
+  fn refresh_existing_matches(&mut self, cx: &App) {
+    let query = self.existing_filter.read(cx).value();
+
     self.existing_selected = 0;
-    self.ranker.set_query(&self.existing_query);
+    self.ranker.set_query(query.trim());
 
     self.ranker.rank_into(
       self.existing_haystacks.iter().map(String::as_str),
@@ -256,6 +278,7 @@ impl AddDialog {
       AddOption::ExistingWorktree if !self.existing.is_empty() => {
         self.step = Step::Existing;
 
+        window.focus(&self.existing_filter.read(cx).focus_handle(cx));
         cx.notify();
       }
       _ => {}
@@ -532,15 +555,13 @@ impl AddDialog {
       Step::Existing => match event.keystroke.key.as_str() {
         "escape" => {
           self.step = Step::Choose;
-          self.existing_query.clear();
-          self.refresh_existing_matches();
 
+          self
+            .existing_filter
+            .update(cx, |state, cx| state.set_value("", window, cx));
+
+          window.focus(&self.focus_handle);
           cx.notify();
-        }
-        "enter" => {
-          if let Some((_, path)) = self.existing_at(self.existing_selected) {
-            cx.emit(AddDialogEvent::AddExistingWorktree(path.clone()));
-          }
         }
         "up" => {
           let count = self.existing_matches.len().max(1);
@@ -556,26 +577,7 @@ impl AddDialog {
 
           cx.notify();
         }
-        "backspace" => {
-          self.existing_query.pop();
-          self.refresh_existing_matches();
-
-          cx.notify();
-        }
-        _ => {
-          let mods = event.keystroke.modifiers;
-
-          if mods.platform || mods.control || mods.function {
-            return;
-          }
-
-          if let Some(text) = &event.keystroke.key_char {
-            self.existing_query.push_str(text);
-            self.refresh_existing_matches();
-
-            cx.notify();
-          }
-        }
+        _ => {}
       },
       Step::Name => {
         if event.keystroke.key.as_str() == "escape" {
@@ -748,19 +750,11 @@ impl Render for AddDialog {
                 .text_color(theme.text_dim)
                 .child(Icon::new(IconName::Search).size_4()),
             )
-            .child(if self.existing_query.is_empty() {
+            .child(
               div()
-                .text_sm()
-                .text_color(theme.text_dim)
-                .child("Filter worktrees...")
-            } else {
-              div()
-                .text_sm()
-                .text_color(theme.text)
-                .child(self.existing_query.clone())
-            })
-            .child(div().w(px(2.0)).h(px(14.0)).bg(theme.accent).rounded_sm())
-            .child(div().flex_1())
+                .flex_1()
+                .child(Input::new(&self.existing_filter).appearance(false).small()),
+            )
             .child(
               div()
                 .text_xs()

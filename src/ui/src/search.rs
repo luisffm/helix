@@ -1,10 +1,11 @@
 use crate::theme::Theme;
 use gpui::{
-  AnyElement, App, Context, EventEmitter, FocusHandle, Focusable, IntoElement, KeyDownEvent,
-  ParentElement, Render, ScrollStrategy, SharedString, UniformListScrollHandle, Window, div,
-  prelude::*, px, uniform_list,
+  AnyElement, App, Context, Entity, EventEmitter, FocusHandle, Focusable, IntoElement,
+  KeyDownEvent, ParentElement, Render, ScrollStrategy, SharedString, UniformListScrollHandle,
+  Window, div, prelude::*, px, uniform_list,
 };
-use gpui_component::{Icon, IconName};
+use gpui_component::input::{Input, InputEvent, InputState};
+use gpui_component::{Icon, IconName, Sizable};
 use helix_fuzzy::Ranker;
 use std::path::PathBuf;
 
@@ -80,7 +81,7 @@ pub struct SearchDialog {
   match_rows: Vec<usize>,
   scroll: UniformListScrollHandle,
   ranker: Ranker,
-  query: String,
+  filter: Entity<InputState>,
   selected: usize,
   focus_handle: FocusHandle,
 }
@@ -88,14 +89,28 @@ pub struct SearchDialog {
 impl EventEmitter<SearchEvent> for SearchDialog {}
 
 impl Focusable for SearchDialog {
-  fn focus_handle(&self, _cx: &App) -> FocusHandle {
-    self.focus_handle.clone()
+  fn focus_handle(&self, cx: &App) -> FocusHandle {
+    self.filter.read(cx).focus_handle(cx)
   }
 }
 
 impl SearchDialog {
-  pub fn new(items: Vec<SearchItem>, cx: &mut Context<Self>) -> Self {
+  pub fn new(items: Vec<SearchItem>, window: &mut Window, cx: &mut Context<Self>) -> Self {
     let haystacks = items.iter().map(haystack_of).collect();
+    let filter = cx.new(|cx| {
+      InputState::new(window, cx).placeholder("Search worktrees, tabs, projects, and actions...")
+    });
+
+    cx.subscribe(&filter, |this, _, event: &InputEvent, cx| match event {
+      InputEvent::Change => {
+        this.refresh_matches(cx);
+
+        cx.notify();
+      }
+      InputEvent::PressEnter { .. } => this.emit_selection(cx),
+      _ => {}
+    })
+    .detach();
 
     let mut dialog = Self {
       items,
@@ -105,22 +120,33 @@ impl SearchDialog {
       match_rows: Vec::new(),
       scroll: UniformListScrollHandle::new(),
       ranker: Ranker::new(),
-      query: String::new(),
+      filter,
       selected: 0,
       focus_handle: cx.focus_handle(),
     };
 
-    dialog.refresh_matches();
+    dialog.refresh_matches(cx);
 
     dialog
   }
 
+  fn emit_selection(&mut self, cx: &mut Context<Self>) {
+    if let Some(item) = self
+      .matches
+      .get(self.selected)
+      .and_then(|ix| self.items.get(*ix))
+    {
+      cx.emit(SearchEvent::Selected(item.target.clone()));
+    }
+  }
+
   /// Matching runs over the prebuilt haystacks and yields indices, so a
   /// keystroke never clones the item list and `render` never filters.
-  fn refresh_matches(&mut self) {
-    self.selected = 0;
+  fn refresh_matches(&mut self, cx: &App) {
+    let query = self.filter.read(cx).value();
 
-    self.ranker.set_query(&self.query);
+    self.selected = 0;
+    self.ranker.set_query(query.trim());
     self
       .ranker
       .rank_into(self.haystacks.iter().map(String::as_str), &mut self.matches);
@@ -251,17 +277,6 @@ impl SearchDialog {
         cx.emit(SearchEvent::Dismissed);
         return;
       }
-      "enter" => {
-        if let Some(item) = self
-          .matches
-          .get(self.selected)
-          .and_then(|ix| self.items.get(*ix))
-        {
-          cx.emit(SearchEvent::Selected(item.target.clone()));
-        }
-
-        return;
-      }
       "up" => {
         if count > 0 {
           self.selected = (self.selected + count - 1) % count;
@@ -282,28 +297,7 @@ impl SearchDialog {
 
         return;
       }
-      "backspace" => {
-        self.query.pop();
-        self.refresh_matches();
-
-        cx.notify();
-
-        return;
-      }
       _ => {}
-    }
-
-    let mods = event.keystroke.modifiers;
-
-    if mods.platform || mods.control || mods.function {
-      return;
-    }
-
-    if let Some(text) = &event.keystroke.key_char {
-      self.query.push_str(text);
-      self.refresh_matches();
-
-      cx.notify();
     }
   }
 }
@@ -337,18 +331,11 @@ impl Render for SearchDialog {
           .text_color(theme.text_dim)
           .child(Icon::new(IconName::Search).size_4()),
       )
-      .child(if self.query.is_empty() {
+      .child(
         div()
-          .text_sm()
-          .text_color(theme.text_dim)
-          .child("Search worktrees, tabs, projects, and actions...")
-      } else {
-        div()
-          .text_sm()
-          .text_color(theme.text)
-          .child(self.query.clone())
-      })
-      .child(div().w(px(2.0)).h(px(16.0)).bg(theme.accent).rounded_sm());
+          .flex_1()
+          .child(Input::new(&self.filter).appearance(false).small()),
+      );
 
     let list: AnyElement = if self.rows.is_empty() {
       div()
@@ -418,8 +405,8 @@ impl Render for SearchDialog {
       .on_click(|_, _, cx| cx.stop_propagation())
       .on_mouse_down(
         gpui::MouseButton::Left,
-        cx.listener(|this, _, window, _| {
-          window.focus(&this.focus_handle);
+        cx.listener(|this, _, window, cx| {
+          window.focus(&this.filter.read(cx).focus_handle(cx));
         }),
       )
       .on_key_down(cx.listener(Self::on_key_down))
