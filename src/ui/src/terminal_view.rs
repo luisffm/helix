@@ -56,6 +56,7 @@ pub struct TerminalView {
   backend: Option<Arc<TerminalBackend>>,
   claude_detected: bool,
   flush_pending: bool,
+  last_flush: Instant,
   last_activity_emit: Instant,
   spawn_error: Option<String>,
   focus_handle: FocusHandle,
@@ -82,6 +83,7 @@ impl Focusable for TerminalView {
   }
 }
 
+#[derive(Default)]
 struct RunFrame {
   start_col: usize,
   cols: usize,
@@ -93,15 +95,64 @@ struct RunFrame {
   mergeable: bool,
 }
 
+/// Rows and runs are reused across frames and `used` marks how much of them the
+/// current frame filled, so a streaming terminal reallocates nothing per repaint.
+#[derive(Default)]
 struct LineFrame {
   runs: Vec<RunFrame>,
+  used: usize,
 }
 
+impl LineFrame {
+  fn runs(&self) -> &[RunFrame] {
+    &self.runs[..self.used]
+  }
+
+  fn last_run(&mut self) -> Option<&mut RunFrame> {
+    self.used.checked_sub(1).map(|ix| &mut self.runs[ix])
+  }
+
+  fn next_run(&mut self) -> &mut RunFrame {
+    if self.runs.len() == self.used {
+      self.runs.push(RunFrame::default());
+    }
+
+    self.used += 1;
+
+    &mut self.runs[self.used - 1]
+  }
+}
+
+#[derive(Default)]
 struct Frame {
   lines: Vec<LineFrame>,
+  used: usize,
   cursor: Option<(i32, usize)>,
   display_offset: usize,
   mouse_reporting: bool,
+}
+
+impl Frame {
+  fn lines(&self) -> &[LineFrame] {
+    &self.lines[..self.used]
+  }
+
+  fn last_line(&mut self) -> &mut LineFrame {
+    &mut self.lines[self.used - 1]
+  }
+
+  fn next_line(&mut self) -> &mut LineFrame {
+    if self.lines.len() == self.used {
+      self.lines.push(LineFrame::default());
+    }
+
+    self.used += 1;
+
+    let line = &mut self.lines[self.used - 1];
+    line.used = 0;
+
+    line
+  }
 }
 
 /// The four styles a cell can ask for, built once per frame instead of cloned
@@ -217,6 +268,7 @@ impl TerminalView {
       backend,
       claude_detected: false,
       flush_pending: false,
+      last_flush: Instant::now(),
       last_activity_emit: Instant::now(),
       spawn_error,
       focus_handle: cx.focus_handle(),
@@ -326,8 +378,17 @@ impl TerminalView {
     }
   }
 
+  /// A burst of pty output is worth one repaint per frame, but the first byte
+  /// after an idle stretch should not wait for the window to elapse, so the
+  /// leading edge paints at once and only the rest is coalesced.
   fn schedule_flush(&mut self, cx: &mut Context<Self>) {
     if self.flush_pending {
+      return;
+    }
+
+    if self.last_flush.elapsed() >= FLUSH_INTERVAL {
+      self.flush(cx);
+
       return;
     }
 
@@ -339,19 +400,24 @@ impl TerminalView {
       this
         .update(cx, |view, cx| {
           view.flush_pending = false;
-          view.frame_stale = true;
-
-          if view.last_activity_emit.elapsed() >= ACTIVITY_EMIT_INTERVAL {
-            view.last_activity_emit = Instant::now();
-
-            cx.emit(TerminalViewEvent::Activity);
-          }
-
-          cx.notify();
+          view.flush(cx);
         })
         .ok();
     })
     .detach();
+  }
+
+  fn flush(&mut self, cx: &mut Context<Self>) {
+    self.last_flush = Instant::now();
+    self.frame_stale = true;
+
+    if self.last_activity_emit.elapsed() >= ACTIVITY_EMIT_INTERVAL {
+      self.last_activity_emit = Instant::now();
+
+      cx.emit(TerminalViewEvent::Activity);
+    }
+
+    cx.notify();
   }
 
   fn handle_alac_event(&mut self, event: AlacEvent, cx: &mut Context<Self>) {
@@ -785,26 +851,30 @@ impl TerminalView {
     };
 
     let rows = self.rows as i32;
+    let mut frame = self.frame.take().unwrap_or_default();
 
-    self.frame = Some(backend.with_term(|term| {
+    frame.used = 0;
+
+    backend.with_term(|term| {
       let content = term.renderable_content();
       let content_mode = content.mode;
       let display_offset = content.display_offset;
       let selection = content.selection;
       let colors = ansi_colors::ColorTable::new(theme, content.colors);
 
-      let mut lines: Vec<LineFrame> = Vec::new();
       let mut current_row: Option<i32> = None;
 
       for indexed in content.display_iter {
         let row = indexed.point.line.0 + display_offset as i32;
 
-        if current_row != Some(row) {
+        let line = if current_row != Some(row) {
           current_row = Some(row);
-          lines.push(LineFrame { runs: Vec::new() });
-        }
 
-        let line = lines.last_mut().unwrap();
+          frame.next_line()
+        } else {
+          frame.last_line()
+        };
+
         let cell = &indexed.cell;
 
         if cell.flags.contains(Flags::WIDE_CHAR_SPACER) {
@@ -860,7 +930,7 @@ impl TerminalView {
 
         let mergeable = width == 1;
 
-        match line.runs.last_mut() {
+        let merged = match line.last_run() {
           Some(run)
             if run.mergeable
               && mergeable
@@ -872,21 +942,29 @@ impl TerminalView {
           {
             run.text.push(ch);
             run.cols += 1;
+
+            true
           }
-          _ => line.runs.push(RunFrame {
-            start_col: col,
-            cols: width,
-            text: ch.to_string(),
-            fg,
-            bg,
-            style,
-            underline,
-            mergeable,
-          }),
+          _ => false,
+        };
+
+        if !merged {
+          let run = line.next_run();
+
+          run.start_col = col;
+          run.cols = width;
+          run.fg = fg;
+          run.bg = bg;
+          run.style = style;
+          run.underline = underline;
+          run.mergeable = mergeable;
+
+          run.text.clear();
+          run.text.push(ch);
         }
       }
 
-      let cursor = if content.cursor.shape == CursorShape::Hidden {
+      frame.cursor = if content.cursor.shape == CursorShape::Hidden {
         None
       } else {
         let row = content.cursor.point.line.0 + display_offset as i32;
@@ -898,13 +976,11 @@ impl TerminalView {
         }
       };
 
-      Frame {
-        lines,
-        cursor,
-        display_offset,
-        mouse_reporting: content_mode.intersects(TermMode::MOUSE_MODE),
-      }
-    }))
+      frame.display_offset = display_offset;
+      frame.mouse_reporting = content_mode.intersects(TermMode::MOUSE_MODE);
+    });
+
+    self.frame = Some(frame);
   }
 }
 
@@ -978,12 +1054,12 @@ impl Render for TerminalView {
         div()
           .flex()
           .flex_col()
-          .children(frame.lines.iter().map(|line| {
+          .children(frame.lines().iter().map(|line| {
             div()
               .relative()
               .h(line_height)
               .w_full()
-              .children(line.runs.iter().filter_map(|run| {
+              .children(line.runs().iter().filter_map(|run| {
                 let visible =
                   !run.text.trim().is_empty() || run.bg.is_some() || run.underline.is_some();
                 if !visible {
