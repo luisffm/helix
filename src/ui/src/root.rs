@@ -1,5 +1,4 @@
 use crate::add_dialog::{AddDialog, AddDialogEvent};
-use crate::components::HEADER_HEIGHT;
 use crate::search::{SearchDialog, SearchEvent, SearchItem, SearchTarget};
 use crate::settings_page::{Section, SettingsEvent, SettingsPage};
 use crate::sidebar_left::{ProjectPanel, ProjectPanelEvent};
@@ -11,6 +10,7 @@ use gpui::{
   Context, Entity, FocusHandle, Focusable, IntoElement, ParentElement, Render, Window, div,
   prelude::*, px,
 };
+use gpui_component::resizable::{h_resizable, resizable_panel};
 use helix_commands::{
   ActivateTab, ActivateWorkspace, CloseActiveTab, CopyPathAction, DeleteWorktreeAction,
   EditWorktreeAction, NewClaudeSession, NewTerminal, NextTab, OpenAppSettings, OpenInFinderAction,
@@ -28,23 +28,13 @@ use std::time::{Duration, Instant};
 const RETAINED_WORKSPACES: usize = 4;
 const REVIEW_MIN_INTERVAL: Duration = Duration::from_secs(60);
 
-#[derive(Clone, Copy, PartialEq)]
-enum ResizingSide {
-  Left,
-  Right,
-}
+const LEFT_WIDTH: f32 = 280.0;
+const RIGHT_WIDTH: f32 = 320.0;
 
 pub struct HelixRoot {
   project: ProjectInfo,
   left_open: bool,
   right_open: bool,
-  left_width: f32,
-  right_width: f32,
-  left_anim: f32,
-  right_anim: f32,
-  left_animating: bool,
-  right_animating: bool,
-  resizing: Option<ResizingSide>,
   git: Option<helix_models::GitSnapshot>,
   worktrees: Vec<WorktreeRow>,
   workspace: Entity<Workspace>,
@@ -128,14 +118,7 @@ impl HelixRoot {
     let mut root = Self {
       project,
       left_open: true,
-      left_anim: 1.0,
-      right_anim: 0.0,
-      left_animating: false,
-      right_animating: false,
       right_open: false,
-      left_width: 280.0,
-      right_width: 320.0,
-      resizing: None,
       git: None,
       worktrees: Vec::new(),
       workspace,
@@ -891,67 +874,6 @@ impl HelixRoot {
       .into_any_element()
   }
 
-  fn kick_animation(&mut self, side: ResizingSide, cx: &mut Context<Self>) {
-    let already = match side {
-      ResizingSide::Left => std::mem::replace(&mut self.left_animating, true),
-      ResizingSide::Right => std::mem::replace(&mut self.right_animating, true),
-    };
-    if already {
-      return;
-    }
-
-    cx.spawn(async move |this, cx| {
-      loop {
-        cx.background_executor()
-          .timer(std::time::Duration::from_millis(14))
-          .await;
-
-        let done = this.update(cx, |root, cx| {
-          let (anim, target) = match side {
-            ResizingSide::Left => (
-              &mut root.left_anim,
-              if root.left_open { 1.0f32 } else { 0.0 },
-            ),
-            ResizingSide::Right => (
-              &mut root.right_anim,
-              if root.right_open { 1.0f32 } else { 0.0 },
-            ),
-          };
-
-          let step = 0.09;
-
-          if (*anim - target).abs() <= step {
-            *anim = target;
-          } else if *anim < target {
-            *anim += step;
-          } else {
-            *anim -= step;
-          }
-
-          cx.notify();
-
-          *anim == target
-        });
-
-        match done {
-          Ok(true) => {
-            this
-              .update(cx, |root, _| match side {
-                ResizingSide::Left => root.left_animating = false,
-                ResizingSide::Right => root.right_animating = false,
-              })
-              .ok();
-
-            break;
-          }
-          Ok(false) => {}
-          Err(_) => break,
-        }
-      }
-    })
-    .detach();
-  }
-
   fn open_settings(
     &mut self,
     target: Option<PathBuf>,
@@ -1367,88 +1289,30 @@ impl Render for HelixRoot {
       )
       .child("Helix 0.1");
 
-    let resize_handle = |id: &'static str, side: ResizingSide, cx: &mut Context<Self>| {
-      div()
-        .id(id)
-        .w(px(5.0))
-        .h_full()
-        .flex_none()
-        .flex()
-        .flex_col()
-        .cursor_col_resize()
-        .hover(|s| s.bg(theme.active))
-        .when(self.resizing == Some(side), |el| el.bg(theme.active))
-        .on_mouse_down(
-          gpui::MouseButton::Left,
-          cx.listener(move |this, _, _, cx| {
-            this.resizing = Some(side);
-            cx.notify();
-          }),
-        )
-        .child(
-          div()
-            .h(px(HEADER_HEIGHT))
-            .w_full()
-            .flex_none()
-            .border_b_1()
-            .border_color(theme.panel_border),
-        )
-    };
-
-    let ease = |t: f32| t * t * (3.0 - 2.0 * t);
-
-    let mut body = div().flex().flex_1().min_h_0();
-    if self.left_open || self.left_anim > 0.001 {
-      body = body.child(
-        div()
-          .w(px(self.left_width * ease(self.left_anim)))
-          .flex_none()
-          .h_full()
-          .overflow_hidden()
-          .child(
-            div()
-              .w(px(self.left_width))
-              .flex_none()
-              .h_full()
-              .child(self.project_panel.clone()),
-          ),
-      );
-      if self.left_open && !self.left_animating {
-        body = body.child(resize_handle("resize-left", ResizingSide::Left, cx));
-      }
-    }
     let center: gpui::AnyElement = if let Some(settings) = &self.settings {
       settings.clone().into_any_element()
     } else {
       self.workspace.clone().into_any_element()
     };
-    body = body.child(
-      div()
-        .flex_1()
-        .min_w_0()
-        .h_full()
-        .bg(theme.content)
-        .child(center),
+
+    let body = div().flex().flex_1().min_h_0().child(
+      h_resizable("helix-body")
+        .child(
+          resizable_panel()
+            .size(px(LEFT_WIDTH))
+            .size_range(px(200.0)..px(480.0))
+            .visible(self.left_open)
+            .child(self.project_panel.clone()),
+        )
+        .child(resizable_panel().child(div().size_full().min_w_0().bg(theme.content).child(center)))
+        .child(
+          resizable_panel()
+            .size(px(RIGHT_WIDTH))
+            .size_range(px(220.0)..px(560.0))
+            .visible(self.right_open)
+            .child(self.context_panel.clone()),
+        ),
     );
-    if self.right_open || self.right_anim > 0.001 {
-      if self.right_open && !self.right_animating {
-        body = body.child(resize_handle("resize-right", ResizingSide::Right, cx));
-      }
-      body = body.child(
-        div()
-          .w(px(self.right_width * ease(self.right_anim)))
-          .flex_none()
-          .h_full()
-          .overflow_hidden()
-          .child(
-            div()
-              .w(px(self.right_width))
-              .flex_none()
-              .h_full()
-              .child(self.context_panel.clone()),
-          ),
-      );
-    }
 
     let mut root = div()
       .key_context("Helix")
@@ -1459,30 +1323,6 @@ impl Render for HelixRoot {
       .flex_col()
       .font_family(theme.font_ui.clone())
       .text_color(theme.text)
-      .on_mouse_move(
-        cx.listener(|this, event: &gpui::MouseMoveEvent, window, cx| {
-          let Some(side) = this.resizing else { return };
-          let x = f32::from(event.position.x);
-          match side {
-            ResizingSide::Left => {
-              this.left_width = x.clamp(200.0, 480.0);
-            }
-            ResizingSide::Right => {
-              let total = f32::from(window.viewport_size().width);
-              this.right_width = (total - x).clamp(220.0, 560.0);
-            }
-          }
-          cx.notify();
-        }),
-      )
-      .on_mouse_up(
-        gpui::MouseButton::Left,
-        cx.listener(|this, _, _, cx| {
-          if this.resizing.take().is_some() {
-            cx.notify();
-          }
-        }),
-      )
       .on_action(cx.listener(|this, _: &NewTerminal, window, cx| {
         this.workspace.update(cx, |workspace, cx| {
           workspace.open_tab(SessionKind::Terminal, window, cx);
@@ -1529,7 +1369,6 @@ impl Render for HelixRoot {
           workspace.left_sidebar_open = open;
           cx.notify();
         });
-        this.kick_animation(ResizingSide::Left, cx);
         cx.notify();
       }))
       .on_action(cx.listener(|this, _: &ToggleRightSidebar, _, cx| {
@@ -1539,7 +1378,6 @@ impl Render for HelixRoot {
           workspace.right_sidebar_open = open;
           cx.notify();
         });
-        this.kick_animation(ResizingSide::Right, cx);
         cx.notify();
       }))
       .on_action(cx.listener(|this, _: &OpenSearch, window, cx| {

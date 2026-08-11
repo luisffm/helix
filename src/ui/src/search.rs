@@ -1,7 +1,7 @@
 use crate::theme::Theme;
 use gpui::{
   App, Context, Entity, EventEmitter, FocusHandle, Focusable, IntoElement, ParentElement, Render,
-  SharedString, Task, WeakEntity, Window, div, prelude::*, px,
+  Task, WeakEntity, Window, div, prelude::*, px,
 };
 use gpui_component::list::{List, ListDelegate, ListItem, ListState};
 use gpui_component::{Icon, IconName, IndexPath};
