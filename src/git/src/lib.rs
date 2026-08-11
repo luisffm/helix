@@ -6,6 +6,9 @@ pub mod remote;
 use anyhow::Result;
 use git2::{Repository, Status, StatusOptions};
 use helix_models::{CommitInfo, GitFileKind, GitFileStatus, GitSnapshot};
+use ignore::Match;
+use ignore::gitignore::{Gitignore, GitignoreBuilder, Glob};
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
@@ -60,11 +63,15 @@ pub fn snapshot(root: &Path) -> Result<GitSnapshot> {
   Ok(snap)
 }
 
-/// Discovering the repository is the expensive half of an ignore check, so a
-/// caller walking many directories opens one probe and reuses it.
+/// Discovering the repository and compiling its ignore rules is the expensive
+/// half of an ignore check, so a caller walking many directories opens one
+/// probe and reuses it. Matching runs against compiled globs rather than
+/// libgit2, which keeps a walk free of a syscall per entry.
 pub struct IgnoreProbe {
-  repo: Repository,
   workdir: std::path::PathBuf,
+  exclude: Gitignore,
+  global: Gitignore,
+  nested: RefCell<HashMap<std::path::PathBuf, Option<Gitignore>>>,
 }
 
 impl IgnoreProbe {
@@ -73,26 +80,80 @@ impl IgnoreProbe {
     let workdir = repo.workdir()?.to_path_buf();
     let workdir = workdir.canonicalize().unwrap_or(workdir);
 
-    Some(Self { repo, workdir })
+    let mut exclude = GitignoreBuilder::new(&workdir);
+    exclude.add(repo.path().join("info/exclude"));
+
+    let (global, _) = Gitignore::global();
+
+    Some(Self {
+      workdir,
+      exclude: exclude.build().unwrap_or_else(|_| Gitignore::empty()),
+      global,
+      nested: RefCell::new(HashMap::new()),
+    })
   }
 
-  pub fn is_ignored(&self, path: &Path) -> bool {
-    let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
-    let relative = canonical.strip_prefix(&self.workdir).unwrap_or(&canonical);
-    let mut probe = relative.to_string_lossy().to_string();
-
-    if probe.is_empty() {
-      return false;
+  pub fn is_ignored(&self, path: &Path, is_dir: bool) -> bool {
+    if path.starts_with(&self.workdir) {
+      return self.matched(path, is_dir);
     }
 
-    if path.is_dir() && !probe.ends_with('/') {
-      probe.push('/');
+    match path.canonicalize() {
+      Ok(canonical) if canonical.starts_with(&self.workdir) => self.matched(&canonical, is_dir),
+      _ => false,
+    }
+  }
+
+  /// The nearest `.gitignore` wins, so the walk runs from the entry's own
+  /// directory up to the work tree root and stops at the first rule that
+  /// matches, before falling back to the repository and user excludes.
+  fn matched(&self, path: &Path, is_dir: bool) -> bool {
+    let mut dir = path.parent();
+
+    while let Some(current) = dir {
+      if let Some(verdict) = self.nested_verdict(current, path, is_dir) {
+        return verdict;
+      }
+
+      if current == self.workdir {
+        break;
+      }
+
+      dir = current.parent();
     }
 
-    self
-      .repo
-      .is_path_ignored(Path::new(&probe))
-      .unwrap_or(false)
+    if let Some(verdict) = verdict(self.exclude.matched_path_or_any_parents(path, is_dir)) {
+      return verdict;
+    }
+
+    verdict(self.global.matched(path, is_dir)).unwrap_or(false)
+  }
+
+  fn nested_verdict(&self, dir: &Path, path: &Path, is_dir: bool) -> Option<bool> {
+    let mut cache = self.nested.borrow_mut();
+
+    if !cache.contains_key(dir) {
+      cache.insert(dir.to_path_buf(), load_gitignore(dir));
+    }
+
+    let matcher = cache.get(dir)?.as_ref()?;
+
+    verdict(matcher.matched_path_or_any_parents(path, is_dir))
+  }
+}
+
+fn load_gitignore(dir: &Path) -> Option<Gitignore> {
+  let mut builder = GitignoreBuilder::new(dir);
+  builder.add(dir.join(".gitignore"));
+
+  builder.build().ok().filter(|matcher| !matcher.is_empty())
+}
+
+fn verdict(matched: Match<&Glob>) -> Option<bool> {
+  match matched {
+    Match::None => None,
+    Match::Ignore(_) => Some(true),
+    Match::Whitelist(_) => Some(false),
   }
 }
 
@@ -106,7 +167,7 @@ pub fn ignored_paths(
 
   candidates
     .iter()
-    .filter(|path| probe.is_ignored(path))
+    .filter(|path| probe.is_ignored(path, path.is_dir()))
     .cloned()
     .collect()
 }

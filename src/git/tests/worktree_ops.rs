@@ -320,6 +320,57 @@ fn gitignored_paths_are_reported_as_ignored() {
 }
 
 #[test]
+fn nested_gitignore_overrides_the_rule_above_it() {
+  let repo = TempRepo::new("nested-ignore");
+  repo.write(".gitignore", "*.log\n");
+
+  std::fs::create_dir_all(repo.path.join("web")).unwrap();
+  repo.write("web/.gitignore", "dist/\n!keep.log\n");
+  repo.commit_all("initial");
+
+  std::fs::create_dir_all(repo.path.join("web/dist")).unwrap();
+  repo.write("web/dist/bundle.js", "junk\n");
+  repo.write("web/keep.log", "kept\n");
+  repo.write("app.log", "junk\n");
+
+  let candidates = vec![
+    repo.path.join("web/dist"),
+    repo.path.join("web/dist/bundle.js"),
+    repo.path.join("web/keep.log"),
+    repo.path.join("app.log"),
+  ];
+  let ignored = helix_git::ignored_paths(&repo.path, &candidates);
+
+  assert!(ignored.contains(&repo.path.join("web/dist")));
+  assert!(ignored.contains(&repo.path.join("web/dist/bundle.js")));
+  assert!(!ignored.contains(&repo.path.join("web/keep.log")));
+  assert!(ignored.contains(&repo.path.join("app.log")));
+}
+
+#[test]
+fn repository_exclude_file_is_honored() {
+  let repo = TempRepo::new("exclude-ignore");
+  repo.write("keep.rs", "fn keep() {}\n");
+  repo.commit_all("initial");
+
+  repo.write(".git/info/exclude", "scratch/\n");
+
+  std::fs::create_dir_all(repo.path.join("scratch")).unwrap();
+  repo.write("scratch/notes.md", "junk\n");
+
+  let candidates = vec![
+    repo.path.join("scratch"),
+    repo.path.join("scratch/notes.md"),
+    repo.path.join("keep.rs"),
+  ];
+  let ignored = helix_git::ignored_paths(&repo.path, &candidates);
+
+  assert!(ignored.contains(&repo.path.join("scratch")));
+  assert!(ignored.contains(&repo.path.join("scratch/notes.md")));
+  assert!(!ignored.contains(&repo.path.join("keep.rs")));
+}
+
+#[test]
 fn gitignored_files_stay_out_of_the_status_snapshot() {
   let repo = TempRepo::new("ignored-status");
   repo.write(".gitignore", "/target\n");

@@ -771,8 +771,10 @@ impl ContextPanel {
     let task = cx.background_executor().spawn(async move {
       let probe = IgnoreProbe::open(&root);
 
-      scan_dir(&target, show_dotfiles, &|path| {
-        probe.as_ref().is_some_and(|probe| probe.is_ignored(path))
+      scan_dir(&target, show_dotfiles, &|path, is_dir| {
+        probe
+          .as_ref()
+          .is_some_and(|probe| probe.is_ignored(path, is_dir))
       })
     });
 
@@ -877,8 +879,10 @@ impl ContextPanel {
           let by_path = needle.contains('/');
           let probe = IgnoreProbe::open(&root);
 
-          scan_matches(&root, &needle, by_path, show_dotfiles, &|path| {
-            probe.as_ref().is_some_and(|probe| probe.is_ignored(path))
+          scan_matches(&root, &needle, by_path, show_dotfiles, &|path, is_dir| {
+            probe
+              .as_ref()
+              .is_some_and(|probe| probe.is_ignored(path, is_dir))
           })
         })
         .await;

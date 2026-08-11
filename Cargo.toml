@@ -28,6 +28,7 @@ gpui-component = { version = "0.5", features = ["tree-sitter-languages"] }
 gpui-component-assets = "0.5"
 alacritty_terminal = "0.26"
 git2 = "0.21"
+ignore = "0.4"
 notify = "8"
 similar = "2"
 serde = { version = "1", features = ["derive"] }

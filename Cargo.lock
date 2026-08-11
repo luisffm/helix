@@ -2695,6 +2695,7 @@ dependencies = [
  "helix-buffer",
  "helix-models",
  "helix-process",
+ "ignore",
  "similar",
 ]
 

@@ -39,7 +39,11 @@ fn name_cmp(a: &FileNode, b: &FileNode) -> std::cmp::Ordering {
   a.lower.cmp(&b.lower).then_with(|| a.name.cmp(&b.name))
 }
 
-pub fn scan_dir(dir: &Path, show_dotfiles: bool, ignored: &dyn Fn(&Path) -> bool) -> Vec<FileNode> {
+pub fn scan_dir(
+  dir: &Path,
+  show_dotfiles: bool,
+  ignored: &dyn Fn(&Path, bool) -> bool,
+) -> Vec<FileNode> {
   let mut nodes: Vec<FileNode> = std::fs::read_dir(dir)
     .into_iter()
     .flatten()
@@ -57,7 +61,7 @@ pub fn scan_dir(dir: &Path, show_dotfiles: bool, ignored: &dyn Fn(&Path) -> bool
 
       let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
       let path = entry.path();
-      let ignored = ignored(&path);
+      let ignored = ignored(&path, is_dir);
 
       Some(FileNode {
         lower: name.to_lowercase(),
@@ -79,7 +83,7 @@ pub fn scan_matches(
   needle: &str,
   by_path: bool,
   show_dotfiles: bool,
-  ignored: &dyn Fn(&Path) -> bool,
+  ignored: &dyn Fn(&Path, bool) -> bool,
 ) -> Vec<FileNode> {
   let mut ranked: Vec<(u8, FileNode)> = Vec::new();
   let mut queue = std::collections::VecDeque::from([root.to_path_buf()]);

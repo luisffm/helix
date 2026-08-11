@@ -5,6 +5,7 @@ edition.workspace = true
 
 [dependencies]
 git2.workspace = true
+ignore.workspace = true
 similar.workspace = true
 anyhow.workspace = true
 helix-buffer.workspace = true
