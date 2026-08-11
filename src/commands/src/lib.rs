@@ -80,6 +80,8 @@ actions!(
     SaveFile,
     TerminalCopy,
     TerminalPaste,
+    SelectPrev,
+    SelectNext,
   ]
 );
 
@@ -103,6 +105,12 @@ pub fn default_bindings() -> Vec<KeyBinding> {
     KeyBinding::new("cmd-q", Quit, None),
     KeyBinding::new("cmd-c", TerminalCopy, Some("Terminal")),
     KeyBinding::new("cmd-v", TerminalPaste, Some("Terminal")),
+    // A picker keeps its filter focused, and the input claims the arrow keys in
+    // its own context before any key handler above it runs. These bind the same
+    // keys in the same context but later, so a list gets first refusal and
+    // anything that does not handle them falls back through to the caret.
+    KeyBinding::new("up", SelectPrev, Some("Input")),
+    KeyBinding::new("down", SelectNext, Some("Input")),
   ];
 
   for slot in 0..SLOTS {

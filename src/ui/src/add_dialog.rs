@@ -1,10 +1,11 @@
 use crate::theme::Theme;
 use gpui::{
   AnyElement, App, Context, Entity, EventEmitter, FocusHandle, Focusable, IntoElement,
-  KeyDownEvent, ParentElement, Render, ScrollStrategy, SharedString, UniformListScrollHandle,
-  Window, div, prelude::*, px, uniform_list,
+  KeyDownEvent, ParentElement, Render, ScrollStrategy, SharedString, Task, UniformListScrollHandle,
+  WeakEntity, Window, div, prelude::*, px, uniform_list,
 };
 use gpui_component::input::{Input, InputEvent, InputState};
+use gpui_component::list::{List, ListDelegate, ListItem, ListState};
 use gpui_component::radio::Radio;
 use gpui_component::select::{Select, SelectEvent, SelectState};
 use gpui_component::{Icon, IconName, IndexPath, Sizable};
@@ -14,6 +15,173 @@ use std::path::PathBuf;
 
 const VISIBLE_BRANCHES: usize = 8;
 const BRANCH_ROW_HEIGHT: f32 = 26.0;
+
+fn stepped(current: usize, delta: isize, count: usize) -> usize {
+  (current + (count as isize + delta) as usize) % count
+}
+
+/// The worktrees already on disk that are not listed yet. The list widget owns
+/// the filter input, the keys and the scrolling.
+pub struct ExistingDelegate {
+  dialog: WeakEntity<AddDialog>,
+  rows: Vec<(String, PathBuf)>,
+  haystacks: Vec<String>,
+  matches: Vec<usize>,
+  ranker: Ranker,
+  selected: Option<IndexPath>,
+}
+
+impl ExistingDelegate {
+  fn new(rows: Vec<(String, PathBuf)>, dialog: WeakEntity<AddDialog>) -> Self {
+    let haystacks = rows
+      .iter()
+      .map(|(branch, path)| format!("{branch} {}", path.display()))
+      .collect();
+
+    let mut delegate = Self {
+      dialog,
+      rows,
+      haystacks,
+      matches: Vec::new(),
+      ranker: Ranker::new(),
+      selected: None,
+    };
+
+    delegate.rank("");
+
+    delegate
+  }
+
+  fn rank(&mut self, query: &str) {
+    self.ranker.set_query(query.trim());
+    self
+      .ranker
+      .rank_into(self.haystacks.iter().map(String::as_str), &mut self.matches);
+  }
+
+  fn matched(&self) -> usize {
+    self.matches.len()
+  }
+
+  fn row_at(&self, ix: IndexPath) -> Option<&(String, PathBuf)> {
+    self.rows.get(*self.matches.get(ix.row)?)
+  }
+}
+
+impl ListDelegate for ExistingDelegate {
+  type Item = ListItem;
+
+  fn perform_search(
+    &mut self,
+    query: &str,
+    _window: &mut Window,
+    _cx: &mut Context<ListState<Self>>,
+  ) -> Task<()> {
+    self.rank(query);
+
+    Task::ready(())
+  }
+
+  fn items_count(&self, _section: usize, _cx: &App) -> usize {
+    self.matches.len()
+  }
+
+  fn render_item(
+    &mut self,
+    ix: IndexPath,
+    _window: &mut Window,
+    cx: &mut Context<ListState<Self>>,
+  ) -> Option<Self::Item> {
+    let theme = Theme::of(cx).clone();
+    let (branch, path) = self.row_at(ix)?;
+    let display_path = helix_filesystem::paths::abbreviate_home(path);
+
+    Some(
+      ListItem::new(("existing", ix.row))
+        .selected(self.selected == Some(ix))
+        .h(px(30.0))
+        .mx_2()
+        .px_3()
+        .rounded_md()
+        .child(
+          div()
+            .flex()
+            .items_center()
+            .gap_2()
+            .size_full()
+            .child(crate::components::git_branch_icon(theme.purple))
+            .child(
+              div()
+                .flex_none()
+                .text_sm()
+                .font_weight(gpui::FontWeight::SEMIBOLD)
+                .text_color(theme.text)
+                .child(branch.clone()),
+            )
+            .child(
+              div()
+                .flex_1()
+                .text_xs()
+                .text_color(theme.text_dim)
+                .overflow_hidden()
+                .whitespace_nowrap()
+                .child(display_path),
+            ),
+        ),
+    )
+  }
+
+  fn render_empty(
+    &mut self,
+    _window: &mut Window,
+    cx: &mut Context<ListState<Self>>,
+  ) -> impl IntoElement {
+    let theme = Theme::of(cx).clone();
+
+    div()
+      .p_3()
+      .text_sm()
+      .text_color(theme.text_dim)
+      .child("No worktrees match")
+  }
+
+  fn set_selected_index(
+    &mut self,
+    ix: Option<IndexPath>,
+    _window: &mut Window,
+    _cx: &mut Context<ListState<Self>>,
+  ) {
+    self.selected = ix;
+  }
+
+  fn confirm(&mut self, _secondary: bool, _window: &mut Window, cx: &mut Context<ListState<Self>>) {
+    let Some(path) = self
+      .selected
+      .and_then(|ix| self.row_at(ix))
+      .map(|(_, path)| path.clone())
+    else {
+      return;
+    };
+
+    self
+      .dialog
+      .update(cx, |_, cx| {
+        cx.emit(AddDialogEvent::AddExistingWorktree(path))
+      })
+      .ok();
+  }
+
+  fn cancel(&mut self, _window: &mut Window, cx: &mut Context<ListState<Self>>) {
+    self
+      .dialog
+      .update(cx, |dialog, cx| {
+        dialog.step = Step::Choose;
+
+        cx.notify();
+      })
+      .ok();
+  }
+}
 
 pub enum AddDialogEvent {
   Dismissed,
@@ -49,10 +217,7 @@ enum AddOption {
 pub struct AddDialog {
   step: Step,
   selected: usize,
-  existing_selected: usize,
-  existing_filter: Entity<InputState>,
-  existing_haystacks: Vec<String>,
-  existing_matches: Vec<usize>,
+  existing_list: Entity<ListState<ExistingDelegate>>,
   branch_haystacks: Vec<String>,
   branch_matches: Vec<usize>,
   ranker: Ranker,
@@ -107,26 +272,8 @@ impl AddDialog {
     let ai_context =
       cx.new(|cx| InputState::new(window, cx).placeholder("what should this branch do?"));
     let branch_filter = cx.new(|cx| InputState::new(window, cx).placeholder("filter branches..."));
-    let existing_filter =
-      cx.new(|cx| InputState::new(window, cx).placeholder("filter worktrees..."));
-
-    cx.subscribe(
-      &existing_filter,
-      |this, _, event: &InputEvent, cx| match event {
-        InputEvent::Change => {
-          this.refresh_existing_matches(cx);
-
-          cx.notify();
-        }
-        InputEvent::PressEnter { .. } => {
-          if let Some((_, path)) = this.existing_at(this.existing_selected) {
-            cx.emit(AddDialogEvent::AddExistingWorktree(path.clone()));
-          }
-        }
-        _ => {}
-      },
-    )
-    .detach();
+    let existing_delegate = ExistingDelegate::new(existing.clone(), cx.entity().downgrade());
+    let existing_list = cx.new(|cx| ListState::new(existing_delegate, window, cx));
 
     for input in [&worktree_name, &branch_name, &branch_filter] {
       cx.subscribe(input, |this, _, event: &InputEvent, cx| {
@@ -182,13 +329,7 @@ impl AddDialog {
     Self {
       step: Step::Choose,
       selected: 0,
-      existing_selected: 0,
-      existing_filter,
-      existing_haystacks: existing
-        .iter()
-        .map(|(branch, path)| format!("{branch} {}", path.display()))
-        .collect(),
-      existing_matches: (0..existing.len()).collect(),
+      existing_list,
       branch_haystacks: Vec::new(),
       branch_matches: Vec::new(),
       ranker: Ranker::new(),
@@ -227,20 +368,8 @@ impl AddDialog {
     }
   }
 
-  /// Both pickers keep their matches as indices into the list they came from, so
+  /// The branch picker keeps its matches as indices into the branch list, so
   /// filtering never clones a row and `render` never filters.
-  fn refresh_existing_matches(&mut self, cx: &App) {
-    let query = self.existing_filter.read(cx).value();
-
-    self.existing_selected = 0;
-    self.ranker.set_query(query.trim());
-
-    self.ranker.rank_into(
-      self.existing_haystacks.iter().map(String::as_str),
-      &mut self.existing_matches,
-    );
-  }
-
   fn refresh_branch_matches(&mut self, cx: &App) {
     let query = self.branch_filter.read(cx).value();
 
@@ -253,11 +382,58 @@ impl AddDialog {
     );
   }
 
-  fn existing_at(&self, position: usize) -> Option<&(String, PathBuf)> {
-    self
-      .existing_matches
-      .get(position)
-      .and_then(|ix| self.existing.get(*ix))
+  fn select_prev(
+    &mut self,
+    _: &helix_commands::SelectPrev,
+    _window: &mut Window,
+    cx: &mut Context<Self>,
+  ) {
+    self.step_selection(-1, cx);
+  }
+
+  fn select_next(
+    &mut self,
+    _: &helix_commands::SelectNext,
+    _window: &mut Window,
+    cx: &mut Context<Self>,
+  ) {
+    self.step_selection(1, cx);
+  }
+
+  /// The filter input owns the focus while a picker is open, so moving the
+  /// selection arrives as an action rather than a key event. Anything that is
+  /// not a picker hands the keystroke back for the caret to use.
+  fn step_selection(&mut self, delta: isize, cx: &mut Context<Self>) {
+    match self.step {
+      Step::Name if self.branch_mode == BranchMode::Existing => {
+        let count = self.branch_matches.len();
+
+        if count == 0 {
+          cx.propagate();
+
+          return;
+        }
+
+        self.branch_selected = stepped(self.branch_selected, delta, count);
+
+        let strategy = if delta < 0 {
+          ScrollStrategy::Top
+        } else {
+          ScrollStrategy::Bottom
+        };
+
+        self
+          .branch_scroll
+          .scroll_to_item(self.branch_selected, strategy);
+      }
+      _ => {
+        cx.propagate();
+
+        return;
+      }
+    }
+
+    cx.notify();
   }
 
   fn confirm_choice(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -278,7 +454,9 @@ impl AddDialog {
       AddOption::ExistingWorktree if !self.existing.is_empty() => {
         self.step = Step::Existing;
 
-        window.focus(&self.existing_filter.read(cx).focus_handle(cx));
+        self
+          .existing_list
+          .update(cx, |list, cx| list.focus(window, cx));
         cx.notify();
       }
       _ => {}
@@ -552,33 +730,7 @@ impl AddDialog {
         }
         _ => {}
       },
-      Step::Existing => match event.keystroke.key.as_str() {
-        "escape" => {
-          self.step = Step::Choose;
-
-          self
-            .existing_filter
-            .update(cx, |state, cx| state.set_value("", window, cx));
-
-          window.focus(&self.focus_handle);
-          cx.notify();
-        }
-        "up" => {
-          let count = self.existing_matches.len().max(1);
-
-          self.existing_selected = (self.existing_selected + count - 1) % count;
-
-          cx.notify();
-        }
-        "down" => {
-          let count = self.existing_matches.len().max(1);
-
-          self.existing_selected = (self.existing_selected + 1) % count;
-
-          cx.notify();
-        }
-        _ => {}
-      },
+      Step::Existing => {}
       Step::Name => {
         if event.keystroke.key.as_str() == "escape" {
           self.step = Step::Choose;
@@ -586,36 +738,6 @@ impl AddDialog {
 
           window.focus(&self.focus_handle);
           cx.notify();
-
-          return;
-        }
-
-        if self.branch_mode != BranchMode::Existing {
-          return;
-        }
-
-        match event.keystroke.key.as_str() {
-          "up" => {
-            let count = self.branch_matches.len().max(1);
-
-            self.branch_selected = (self.branch_selected + count - 1) % count;
-
-            self
-              .branch_scroll
-              .scroll_to_item(self.branch_selected, ScrollStrategy::Top);
-            cx.notify();
-          }
-          "down" => {
-            let count = self.branch_matches.len().max(1);
-
-            self.branch_selected = (self.branch_selected + 1) % count;
-
-            self
-              .branch_scroll
-              .scroll_to_item(self.branch_selected, ScrollStrategy::Bottom);
-            cx.notify();
-          }
-          _ => {}
         }
       }
     }
@@ -727,101 +849,32 @@ impl Render for AddDialog {
         }
         list.into_any_element()
       }
-      Step::Existing => {
-        let selected_ix = self
-          .existing_selected
-          .min(self.existing_matches.len().saturating_sub(1));
-        let mut list = div().flex().flex_col().gap_0p5().pb_2().child(
+      Step::Existing => div()
+        .flex()
+        .flex_col()
+        .gap_1()
+        .pb_2()
+        .h(px(280.0))
+        .child(
           div()
             .flex()
-            .items_center()
-            .gap_2()
-            .mx_2()
-            .mb_1()
-            .h(px(32.0))
-            .px_2()
-            .rounded_md()
-            .border_1()
-            .border_color(theme.active)
-            .bg(theme.elevated)
-            .child(
-              div()
-                .flex_none()
-                .text_color(theme.text_dim)
-                .child(Icon::new(IconName::Search).size_4()),
-            )
-            .child(
-              div()
-                .flex_1()
-                .child(Input::new(&self.existing_filter).appearance(false).small()),
-            )
-            .child(
-              div()
-                .text_xs()
-                .text_color(theme.text_dim)
-                .child(format!("{}", self.existing_matches.len())),
-            ),
-        );
-        if self.existing_matches.is_empty() {
-          list = list.child(
-            div()
-              .p_3()
-              .text_sm()
-              .text_color(theme.text_dim)
-              .child("No worktrees match"),
-          );
-        }
-        list = list.children(self.existing_matches.iter().enumerate().filter_map(
-          |(ix, item_ix)| {
-            let (branch, path) = self.existing.get(*item_ix)?;
-            let is_selected = ix == selected_ix;
-            let target = path.clone();
-            let display_path = helix_filesystem::paths::abbreviate_home(path);
-            let row = div()
-              .id(SharedString::from(format!("existing-{ix}")))
-              .flex()
-              .items_center()
-              .gap_2()
-              .mx_2()
-              .px_3()
-              .h(px(30.0))
-              .rounded_md()
-              .border_1()
-              .cursor_pointer()
-              .when(is_selected, |el| {
-                el.border_color(theme.active).bg(theme.elevated)
-              })
-              .when(!is_selected, |el| {
-                el.border_color(gpui::transparent_black())
-                  .hover(|s| s.bg(theme.hover))
-              })
-              .on_click(cx.listener(move |_, _, _, cx| {
-                cx.emit(AddDialogEvent::AddExistingWorktree(target.clone()));
-              }))
-              .child(crate::components::git_branch_icon(theme.purple))
-              .child(
-                div()
-                  .flex_none()
-                  .text_sm()
-                  .font_weight(gpui::FontWeight::SEMIBOLD)
-                  .text_color(theme.text)
-                  .child(branch.clone()),
-              )
-              .child(
-                div()
-                  .flex_1()
-                  .text_xs()
-                  .text_color(theme.text_dim)
-                  .overflow_hidden()
-                  .whitespace_nowrap()
-                  .child(display_path),
-              );
-
-            Some(row)
-          },
-        ));
-        list.into_any_element()
-      }
+            .flex_none()
+            .justify_end()
+            .px_3()
+            .text_xs()
+            .text_color(theme.text_dim)
+            .child(format!(
+              "{} on disk",
+              self.existing_list.read(cx).delegate().matched()
+            )),
+        )
+        .child(
+          List::new(&self.existing_list)
+            .search_placeholder("filter worktrees...")
+            .flex_1()
+            .min_h_0(),
+        )
+        .into_any_element(),
       Step::Name => {
         let field = |label: &'static str, hint: &'static str, input: &Entity<InputState>| {
           div()
@@ -1143,6 +1196,8 @@ impl Render for AddDialog {
           }),
         )
       })
+      .on_action(cx.listener(Self::select_prev))
+      .on_action(cx.listener(Self::select_next))
       .on_key_down(cx.listener(Self::on_key_down))
       .w(px(440.0))
       .rounded_xl()

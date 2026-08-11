@@ -1,11 +1,10 @@
 use crate::theme::Theme;
 use gpui::{
-  AnyElement, App, Context, Entity, EventEmitter, FocusHandle, Focusable, IntoElement,
-  KeyDownEvent, ParentElement, Render, ScrollStrategy, SharedString, UniformListScrollHandle,
-  Window, div, prelude::*, px, uniform_list,
+  App, Context, Entity, EventEmitter, FocusHandle, Focusable, IntoElement, ParentElement, Render,
+  SharedString, Task, WeakEntity, Window, div, prelude::*, px,
 };
-use gpui_component::input::{Input, InputEvent, InputState};
-use gpui_component::{Icon, IconName, Sizable};
+use gpui_component::list::{List, ListDelegate, ListItem, ListState};
+use gpui_component::{Icon, IconName, IndexPath};
 use helix_fuzzy::Ranker;
 use std::path::PathBuf;
 
@@ -30,8 +29,8 @@ impl SearchTarget {
     }
   }
 
-  /// Ranking reorders items by score, so the section a row belongs to has to
-  /// keep its place explicitly or the headers would repeat down the list.
+  /// Ranking reorders results by score, so a section keeps its place explicitly
+  /// rather than following the best match in it.
   fn section_order(&self) -> u8 {
     match self {
       SearchTarget::Worktree(_) => 0,
@@ -65,24 +64,8 @@ pub enum SearchEvent {
   Selected(SearchTarget),
 }
 
-/// The list mixes section headers with results, and `uniform_list` needs one
-/// height for every row, so both are laid out as rows of `ROW_HEIGHT`.
-#[derive(Clone, Copy)]
-enum Row {
-  Header(&'static str),
-  Result(usize),
-}
-
 pub struct SearchDialog {
-  items: Vec<SearchItem>,
-  haystacks: Vec<String>,
-  matches: Vec<usize>,
-  rows: Vec<Row>,
-  match_rows: Vec<usize>,
-  scroll: UniformListScrollHandle,
-  ranker: Ranker,
-  filter: Entity<InputState>,
-  selected: usize,
+  list: Entity<ListState<SearchDelegate>>,
   focus_handle: FocusHandle,
 }
 
@@ -90,280 +73,25 @@ impl EventEmitter<SearchEvent> for SearchDialog {}
 
 impl Focusable for SearchDialog {
   fn focus_handle(&self, cx: &App) -> FocusHandle {
-    self.filter.read(cx).focus_handle(cx)
+    self.list.read(cx).focus_handle(cx)
   }
 }
 
 impl SearchDialog {
   pub fn new(items: Vec<SearchItem>, window: &mut Window, cx: &mut Context<Self>) -> Self {
-    let haystacks = items.iter().map(haystack_of).collect();
-    let filter = cx.new(|cx| {
-      InputState::new(window, cx).placeholder("Search worktrees, tabs, projects, and actions...")
-    });
+    let delegate = SearchDelegate::new(items, cx.entity().downgrade());
+    let list = cx.new(|cx| ListState::new(delegate, window, cx));
 
-    cx.subscribe(&filter, |this, _, event: &InputEvent, cx| match event {
-      InputEvent::Change => {
-        this.refresh_matches(cx);
-
-        cx.notify();
-      }
-      InputEvent::PressEnter { .. } => this.emit_selection(cx),
-      _ => {}
-    })
-    .detach();
-
-    let mut dialog = Self {
-      items,
-      haystacks,
-      matches: Vec::new(),
-      rows: Vec::new(),
-      match_rows: Vec::new(),
-      scroll: UniformListScrollHandle::new(),
-      ranker: Ranker::new(),
-      filter,
-      selected: 0,
+    Self {
+      list,
       focus_handle: cx.focus_handle(),
-    };
-
-    dialog.refresh_matches(cx);
-
-    dialog
-  }
-
-  fn emit_selection(&mut self, cx: &mut Context<Self>) {
-    if let Some(item) = self
-      .matches
-      .get(self.selected)
-      .and_then(|ix| self.items.get(*ix))
-    {
-      cx.emit(SearchEvent::Selected(item.target.clone()));
     }
   }
-
-  /// Matching runs over the prebuilt haystacks and yields indices, so a
-  /// keystroke never clones the item list and `render` never filters.
-  fn refresh_matches(&mut self, cx: &App) {
-    let query = self.filter.read(cx).value();
-
-    self.selected = 0;
-    self.ranker.set_query(query.trim());
-    self
-      .ranker
-      .rank_into(self.haystacks.iter().map(String::as_str), &mut self.matches);
-
-    self
-      .matches
-      .sort_by_key(|ix| self.items[*ix].target.section_order());
-
-    self.rebuild_rows();
-  }
-
-  fn rebuild_rows(&mut self) {
-    self.rows.clear();
-    self.match_rows.clear();
-
-    let mut last_section = "";
-
-    for (position, ix) in self.matches.iter().enumerate() {
-      let section = self.items[*ix].target.section();
-
-      if section != last_section {
-        last_section = section;
-
-        self.rows.push(Row::Header(section));
-      }
-
-      self.match_rows.push(self.rows.len());
-      self.rows.push(Row::Result(position));
-    }
-  }
-
-  fn render_row(
-    &self,
-    row: Row,
-    selected: usize,
-    theme: &Theme,
-    cx: &mut Context<Self>,
-  ) -> AnyElement {
-    let position = match row {
-      Row::Header(section) => {
-        return div()
-          .flex()
-          .items_center()
-          .h(px(ROW_HEIGHT))
-          .px_3()
-          .text_xs()
-          .text_color(theme.text_dim)
-          .child(section)
-          .into_any_element();
-      }
-      Row::Result(position) => position,
-    };
-
-    let Some(item) = self
-      .matches
-      .get(position)
-      .and_then(|ix| self.items.get(*ix))
-    else {
-      return div().h(px(ROW_HEIGHT)).into_any_element();
-    };
-
-    let is_selected = position == selected;
-    let target = item.target.clone();
-
-    div()
-      .id(SharedString::from(format!("search-item-{position}")))
-      .flex()
-      .items_center()
-      .gap_2()
-      .mx_2()
-      .px_2()
-      .h(px(ROW_HEIGHT))
-      .rounded_md()
-      .cursor_pointer()
-      .when(is_selected, |el| {
-        el.bg(theme.elevated).border_1().border_color(theme.active)
-      })
-      .when(!is_selected, |el| el.hover(|s| s.bg(theme.hover)))
-      .on_click(cx.listener(move |_, _, _, cx| {
-        cx.emit(SearchEvent::Selected(target.clone()));
-      }))
-      .child(
-        div()
-          .flex_none()
-          .text_color(theme.text_dim)
-          .child(Icon::new(item.target.icon()).size_4()),
-      )
-      .child(
-        div()
-          .text_sm()
-          .text_color(theme.text)
-          .child(item.label.clone()),
-      )
-      .child(
-        div()
-          .flex_1()
-          .text_xs()
-          .text_color(theme.text_dim)
-          .overflow_hidden()
-          .child(item.detail.clone()),
-      )
-      .child(
-        div()
-          .flex_none()
-          .px_1p5()
-          .py_0p5()
-          .rounded_sm()
-          .border_1()
-          .border_color(theme.panel_border)
-          .text_xs()
-          .text_color(theme.text_muted)
-          .child(item.badge.clone()),
-      )
-      .into_any_element()
-  }
-
-  fn reveal_selection(&mut self) {
-    if let Some(row) = self.match_rows.get(self.selected) {
-      self.scroll.scroll_to_item(*row, ScrollStrategy::Center);
-    }
-  }
-
-  fn on_key_down(&mut self, event: &KeyDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
-    let count = self.matches.len();
-
-    match event.keystroke.key.as_str() {
-      "escape" => {
-        cx.emit(SearchEvent::Dismissed);
-        return;
-      }
-      "up" => {
-        if count > 0 {
-          self.selected = (self.selected + count - 1) % count;
-          self.reveal_selection();
-        }
-
-        cx.notify();
-
-        return;
-      }
-      "down" => {
-        if count > 0 {
-          self.selected = (self.selected + 1) % count;
-          self.reveal_selection();
-        }
-
-        cx.notify();
-
-        return;
-      }
-      _ => {}
-    }
-  }
-}
-
-fn haystack_of(item: &SearchItem) -> String {
-  [
-    item.label.as_str(),
-    item.detail.as_str(),
-    item.badge.as_str(),
-  ]
-  .join(" ")
 }
 
 impl Render for SearchDialog {
   fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
     let theme = Theme::of(cx).clone();
-    let selected = self.selected.min(self.matches.len().saturating_sub(1));
-
-    let input_row = div()
-      .flex()
-      .flex_none()
-      .items_center()
-      .gap_2()
-      .h(px(46.0))
-      .px_3()
-      .border_b_1()
-      .border_color(theme.panel_border)
-      .child(
-        div()
-          .flex_none()
-          .text_color(theme.text_dim)
-          .child(Icon::new(IconName::Search).size_4()),
-      )
-      .child(
-        div()
-          .flex_1()
-          .child(Input::new(&self.filter).appearance(false).small()),
-      );
-
-    let list: AnyElement = if self.rows.is_empty() {
-      div()
-        .flex_1()
-        .p_4()
-        .text_sm()
-        .text_color(theme.text_dim)
-        .child("No results")
-        .into_any_element()
-    } else {
-      let rows = self.rows.clone();
-      let entity = cx.entity();
-
-      uniform_list("search-results", rows.len(), move |range, _, cx| {
-        entity.update(cx, |dialog, cx| {
-          let theme = Theme::of(cx).clone();
-
-          range
-            .filter_map(|ix| Some(dialog.render_row(*rows.get(ix)?, selected, &theme, cx)))
-            .collect()
-        })
-      })
-      .track_scroll(self.scroll.clone())
-      .flex_1()
-      .min_h_0()
-      .py_1()
-      .into_any_element()
-    };
 
     let hint = |key: &'static str, action: &'static str| {
       div()
@@ -403,13 +131,6 @@ impl Render for SearchDialog {
       .occlude()
       .track_focus(&self.focus_handle)
       .on_click(|_, _, cx| cx.stop_propagation())
-      .on_mouse_down(
-        gpui::MouseButton::Left,
-        cx.listener(|this, _, window, cx| {
-          window.focus(&this.filter.read(cx).focus_handle(cx));
-        }),
-      )
-      .on_key_down(cx.listener(Self::on_key_down))
       .w(px(640.0))
       .max_h(px(520.0))
       .rounded_xl()
@@ -420,8 +141,241 @@ impl Render for SearchDialog {
       .flex()
       .flex_col()
       .overflow_hidden()
-      .child(input_row)
-      .child(list)
+      .child(
+        List::new(&self.list)
+          .search_placeholder("Search worktrees, tabs, projects, and actions...")
+          .flex_1()
+          .min_h_0(),
+      )
       .child(footer)
   }
+}
+
+struct Section {
+  name: &'static str,
+  matches: Vec<usize>,
+}
+
+/// The list widget owns the query input, the keys and the scrolling; the
+/// delegate only decides which items match, how they group and what a row
+/// looks like.
+pub struct SearchDelegate {
+  dialog: WeakEntity<SearchDialog>,
+  items: Vec<SearchItem>,
+  haystacks: Vec<String>,
+  matches: Vec<usize>,
+  sections: Vec<Section>,
+  ranker: Ranker,
+  selected: Option<IndexPath>,
+}
+
+impl SearchDelegate {
+  fn new(items: Vec<SearchItem>, dialog: WeakEntity<SearchDialog>) -> Self {
+    let haystacks = items.iter().map(haystack_of).collect();
+
+    let mut delegate = Self {
+      dialog,
+      items,
+      haystacks,
+      matches: Vec::new(),
+      sections: Vec::new(),
+      ranker: Ranker::new(),
+      selected: None,
+    };
+
+    delegate.rank("");
+
+    delegate
+  }
+
+  fn rank(&mut self, query: &str) {
+    self.ranker.set_query(query.trim());
+    self
+      .ranker
+      .rank_into(self.haystacks.iter().map(String::as_str), &mut self.matches);
+
+    self
+      .matches
+      .sort_by_key(|ix| self.items[*ix].target.section_order());
+
+    self.sections.clear();
+
+    for ix in &self.matches {
+      let name = self.items[*ix].target.section();
+
+      match self.sections.last_mut() {
+        Some(section) if section.name == name => section.matches.push(*ix),
+        _ => self.sections.push(Section {
+          name,
+          matches: vec![*ix],
+        }),
+      }
+    }
+  }
+
+  fn item_at(&self, ix: IndexPath) -> Option<&SearchItem> {
+    let position = self.sections.get(ix.section)?.matches.get(ix.row)?;
+
+    self.items.get(*position)
+  }
+}
+
+impl ListDelegate for SearchDelegate {
+  type Item = ListItem;
+
+  fn perform_search(
+    &mut self,
+    query: &str,
+    _window: &mut Window,
+    _cx: &mut Context<ListState<Self>>,
+  ) -> Task<()> {
+    self.rank(query);
+
+    Task::ready(())
+  }
+
+  fn sections_count(&self, _cx: &App) -> usize {
+    self.sections.len()
+  }
+
+  fn items_count(&self, section: usize, _cx: &App) -> usize {
+    self
+      .sections
+      .get(section)
+      .map(|section| section.matches.len())
+      .unwrap_or(0)
+  }
+
+  fn render_section_header(
+    &mut self,
+    section: usize,
+    _window: &mut Window,
+    cx: &mut Context<ListState<Self>>,
+  ) -> Option<impl IntoElement> {
+    let theme = Theme::of(cx).clone();
+    let name = self.sections.get(section)?.name;
+
+    Some(
+      div()
+        .flex()
+        .items_center()
+        .h(px(26.0))
+        .px_3()
+        .text_xs()
+        .text_color(theme.text_dim)
+        .child(name),
+    )
+  }
+
+  fn render_item(
+    &mut self,
+    ix: IndexPath,
+    _window: &mut Window,
+    cx: &mut Context<ListState<Self>>,
+  ) -> Option<Self::Item> {
+    let theme = Theme::of(cx).clone();
+    let item = self.item_at(ix)?;
+
+    Some(
+      ListItem::new(("search-item", ix.section * 1000 + ix.row))
+        .selected(self.selected == Some(ix))
+        .h(px(ROW_HEIGHT))
+        .mx_2()
+        .px_2()
+        .rounded_md()
+        .child(
+          div()
+            .flex()
+            .items_center()
+            .gap_2()
+            .size_full()
+            .child(
+              div()
+                .flex_none()
+                .text_color(theme.text_dim)
+                .child(Icon::new(item.target.icon()).size_4()),
+            )
+            .child(
+              div()
+                .text_sm()
+                .text_color(theme.text)
+                .child(item.label.clone()),
+            )
+            .child(
+              div()
+                .flex_1()
+                .text_xs()
+                .text_color(theme.text_dim)
+                .overflow_hidden()
+                .child(item.detail.clone()),
+            )
+            .child(
+              div()
+                .flex_none()
+                .px_1p5()
+                .py_0p5()
+                .rounded_sm()
+                .border_1()
+                .border_color(theme.panel_border)
+                .text_xs()
+                .text_color(theme.text_muted)
+                .child(item.badge.clone()),
+            ),
+        ),
+    )
+  }
+
+  fn render_empty(
+    &mut self,
+    _window: &mut Window,
+    cx: &mut Context<ListState<Self>>,
+  ) -> impl IntoElement {
+    let theme = Theme::of(cx).clone();
+
+    div()
+      .p_4()
+      .text_sm()
+      .text_color(theme.text_dim)
+      .child("No results")
+  }
+
+  fn set_selected_index(
+    &mut self,
+    ix: Option<IndexPath>,
+    _window: &mut Window,
+    _cx: &mut Context<ListState<Self>>,
+  ) {
+    self.selected = ix;
+  }
+
+  fn confirm(&mut self, _secondary: bool, _window: &mut Window, cx: &mut Context<ListState<Self>>) {
+    let Some(target) = self
+      .selected
+      .and_then(|ix| self.item_at(ix))
+      .map(|item| item.target.clone())
+    else {
+      return;
+    };
+
+    self
+      .dialog
+      .update(cx, |_, cx| cx.emit(SearchEvent::Selected(target)))
+      .ok();
+  }
+
+  fn cancel(&mut self, _window: &mut Window, cx: &mut Context<ListState<Self>>) {
+    self
+      .dialog
+      .update(cx, |_, cx| cx.emit(SearchEvent::Dismissed))
+      .ok();
+  }
+}
+
+fn haystack_of(item: &SearchItem) -> String {
+  [
+    item.label.as_str(),
+    item.detail.as_str(),
+    item.badge.as_str(),
+  ]
+  .join(" ")
 }
