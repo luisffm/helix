@@ -137,11 +137,3 @@ pub fn ago(epoch_seconds: i64) -> String {
 
   elapsed_label((now - epoch_seconds).max(0) as u64)
 }
-
-/// `query_lower` must already be lowercase. Matches an item made of several
-/// fields, unlike `scan::match_rank`, which ranks a single name.
-pub fn query_matches(query_lower: &str, fields: &[&str]) -> bool {
-  fields
-    .iter()
-    .any(|field| field.to_lowercase().contains(query_lower))
-}

@@ -1,4 +1,3 @@
-use crate::components::query_matches;
 use crate::theme::Theme;
 use gpui::{
   AnyElement, App, Context, Entity, EventEmitter, FocusHandle, Focusable, IntoElement,
@@ -9,6 +8,7 @@ use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::radio::Radio;
 use gpui_component::select::{Select, SelectEvent, SelectState};
 use gpui_component::{Icon, IconName, IndexPath, Sizable};
+use helix_fuzzy::Ranker;
 use helix_worktree::{BranchRef, BranchSource};
 use std::path::PathBuf;
 
@@ -51,6 +51,11 @@ pub struct AddDialog {
   selected: usize,
   existing_selected: usize,
   existing_query: String,
+  existing_haystacks: Vec<String>,
+  existing_matches: Vec<usize>,
+  branch_haystacks: Vec<String>,
+  branch_matches: Vec<usize>,
+  ranker: Ranker,
   worktree_name: Entity<InputState>,
   branch_name: Entity<InputState>,
   ai_context: Entity<InputState>,
@@ -114,7 +119,7 @@ impl AddDialog {
 
     cx.subscribe(&branch_filter, |this, _, event: &InputEvent, cx| {
       if matches!(event, InputEvent::Change) {
-        this.branch_selected = 0;
+        this.refresh_branch_matches(cx);
 
         cx.notify();
       }
@@ -137,6 +142,8 @@ impl AddDialog {
       window,
       |this, _, _: &SelectEvent<Vec<String>>, window, cx| {
         this.branches.clear();
+        this.branch_haystacks.clear();
+        this.branch_matches.clear();
         this.branch_selected = 0;
 
         this
@@ -157,6 +164,14 @@ impl AddDialog {
       selected: 0,
       existing_selected: 0,
       existing_query: String::new(),
+      existing_haystacks: existing
+        .iter()
+        .map(|(branch, path)| format!("{branch} {}", path.display()))
+        .collect(),
+      existing_matches: (0..existing.len()).collect(),
+      branch_haystacks: Vec::new(),
+      branch_matches: Vec::new(),
+      ranker: Ranker::new(),
       worktree_name,
       branch_name,
       ai_context,
@@ -192,19 +207,35 @@ impl AddDialog {
     }
   }
 
-  fn filtered_existing(&self) -> Vec<(String, PathBuf)> {
-    if self.existing_query.is_empty() {
-      return self.existing.clone();
-    }
+  /// Both pickers keep their matches as indices into the list they came from, so
+  /// filtering never clones a row and `render` never filters.
+  fn refresh_existing_matches(&mut self) {
+    self.existing_selected = 0;
+    self.ranker.set_query(&self.existing_query);
 
-    let query = self.existing_query.to_lowercase();
+    self.ranker.rank_into(
+      self.existing_haystacks.iter().map(String::as_str),
+      &mut self.existing_matches,
+    );
+  }
 
+  fn refresh_branch_matches(&mut self, cx: &App) {
+    let query = self.branch_filter.read(cx).value();
+
+    self.branch_selected = 0;
+    self.ranker.set_query(query.trim());
+
+    self.ranker.rank_into(
+      self.branch_haystacks.iter().map(String::as_str),
+      &mut self.branch_matches,
+    );
+  }
+
+  fn existing_at(&self, position: usize) -> Option<&(String, PathBuf)> {
     self
-      .existing
-      .iter()
-      .filter(|(branch, path)| query_matches(&query, &[branch, &path.display().to_string()]))
-      .cloned()
-      .collect()
+      .existing_matches
+      .get(position)
+      .and_then(|ix| self.existing.get(*ix))
   }
 
   fn confirm_choice(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -242,26 +273,16 @@ impl AddDialog {
     self.targets.get(row).map(|(_, path)| path.clone())
   }
 
-  fn filtered_branches(&self, cx: &App) -> Vec<BranchRef> {
-    let query = self.branch_filter.read(cx).value().trim().to_lowercase();
-
-    if query.is_empty() {
-      return self.branches.clone();
-    }
+  fn selected_branch(&self, _cx: &App) -> Option<BranchRef> {
+    let position = self
+      .branch_selected
+      .min(self.branch_matches.len().saturating_sub(1));
 
     self
-      .branches
-      .iter()
-      .filter(|branch| query_matches(&query, &[&branch.label()]))
+      .branch_matches
+      .get(position)
+      .and_then(|ix| self.branches.get(*ix))
       .cloned()
-      .collect()
-  }
-
-  fn selected_branch(&self, cx: &App) -> Option<BranchRef> {
-    let filtered = self.filtered_branches(cx);
-    let ix = self.branch_selected.min(filtered.len().saturating_sub(1));
-
-    filtered.get(ix).cloned()
   }
 
   fn load_branches(&mut self, cx: &mut Context<Self>) {
@@ -280,9 +301,11 @@ impl AddDialog {
 
       this
         .update(cx, |dialog, cx| {
+          dialog.branch_haystacks = branches.iter().map(BranchRef::label).collect();
           dialog.branches = branches;
-          dialog.branch_selected = 0;
           dialog.loading_branches = false;
+
+          dialog.refresh_branch_matches(cx);
 
           cx.notify();
         })
@@ -510,24 +533,24 @@ impl AddDialog {
         "escape" => {
           self.step = Step::Choose;
           self.existing_query.clear();
-          self.existing_selected = 0;
+          self.refresh_existing_matches();
 
           cx.notify();
         }
         "enter" => {
-          if let Some((_, path)) = self.filtered_existing().get(self.existing_selected) {
+          if let Some((_, path)) = self.existing_at(self.existing_selected) {
             cx.emit(AddDialogEvent::AddExistingWorktree(path.clone()));
           }
         }
         "up" => {
-          let count = self.filtered_existing().len().max(1);
+          let count = self.existing_matches.len().max(1);
 
           self.existing_selected = (self.existing_selected + count - 1) % count;
 
           cx.notify();
         }
         "down" => {
-          let count = self.filtered_existing().len().max(1);
+          let count = self.existing_matches.len().max(1);
 
           self.existing_selected = (self.existing_selected + 1) % count;
 
@@ -535,7 +558,7 @@ impl AddDialog {
         }
         "backspace" => {
           self.existing_query.pop();
-          self.existing_selected = 0;
+          self.refresh_existing_matches();
 
           cx.notify();
         }
@@ -548,7 +571,7 @@ impl AddDialog {
 
           if let Some(text) = &event.keystroke.key_char {
             self.existing_query.push_str(text);
-            self.existing_selected = 0;
+            self.refresh_existing_matches();
 
             cx.notify();
           }
@@ -571,7 +594,7 @@ impl AddDialog {
 
         match event.keystroke.key.as_str() {
           "up" => {
-            let count = self.filtered_branches(cx).len().max(1);
+            let count = self.branch_matches.len().max(1);
 
             self.branch_selected = (self.branch_selected + count - 1) % count;
 
@@ -581,7 +604,7 @@ impl AddDialog {
             cx.notify();
           }
           "down" => {
-            let count = self.filtered_branches(cx).len().max(1);
+            let count = self.branch_matches.len().max(1);
 
             self.branch_selected = (self.branch_selected + 1) % count;
 
@@ -703,8 +726,9 @@ impl Render for AddDialog {
         list.into_any_element()
       }
       Step::Existing => {
-        let filtered = self.filtered_existing();
-        let selected_ix = self.existing_selected.min(filtered.len().saturating_sub(1));
+        let selected_ix = self
+          .existing_selected
+          .min(self.existing_matches.len().saturating_sub(1));
         let mut list = div().flex().flex_col().gap_0p5().pb_2().child(
           div()
             .flex()
@@ -741,10 +765,10 @@ impl Render for AddDialog {
               div()
                 .text_xs()
                 .text_color(theme.text_dim)
-                .child(format!("{}", filtered.len())),
+                .child(format!("{}", self.existing_matches.len())),
             ),
         );
-        if filtered.is_empty() {
+        if self.existing_matches.is_empty() {
           list = list.child(
             div()
               .p_3()
@@ -753,55 +777,55 @@ impl Render for AddDialog {
               .child("No worktrees match"),
           );
         }
-        list = list.children(
-          filtered
-            .into_iter()
-            .enumerate()
-            .map(|(ix, (branch, path))| {
-              let is_selected = ix == selected_ix;
-              let target = path.clone();
-              let display_path = helix_filesystem::paths::abbreviate_home(&path);
-              div()
-                .id(SharedString::from(format!("existing-{ix}")))
-                .flex()
-                .items_center()
-                .gap_2()
-                .mx_2()
-                .px_3()
-                .h(px(30.0))
-                .rounded_md()
-                .border_1()
-                .cursor_pointer()
-                .when(is_selected, |el| {
-                  el.border_color(theme.active).bg(theme.elevated)
-                })
-                .when(!is_selected, |el| {
-                  el.border_color(gpui::transparent_black())
-                    .hover(|s| s.bg(theme.hover))
-                })
-                .on_click(cx.listener(move |_, _, _, cx| {
-                  cx.emit(AddDialogEvent::AddExistingWorktree(target.clone()));
-                }))
-                .child(crate::components::git_branch_icon(theme.purple))
-                .child(
-                  div()
-                    .flex_none()
-                    .text_sm()
-                    .font_weight(gpui::FontWeight::SEMIBOLD)
-                    .text_color(theme.text)
-                    .child(branch.clone()),
-                )
-                .child(
-                  div()
-                    .flex_1()
-                    .text_xs()
-                    .text_color(theme.text_dim)
-                    .overflow_hidden()
-                    .whitespace_nowrap()
-                    .child(display_path),
-                )
-            }),
-        );
+        list = list.children(self.existing_matches.iter().enumerate().filter_map(
+          |(ix, item_ix)| {
+            let (branch, path) = self.existing.get(*item_ix)?;
+            let is_selected = ix == selected_ix;
+            let target = path.clone();
+            let display_path = helix_filesystem::paths::abbreviate_home(path);
+            let row = div()
+              .id(SharedString::from(format!("existing-{ix}")))
+              .flex()
+              .items_center()
+              .gap_2()
+              .mx_2()
+              .px_3()
+              .h(px(30.0))
+              .rounded_md()
+              .border_1()
+              .cursor_pointer()
+              .when(is_selected, |el| {
+                el.border_color(theme.active).bg(theme.elevated)
+              })
+              .when(!is_selected, |el| {
+                el.border_color(gpui::transparent_black())
+                  .hover(|s| s.bg(theme.hover))
+              })
+              .on_click(cx.listener(move |_, _, _, cx| {
+                cx.emit(AddDialogEvent::AddExistingWorktree(target.clone()));
+              }))
+              .child(crate::components::git_branch_icon(theme.purple))
+              .child(
+                div()
+                  .flex_none()
+                  .text_sm()
+                  .font_weight(gpui::FontWeight::SEMIBOLD)
+                  .text_color(theme.text)
+                  .child(branch.clone()),
+              )
+              .child(
+                div()
+                  .flex_1()
+                  .text_xs()
+                  .text_color(theme.text_dim)
+                  .overflow_hidden()
+                  .whitespace_nowrap()
+                  .child(display_path),
+              );
+
+            Some(row)
+          },
+        ));
         list.into_any_element()
       }
       Step::Name => {
@@ -978,8 +1002,6 @@ impl Render for AddDialog {
               }),
           );
         } else {
-          let filtered = self.filtered_branches(cx);
-
           let mut picker = div()
             .flex()
             .flex_col()
@@ -1009,7 +1031,7 @@ impl Render for AddDialog {
                 .child(Input::new(&self.branch_filter).appearance(false).xsmall()),
             );
 
-          if filtered.is_empty() {
+          if self.branch_matches.is_empty() {
             if !self.loading_branches {
               picker = picker.child(div().text_xs().text_color(theme.text_dim).child(
                 if self.branches.is_empty() {
@@ -1020,9 +1042,10 @@ impl Render for AddDialog {
               ));
             }
           } else {
-            let height = px(BRANCH_ROW_HEIGHT * filtered.len().min(VISIBLE_BRANCHES) as f32);
+            let height =
+              px(BRANCH_ROW_HEIGHT * self.branch_matches.len().min(VISIBLE_BRANCHES) as f32);
             let entity = cx.entity();
-            let rows = filtered;
+            let rows = self.branch_matches.clone();
 
             picker = picker.child(
               uniform_list("branch-list", rows.len(), move |range, _, cx| {
@@ -1032,7 +1055,7 @@ impl Render for AddDialog {
 
                   range
                     .filter_map(|ix| {
-                      let branch = rows.get(ix)?;
+                      let branch = dialog.branches.get(*rows.get(ix)?)?;
 
                       Some(dialog.render_branch_row(ix, branch, ix == selected_ix, &theme, cx))
                     })
