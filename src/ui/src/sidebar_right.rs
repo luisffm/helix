@@ -27,7 +27,7 @@ const BASE_PAD: f32 = 8.0;
 const MAX_ROWS: usize = 2000;
 const MAX_DEPTH: usize = 16;
 const MAX_CACHED_DIRS: usize = 4096;
-const FILTER_DEBOUNCE: Duration = Duration::from_millis(100);
+const FILTER_DEBOUNCE: Duration = Duration::from_millis(300);
 
 pub enum ContextPanelEvent {
   OpenFile { path: PathBuf, preview: bool },
