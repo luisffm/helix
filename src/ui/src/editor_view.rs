@@ -35,6 +35,7 @@ pub struct EditorView {
   pub title: SharedString,
   body: Body,
   disk_signature: Option<u64>,
+  disk_len: Option<usize>,
   disk_stamp: Option<(std::time::SystemTime, u64)>,
   load_token: u64,
   dirty: bool,
@@ -74,6 +75,7 @@ impl EditorView {
       title: title.into(),
       body: Body::Binary,
       disk_signature: None,
+      disk_len: None,
       disk_stamp: None,
       load_token: 0,
       dirty: false,
@@ -141,6 +143,7 @@ impl EditorView {
     match content {
       Ok(FileContent::Text { text, signature }) => {
         self.disk_signature = Some(signature);
+        self.disk_len = Some(text.len());
 
         match &self.body {
           Body::Text(state) => {
@@ -192,7 +195,7 @@ impl EditorView {
       return;
     }
 
-    let dirty = self.buffer_signature(cx) != self.disk_signature;
+    let dirty = self.differs_from_disk(cx);
 
     if dirty != self.dirty {
       self.dirty = dirty;
@@ -202,9 +205,28 @@ impl EditorView {
     cx.notify();
   }
 
+  /// Hashing the buffer is the one step here that grows with the file, and it
+  /// runs on every keystroke, so a byte length that already moved answers the
+  /// question without touching the content.
+  fn differs_from_disk(&self, cx: &App) -> bool {
+    match (self.buffer_len(cx), self.disk_len) {
+      (Some(len), Some(disk_len)) if len != disk_len => true,
+      _ => self.buffer_signature(cx) != self.disk_signature,
+    }
+  }
+
+  fn buffer_len(&self, cx: &App) -> Option<usize> {
+    match &self.body {
+      Body::Text(state) => Some(state.read(cx).text().len()),
+      _ => None,
+    }
+  }
+
   fn buffer_signature(&self, cx: &App) -> Option<u64> {
     match &self.body {
-      Body::Text(state) => Some(helix_buffer::signature::of(state.read(cx).value().as_ref())),
+      Body::Text(state) => Some(helix_buffer::signature::of_chunks(
+        state.read(cx).text().chunks(),
+      )),
       _ => None,
     }
   }
@@ -214,11 +236,20 @@ impl EditorView {
       return;
     };
 
-    let text = state.read(cx).value().to_string();
+    let state = state.clone();
+    let (len, written) = {
+      let input = state.read(cx);
 
-    match helix_buffer::write(&self.path, &text) {
+      (
+        input.text().len(),
+        helix_buffer::write_chunks(&self.path, input.text().chunks()),
+      )
+    };
+
+    match written {
       Ok(signature) => {
         self.disk_signature = Some(signature);
+        self.disk_len = Some(len);
         self.disk_stamp = disk_stamp(&self.path);
         self.dirty = false;
         self.external = None;
@@ -289,9 +320,10 @@ impl EditorView {
   }
 
   pub fn keep_local_edits(&mut self, cx: &mut Context<Self>) {
-    if let Ok(FileContent::Text { signature, .. }) = helix_buffer::read(&self.path) {
+    if let Ok(FileContent::Text { text, signature }) = helix_buffer::read(&self.path) {
       self.disk_signature = Some(signature);
-      self.dirty = self.buffer_signature(cx) != self.disk_signature;
+      self.disk_len = Some(text.len());
+      self.dirty = self.differs_from_disk(cx);
     }
 
     self.external = None;

@@ -63,16 +63,26 @@ pub fn read(path: &Path) -> Result<FileContent> {
     });
   }
 
-  if len as usize > BINARY_PROBE_BYTES && probe_is_binary(path)? {
-    return Ok(FileContent::Binary);
-  }
-
   read_text_or_binary(path, len)
 }
 
+/// The head of the file decides whether the rest is worth reading at all, and
+/// it comes off the same handle, so a text file is not opened twice and a large
+/// binary never gets pulled into memory whole.
 fn read_text_or_binary(path: &Path, len: u64) -> Result<FileContent> {
-  let bytes = std::fs::read(path)?;
-  let _ = len;
+  let mut file = std::fs::File::open(path)?;
+  let mut bytes = Vec::with_capacity(len as usize);
+
+  file
+    .by_ref()
+    .take(BINARY_PROBE_BYTES as u64)
+    .read_to_end(&mut bytes)?;
+
+  if looks_binary(&bytes) {
+    return Ok(FileContent::Binary);
+  }
+
+  file.read_to_end(&mut bytes)?;
 
   Ok(from_bytes(bytes))
 }
@@ -91,16 +101,6 @@ pub fn from_bytes(bytes: Vec<u8>) -> FileContent {
   }
 }
 
-fn probe_is_binary(path: &Path) -> Result<bool> {
-  let mut file = std::fs::File::open(path)?;
-  let mut probe = vec![0u8; BINARY_PROBE_BYTES];
-  let read = file.read(&mut probe)?;
-
-  probe.truncate(read);
-
-  Ok(looks_binary(&probe))
-}
-
 fn looks_binary(bytes: &[u8]) -> bool {
   let window = &bytes[..bytes.len().min(BINARY_PROBE_BYTES)];
 
@@ -110,6 +110,24 @@ fn looks_binary(bytes: &[u8]) -> bool {
 pub fn write(path: &Path, text: &str) -> Result<u64> {
   std::fs::write(path, text)?;
   Ok(signature::of(text))
+}
+
+/// Saving straight from a chunked buffer keeps the whole file from being copied
+/// into one string just to be handed to the filesystem.
+pub fn write_chunks<'a>(path: &Path, chunks: impl Iterator<Item = &'a str>) -> Result<u64> {
+  use std::io::Write;
+
+  let mut writer = std::io::BufWriter::new(std::fs::File::create(path)?);
+  let mut hasher = signature::Hasher::new();
+
+  for chunk in chunks {
+    writer.write_all(chunk.as_bytes())?;
+    hasher.write(chunk);
+  }
+
+  writer.flush()?;
+
+  Ok(hasher.finish())
 }
 
 #[cfg(test)]
