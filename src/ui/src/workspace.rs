@@ -9,6 +9,7 @@ use gpui::{
   ParentElement, Render, SharedString, Window, div, prelude::*, px,
 };
 use gpui_component::button::{Button, ButtonVariants as _};
+use gpui_component::menu::DropdownMenu as _;
 use gpui_component::tab::{Tab, TabBar};
 use gpui_component::{Icon, IconName, Selectable as _, Sizable as _};
 use helix_models::{AgentStatus, DiffBase, SessionKind};
@@ -165,7 +166,6 @@ pub struct Workspace {
   pub active: usize,
   pub left_sidebar_open: bool,
   pub right_sidebar_open: bool,
-  new_menu_open: bool,
   next_session: u64,
   terminal_count: usize,
   claude_count: usize,
@@ -182,7 +182,6 @@ impl Workspace {
       active: 0,
       left_sidebar_open: true,
       right_sidebar_open: false,
-      new_menu_open: false,
       next_session: 0,
       terminal_count: 0,
       claude_count: 0,
@@ -607,101 +606,19 @@ impl Render for Workspace {
           .children(tabs),
       )
       .child(
-        div()
-          .relative()
-          .child(
-            icon_button("new-tab", IconName::Plus, &theme).on_click(cx.listener(
-              |this, _, _, cx| {
-                this.new_menu_open = !this.new_menu_open;
-                cx.notify();
-              },
-            )),
-          )
-          .when(self.new_menu_open, |el| {
-            el.child(gpui::deferred(
-              div()
-                .id("new-tab-menu")
-                .occlude()
-                .absolute()
-                .top(px(26.0))
-                .left_0()
-                .w(px(190.0))
-                .rounded_lg()
-                .border_1()
-                .border_color(theme.panel_border)
-                .bg(crate::theme::ca(0x1a1a1af5))
-                .shadow_lg()
-                .py_1()
-                .flex()
-                .flex_col()
-                .on_mouse_down_out(cx.listener(|this, _, _, cx| {
-                  this.new_menu_open = false;
-                  cx.notify();
-                }))
-                .child(
-                  div()
-                    .id("new-menu-terminal")
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .mx_1()
-                    .px_2()
-                    .h(px(26.0))
-                    .rounded_md()
-                    .cursor_pointer()
-                    .hover(|s| s.bg(theme.hover))
-                    .on_click(cx.listener(|this, _, window, cx| {
-                      this.new_menu_open = false;
-                      this.open_tab(SessionKind::Terminal, window, cx);
-                    }))
-                    .child(
-                      div()
-                        .flex_none()
-                        .text_color(theme.text_muted)
-                        .child(Icon::new(IconName::SquareTerminal).size_3p5()),
-                    )
-                    .child(
-                      div()
-                        .flex_1()
-                        .text_sm()
-                        .text_color(theme.text)
-                        .child("Terminal"),
-                    )
-                    .child(div().text_xs().text_color(theme.text_dim).child("⌘T")),
-                )
-                .child(
-                  div()
-                    .id("new-menu-claude")
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .mx_1()
-                    .px_2()
-                    .h(px(26.0))
-                    .rounded_md()
-                    .cursor_pointer()
-                    .hover(|s| s.bg(theme.hover))
-                    .on_click(cx.listener(|this, _, window, cx| {
-                      this.new_menu_open = false;
-                      this.open_tab(SessionKind::ClaudeCode, window, cx);
-                    }))
-                    .child(
-                      div()
-                        .flex_none()
-                        .text_color(theme.claude)
-                        .child(Icon::new(IconName::Asterisk).size_3p5()),
-                    )
-                    .child(
-                      div()
-                        .flex_1()
-                        .text_sm()
-                        .text_color(theme.text)
-                        .child("Claude Code"),
-                    )
-                    .child(div().text_xs().text_color(theme.text_dim).child("⌘⇧T")),
-                ),
-            ))
-          }),
+        icon_button("new-tab", IconName::Plus, &theme).dropdown_menu(|menu, _window, _cx| {
+          menu
+            .menu_with_icon(
+              "Terminal",
+              IconName::SquareTerminal,
+              Box::new(helix_commands::NewTerminal),
+            )
+            .menu_with_icon(
+              "Claude Code",
+              IconName::Asterisk,
+              Box::new(helix_commands::NewClaudeSession),
+            )
+        }),
       )
       .child(div().flex_1())
       .when(!self.right_sidebar_open, |el| {
