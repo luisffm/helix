@@ -229,8 +229,10 @@ pub fn sync_component_theme(cx: &mut App) {
 
   let colors = &mut component.colors;
 
-  // `Root` fills the whole window with this, so it carries the blur alpha: an
-  // opaque value here hides the window material behind every panel.
+  // `Root` fills the whole window with this, so it carries the blur alpha and the
+  // window material shows through it. Every surface that wants a ground it can
+  // rely on paints `win_tint` over the top; the project sidebar is the one that
+  // does not, because it is sparse enough to read against a varying one.
   colors.background = ours.side;
   colors.foreground = ours.text;
   colors.popover = ours.win_tint;

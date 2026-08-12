@@ -1327,6 +1327,7 @@ impl HelixRoot {
       .h(px(STATUS_HEIGHT))
       .px(px(14.0))
       .gap(px(14.0))
+      .bg(theme.win_tint)
       .border_t_1()
       .border_color(theme.panel_border)
       .text_size(px(META))
@@ -1461,6 +1462,7 @@ impl HelixRoot {
           .flex_none()
           .h_full()
           .overflow_hidden()
+          .bg(theme.win_tint)
           .border_l_1()
           .border_color(theme.panel_border)
           .child(
