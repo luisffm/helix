@@ -41,15 +41,27 @@ const REFRESH_SVG: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" width="2
 
 const CLAUDE_SUNBURST_SVG: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 12h6M15.5 14l3.4 2M14 15.5l3 5.2M12 16v4M10 15.5l-3 5.2M8.5 14l-3.4 2M8 12H2M8.5 10 5.1 8M10 8.5 7 3.3M12 8V4M14 8.5l3-5.2M15.5 10l3.4-2"/></svg>"##;
 
-const GIT_PULL_REQUEST_SVG: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="3"/><circle cx="18" cy="18" r="3"/><path d="M6 9v6a3 3 0 0 0 3 3h6"/></svg>"##;
+/// GitHub's own pull request octicon. It is a filled shape on a 16 unit box
+/// rather than a stroked one on 24, so the fill is stated as `currentColor` and
+/// the viewBox is left at the source's — rescaling it would distort the glyph.
+const GIT_PULL_REQUEST_SVG: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M1.5 3.25a2.25 2.25 0 1 1 3 2.122v5.256a2.251 2.251 0 1 1-1.5 0V5.372A2.25 2.25 0 0 1 1.5 3.25Zm5.677-.177L9.573.677A.25.25 0 0 1 10 .854V2.5h1A2.5 2.5 0 0 1 13.5 5v5.628a2.251 2.251 0 1 1-1.5 0V5a1 1 0 0 0-1-1h-1v1.646a.25.25 0 0 1-.427.177L7.177 3.427a.25.25 0 0 1 0-.354ZM3.75 2.5a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5Zm0 9.5a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5Zm8.25.75a.75.75 0 1 0 1.5 0 .75.75 0 0 0-1.5 0Z"/></svg>"##;
+
+const GIT_PULL_REQUEST_CLOSED_SVG: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M3.25 1A2.25 2.25 0 0 1 4 5.372v5.256a2.251 2.251 0 1 1-1.5 0V5.372A2.251 2.251 0 0 1 3.25 1Zm9.5 5.5a.75.75 0 0 1 .75.75v3.378a2.251 2.251 0 1 1-1.5 0V7.25a.75.75 0 0 1 .75-.75Zm-2.03-5.273a.75.75 0 0 1 1.06 0l.97.97.97-.97a.748.748 0 0 1 1.265.332.75.75 0 0 1-.205.729l-.97.97.97.97a.751.751 0 0 1-.018 1.042.751.751 0 0 1-1.042.018l-.97-.97-.97.97a.749.749 0 0 1-1.275-.326.749.749 0 0 1 .215-.734l.97-.97-.97-.97a.75.75 0 0 1 0-1.06ZM2.5 3.25a.75.75 0 1 0 1.5 0 .75.75 0 0 0-1.5 0ZM3.25 12a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5Zm9.5 0a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5Z"/></svg>"##;
+
+const GIT_MERGE_SVG: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M5.45 5.154A4.25 4.25 0 0 0 9.25 7.5h1.378a2.251 2.251 0 1 1 0 1.5H9.25A5.734 5.734 0 0 1 5 7.123v3.505a2.25 2.25 0 1 1-1.5 0V5.372a2.25 2.25 0 1 1 1.95-.218ZM4.25 13.5a.75.75 0 1 0 0-1.5.75.75 0 0 0 0 1.5Zm8.5-4.5a.75.75 0 1 0 0-1.5.75.75 0 0 0 0 1.5ZM5 3.25a.75.75 0 1 0 0 .005V3.25Z"/></svg>"##;
 
 const SLIDERS_SVG: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 6H11M7 6H3M21 12h-8M9 12H3M21 18h-4M13 18H3"/><circle cx="9" cy="6" r="1.5"/><circle cx="11" cy="12" r="1.5"/><circle cx="15" cy="18" r="1.5"/></svg>"##;
 
 const LIST_FILTER_SVG: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h16M7 12h10M10 18h4"/></svg>"##;
 
-const EXTRA_ICONS: [(&str, &[u8]); 14] = [
+const EXTRA_ICONS: [(&str, &[u8]); 16] = [
   ("icons/claude-sunburst.svg", CLAUDE_SUNBURST_SVG),
   ("icons/git-pull-request.svg", GIT_PULL_REQUEST_SVG),
+  (
+    "icons/git-pull-request-closed.svg",
+    GIT_PULL_REQUEST_CLOSED_SVG,
+  ),
+  ("icons/git-merge.svg", GIT_MERGE_SVG),
   ("icons/sliders.svg", SLIDERS_SVG),
   ("icons/list-filter.svg", LIST_FILTER_SVG),
   ("icons/git-branch.svg", GIT_BRANCH_SVG),

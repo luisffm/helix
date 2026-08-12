@@ -2,6 +2,7 @@ use crate::components::{
   BODY, GLYPH, HEADER_HEIGHT, SMALL, TINY, TITLE, TRAFFIC_LIGHTS, claude_icon, icon_button,
   project_avatar, pulsing_dot,
 };
+use crate::icons::HelixIcon;
 use crate::theme::Theme;
 use crate::workspace::Workspace;
 use gpui::{
@@ -28,24 +29,33 @@ pub enum ProjectPanelEvent {
   OpenProject(PathBuf),
 }
 
-/// The branch icon carries where the pull request stands. Conflicts outrank an
-/// open state: a branch that cannot merge is the one worth looking at, and the
-/// rest of the app already reports that in yellow. A branch nobody has reviewed
-/// keeps the muted icon the design gives it.
-fn review_visual(review: Option<&BranchReview>, theme: &Theme) -> (gpui::Hsla, String) {
+/// Where the pull request stands, as the glyph and colour its branch is drawn
+/// in. Shape carries the state as well as colour does — GitHub's own merged and
+/// closed marks — so the row still reads when the colours do not.
+///
+/// Conflicts outrank an open state: a branch that cannot merge is the one worth
+/// looking at, and the rest of the app already reports that in yellow. A branch
+/// nobody has reviewed keeps the plain branch icon.
+fn review_visual(review: Option<&BranchReview>, theme: &Theme) -> (HelixIcon, gpui::Hsla, String) {
   let Some(review) = review else {
-    return (theme.text_muted, "No pull request".to_string());
+    return (
+      HelixIcon::GitBranch,
+      theme.text_muted,
+      "No pull request".to_string(),
+    );
   };
 
-  let (color, state) = match review.state {
-    ReviewState::Merged => (theme.purple, "merged"),
-    ReviewState::Closed => (theme.red, "closed"),
-    ReviewState::Draft => (theme.text_dim, "draft"),
-    ReviewState::Open if review.conflicting => (theme.yellow, "conflicts"),
-    ReviewState::Open => (theme.green, "open"),
+  let (icon, color, state) = match review.state {
+    ReviewState::Merged => (HelixIcon::GitMerge, theme.purple, "merged"),
+    ReviewState::Closed => (HelixIcon::GitPullRequestClosed, theme.red, "closed"),
+    ReviewState::Draft => (HelixIcon::GitPullRequest, theme.text_dim, "draft"),
+    ReviewState::Open if review.conflicting => {
+      (HelixIcon::GitPullRequest, theme.yellow, "conflicts")
+    }
+    ReviewState::Open => (HelixIcon::GitPullRequest, theme.green, "open"),
   };
 
-  (color, format!("PR #{} · {state}", review.number))
+  (icon, color, format!("PR #{} · {state}", review.number))
 }
 
 #[derive(Clone)]
@@ -462,7 +472,7 @@ impl ProjectPanel {
       .and_then(|found| found.get(&wt.branch));
 
     let detail = self.worktree_detail(project_ix, ix, row, review, theme, cx);
-    let (state_color, state_label) = review_visual(review, theme);
+    let (state_icon, state_color, state_label) = review_visual(review, theme);
     let click_root = wt.path.clone();
 
     let element = div()
@@ -493,7 +503,7 @@ impl ProjectPanel {
               .tooltip(move |window, cx| {
                 gpui_component::tooltip::Tooltip::new(state_label.clone()).build(window, cx)
               })
-              .child(Icon::new(crate::icons::HelixIcon::GitBranch).size(px(12.0))),
+              .child(Icon::new(state_icon).size(px(GLYPH))),
           )
           .child(
             div()
