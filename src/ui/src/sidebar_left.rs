@@ -1,5 +1,5 @@
 use crate::components::{
-  BODY, HEADER_HEIGHT, SMALL, TINY, TITLE, TRAFFIC_LIGHTS, claude_icon, icon_button,
+  BODY, GLYPH, HEADER_HEIGHT, SMALL, TINY, TITLE, TRAFFIC_LIGHTS, claude_icon, icon_button,
   project_avatar, pulsing_dot,
 };
 use crate::theme::Theme;
@@ -654,7 +654,7 @@ impl Render for ProjectPanel {
           .child(
             div()
               .flex_none()
-              .child(Icon::new(IconName::Search).size(px(13.0))),
+              .child(Icon::new(IconName::Search).size(px(GLYPH))),
           )
           .child(div().flex_1().child("Search"))
           .child(crate::components::cap("⌘K", &theme).text_color(theme.text_dim)),

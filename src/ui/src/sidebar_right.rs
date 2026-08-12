@@ -1,6 +1,6 @@
 use crate::components::{
-  BODY, HEADER_HEIGHT, META, MICRO, SMALL, TINY, TITLE, UI, ago, icon_button, pill, section_label,
-  spinner,
+  BODY, GLYPH, HEADER_HEIGHT, META, MICRO, SMALL, TINY, TITLE, UI, ago, icon_button, pill,
+  section_label, spinner,
 };
 use crate::file_icons;
 use crate::icons::HelixIcon;
@@ -2189,7 +2189,7 @@ impl ContextPanel {
               div()
                 .flex_none()
                 .text_color(theme.text_muted)
-                .child(Icon::new(HelixIcon::GitPullRequest).size(px(14.0))),
+                .child(Icon::new(HelixIcon::GitPullRequest).size(px(GLYPH))),
             )
             .child(
               div()
@@ -2936,7 +2936,7 @@ impl Render for ContextPanel {
                 }
                 cx.notify();
               }))
-              .child(tab.icon().size(px(13.0)))
+              .child(tab.icon().size(px(GLYPH)))
           }),
       )
       .child(div().flex_1())

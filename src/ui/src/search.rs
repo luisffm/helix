@@ -1,4 +1,4 @@
-use crate::components::{BODY, META, cap, key_hint, section_label};
+use crate::components::{BODY, GLYPH, META, cap, key_hint, section_label};
 use crate::theme::Theme;
 use gpui::{
   App, Context, Entity, EventEmitter, FocusHandle, Focusable, IntoElement, ParentElement, Render,
@@ -284,7 +284,7 @@ impl ListDelegate for SearchDelegate {
               div()
                 .flex_none()
                 .text_color(item.target.icon_color(&theme))
-                .child(Icon::new(item.target.icon()).size(px(13.0))),
+                .child(Icon::new(item.target.icon()).size(px(GLYPH))),
             )
             .child(
               div()

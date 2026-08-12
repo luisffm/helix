@@ -1,5 +1,5 @@
 use crate::add_dialog::{AddDialog, AddDialogEvent};
-use crate::components::{META, SIDEBAR_LEFT_WIDTH, SIDEBAR_RIGHT_WIDTH, STATUS_HEIGHT};
+use crate::components::{GLYPH, META, SIDEBAR_LEFT_WIDTH, SIDEBAR_RIGHT_WIDTH, STATUS_HEIGHT};
 use crate::search::{SearchDialog, SearchEvent, SearchItem, SearchTarget};
 use crate::settings_page::{Section, SettingsEvent, SettingsPage};
 use crate::sidebar_left::{ProjectPanel, ProjectPanelEvent};
@@ -858,7 +858,7 @@ impl HelixRoot {
             div()
               .flex_none()
               .text_color(theme.text_muted)
-              .child(gpui_component::Icon::new(gpui_component::IconName::ChartPie).size(px(13.0))),
+              .child(gpui_component::Icon::new(gpui_component::IconName::ChartPie).size(px(GLYPH))),
           )
           .child(
             div()

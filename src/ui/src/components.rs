@@ -187,9 +187,13 @@ pub fn key_hint(keys: &str, action: &'static str, theme: &Theme) -> Div {
     .child(div().text_xs().text_color(theme.text_dim).child(action))
 }
 
+/// Every icon-only control in the chrome draws at this size. The library's own
+/// steps land at 14px, which reads oversized next to 12.5px rows.
+pub const GLYPH: f32 = 12.0;
+
 pub fn icon_button(id: impl Into<SharedString>, icon: impl Into<Icon>, theme: &Theme) -> Button {
   Button::new(id.into())
-    .icon(Icon::new(icon).size_3p5())
+    .icon(Icon::new(icon).size(px(GLYPH)))
     .ghost()
     .with_size(px(24.0))
     .text_color(theme.text_muted)
