@@ -1408,6 +1408,18 @@ impl HelixRoot {
             cx.notify();
           }),
         )
+        // The grip blocks the mouse so a press on it never also lands on the row
+        // underneath, which means the release does not reach the root either. And
+        // the grip follows the cursor while dragging, so the release lands on it
+        // almost every time: it has to end the drag itself.
+        .on_mouse_up(
+          gpui::MouseButton::Left,
+          cx.listener(|this, _, _, cx| {
+            if this.resizing.take().is_some() {
+              cx.notify();
+            }
+          }),
+        )
     };
 
     let ease = |t: f32| t * t * (3.0 - 2.0 * t);

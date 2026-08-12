@@ -461,13 +461,16 @@ impl ProjectPanel {
         .child(text)
     };
 
+    // A zero side is dropped rather than printed: at this size the colour reads
+    // before the digit, so a red `-0` says "deletions" for a moment before the
+    // eye gets to the number.
     Some(
       div()
         .flex_none()
         .flex()
         .gap(px(5.0))
-        .child(mono(format!("+{added}"), theme.green))
-        .child(mono(format!("\u{2212}{removed}"), theme.red)),
+        .children((added > 0).then(|| mono(format!("+{added}"), theme.green)))
+        .children((removed > 0).then(|| mono(format!("\u{2212}{removed}"), theme.red))),
     )
   }
 

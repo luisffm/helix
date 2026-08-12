@@ -2188,14 +2188,29 @@ impl ContextPanel {
                 .text_color(theme.text_muted)
                 .child(Icon::new(HelixIcon::GitPullRequest).size(px(GLYPH))),
             )
-            .child(
+            .child({
+              let opens = url.clone();
+
               div()
+                .id("pr-number")
                 .flex_none()
                 .font_family(theme.font_mono.clone())
                 .text_size(px(TITLE))
                 .font_weight(gpui::FontWeight::MEDIUM)
-                .child(format!("#{}", review.number)),
-            )
+                .cursor_pointer()
+                .hover(|s| s.text_color(theme.claude))
+                .tooltip(move |window, cx| {
+                  gpui_component::tooltip::Tooltip::new("Open on GitHub").build(window, cx)
+                })
+                .on_click(cx.listener(move |_, _, _, cx| {
+                  let opens = opens.clone();
+
+                  cx.background_executor()
+                    .spawn(async move { helix_process::open_url(&opens) })
+                    .detach();
+                }))
+                .child(format!("#{}", review.number))
+            })
             .child(
               pill(state_label, state_color, state_bg, MICRO)
                 .font_weight(gpui::FontWeight::SEMIBOLD),
