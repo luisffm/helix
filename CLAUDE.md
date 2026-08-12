@@ -54,6 +54,36 @@ return plain values and let the UI decide how to draw them.
 A helper placed in the wrong crate is a defect even when it compiles and the
 tests pass. Move it rather than duplicating it.
 
+Components
+
+Reach for gpui-component before building a control by hand. A div with its own
+padding, rounding, cursor and hover states is almost always a Button; a key cap
+is a Kbd; a filter over a list is a List with a delegate; a dropdown is
+dropdown_menu. Hand-rolled controls drift apart, miss the platform bindings and
+carry styling that has to be maintained twice.
+
+Read what the component owns before adopting it. The library is written around
+components that keep their own state, and where that state is something this app
+must react to or control, the component is the wrong tool no matter how well its
+API reads:
+
+The panel group models panels as proportions of a container and pushes leftover
+drag onto its neighbours, so fixed sidebars with a flexible centre are not
+expressible in it. Tree owns expansion and emits nothing, which leaves no hook
+to scan a directory when it opens, so a lazy tree cannot use it. Tab overwrites
+height, text size, background, border and radius with its variant's own, so a
+tab that is not a full-radius pill cannot use it.
+
+Three checks answer this before any code is written. Does the app stay the owner
+of the state it needs? Is every visual the component decides one this project is
+happy to inherit? Is the behaviour it replaces still reachable, keyboard included?
+A no to any of them means leave the hand-written version alone and say why.
+
+Anything drawn by a component takes its colours from the component theme, so a
+token it reads and sync_component_theme does not set arrives in the library's own
+palette. Adding a component means checking which tokens it reads and mapping them
+to ours in the same change, never picking a colour by eye.
+
 Code Style
 Rust
 
