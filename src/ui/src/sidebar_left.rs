@@ -816,14 +816,20 @@ impl Render for ProjectPanel {
         },
       );
 
+      // The card surface marks which project is being worked in. Another project
+      // can still be expanded to reach its worktrees, but it stays flat.
       tree = tree.child(
         div()
           .mb(px(6.0))
           .p(px(4.0))
           .rounded(px(10.0))
-          .bg(theme.panel)
           .border_1()
-          .border_color(theme.panel_border)
+          .when(is_active_project, |el| {
+            el.bg(theme.panel).border_color(theme.panel_border)
+          })
+          .when(!is_active_project, |el| {
+            el.border_color(gpui::transparent_black())
+          })
           .child(project_row)
           .child(body),
       );
