@@ -27,6 +27,9 @@ const COLLAPSE_MS: u64 = 160;
 
 pub enum ProjectPanelEvent {
   OpenProject(PathBuf),
+  /// The header's `+`. The dialog it opens covers both adding a worktree and
+  /// picking a new workspace.
+  RequestAdd,
 }
 
 /// Where the pull request stands, as the glyph and colour its branch is drawn
@@ -668,6 +671,13 @@ impl Render for ProjectPanel {
           .text_color(theme.text)
           .overflow_hidden()
           .child("Helix"),
+      )
+      .child(
+        icon_button("project-add", IconName::Plus, &theme)
+          .tooltip("Add a project or worktree")
+          .on_click(cx.listener(|_, _, _, cx| {
+            cx.emit(ProjectPanelEvent::RequestAdd);
+          })),
       )
       .child(
         icon_button("collapse-left", IconName::PanelLeft, &theme)

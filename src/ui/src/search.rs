@@ -5,11 +5,17 @@ use gpui::{
   Task, WeakEntity, Window, div, prelude::*, px,
 };
 use gpui_component::list::{List, ListDelegate, ListItem, ListState};
-use gpui_component::{Icon, IconName, IndexPath, Sizable as _};
+use gpui_component::{Icon, IconName, IndexPath};
 use helix_fuzzy::Ranker;
 use std::path::PathBuf;
 
 const ROW_HEIGHT: f32 = 32.0;
+const SECTION_HEIGHT: f32 = 26.0;
+/// The list's own query input, which lives inside it, plus the footer below it.
+const INPUT_HEIGHT: f32 = 34.0;
+const FOOTER_HEIGHT: f32 = 36.0;
+const MAX_BODY: f32 = 380.0;
+const EMPTY_BODY: f32 = 72.0;
 
 #[derive(Clone, Debug)]
 pub enum SearchTarget {
@@ -102,6 +108,7 @@ impl SearchDialog {
 impl Render for SearchDialog {
   fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
     let theme = Theme::of(cx).clone();
+    let body = self.list.read(cx).delegate().body_height();
 
     let footer = div()
       .flex()
@@ -123,7 +130,11 @@ impl Render for SearchDialog {
       .track_focus(&self.focus_handle)
       .on_click(|_, _, cx| cx.stop_propagation())
       .w(px(600.0))
-      .max_h(px(480.0))
+      // A virtual list has nothing to lay out against an indefinite height: with
+      // only a maximum, the viewport resolved to zero and the palette opened
+      // blank. So the height is stated, and derived from the rows there are so a
+      // short result set still gets a short dialog.
+      .h(px(INPUT_HEIGHT + body + FOOTER_HEIGHT))
       .rounded(px(14.0))
       .border_1()
       .border_color(theme.win_border)
@@ -134,7 +145,6 @@ impl Render for SearchDialog {
       .overflow_hidden()
       .child(
         List::new(&self.list)
-          .with_size(gpui_component::Size::Large)
           .search_placeholder("Search worktrees, tabs, projects, and actions...")
           .flex_1()
           .min_h_0(),
@@ -205,6 +215,19 @@ impl SearchDelegate {
     }
   }
 
+  /// How tall the rows want to be, capped. The list virtualizes against this, so
+  /// it is measured from the counts rather than from what happens to be on screen.
+  fn body_height(&self) -> f32 {
+    if self.matches.is_empty() {
+      return EMPTY_BODY;
+    }
+
+    let rows = self.matches.len() as f32 * ROW_HEIGHT;
+    let headers = self.sections.len() as f32 * SECTION_HEIGHT;
+
+    (rows + headers).min(MAX_BODY)
+  }
+
   fn item_at(&self, ix: IndexPath) -> Option<&SearchItem> {
     let position = self.sections.get(ix.section)?.matches.get(ix.row)?;
 
@@ -248,12 +271,17 @@ impl ListDelegate for SearchDelegate {
     let name = self.sections.get(section)?.name;
 
     Some(
+      // The list measures one header under `MinContent` and reuses that height for
+      // every section, so the height has to be stated: left to its text, the
+      // label wraps at the narrowest word and every section inherits the wrong
+      // size, which leaves one row visible and the layout re-measuring forever.
       div()
         .flex()
+        .flex_none()
         .items_center()
-        .pt(px(8.0))
-        .pb(px(4.0))
+        .h(px(26.0))
         .px(px(8.0))
+        .whitespace_nowrap()
         .child(section_label(name, &theme)),
     )
   }

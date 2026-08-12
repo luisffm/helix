@@ -107,6 +107,9 @@ impl HelixRoot {
         ProjectPanelEvent::OpenProject(path) => {
           this.switch_project(path.clone(), window, cx);
         }
+        ProjectPanelEvent::RequestAdd => {
+          this.open_add_dialog(true, window, cx);
+        }
       },
     )
     .detach();
