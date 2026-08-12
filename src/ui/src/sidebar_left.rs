@@ -428,10 +428,22 @@ impl ProjectPanel {
       );
     }
 
+    // Named rather than bare: a lone `#214` beside a branch says nothing about
+    // what it points at, and an issue is not a pull request.
     let reference = review
-      .map(|review| format!("#{}", review.number))
-      .or_else(|| row.pr.as_deref().map(helix_github::short_ref))
-      .or_else(|| row.issue.as_deref().map(helix_github::short_ref))?;
+      .map(|review| format!("PR #{}", review.number))
+      .or_else(|| {
+        row
+          .pr
+          .as_deref()
+          .map(|pr| format!("PR {}", helix_github::short_ref(pr)))
+      })
+      .or_else(|| {
+        row
+          .issue
+          .as_deref()
+          .map(|issue| format!("Issue {}", helix_github::short_ref(issue)))
+      })?;
 
     Some(
       line
