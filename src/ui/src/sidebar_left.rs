@@ -1,6 +1,6 @@
 use crate::components::{
   BODY, GLYPH, HEADER_HEIGHT, MICRO, SMALL, TINY, TITLE, TRAFFIC_LIGHTS, attention_badge,
-  claude_icon, icon_button, pill, project_glyph, pulsing_dot,
+  claude_icon, icon_button, pill, project_glyph, spinner,
 };
 use crate::icons::HelixIcon;
 use crate::theme::Theme;
@@ -389,9 +389,10 @@ impl ProjectPanel {
       let glyph: gpui::AnyElement = if let Some(kind) = agent.attention {
         attention_badge(kind, theme).into_any_element()
       } else if working {
-        pulsing_dot(
-          SharedString::from(format!("agent-dot-{project_ix}-{ix}")),
+        spinner(
+          SharedString::from(format!("agent-spin-{project_ix}-{ix}")),
           theme.claude,
+          11.0,
         )
         .into_any_element()
       } else if agent.status == AgentStatus::Error {

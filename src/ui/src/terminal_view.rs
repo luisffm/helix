@@ -487,10 +487,23 @@ impl TerminalView {
         self.schedule_flush(cx);
       }
       AlacEvent::Title(title) => {
-        self.title_status = helix_agents::title_status::from_title(&title);
+        // An agent animates a spinner frame into its title several times a
+        // second, and the frame is stripped before anything draws it. Notifying
+        // on the raw title rebuilt the whole window for a change nobody could
+        // see, so only a change to what is shown — or to the status derived from
+        // it — is worth a frame.
+        let status = helix_agents::title_status::from_title(&title);
+        let shown = helix_agents::strip_spinner(&title).to_string();
+        let worth_drawing =
+          status != self.title_status || helix_agents::strip_spinner(&self.title) != shown;
+
+        self.title_status = status;
         self.title = title.into();
-        cx.emit(TerminalViewEvent::Retitled);
-        cx.notify();
+
+        if worth_drawing {
+          cx.emit(TerminalViewEvent::Retitled);
+          cx.notify();
+        }
       }
       AlacEvent::ResetTitle => {
         self.title_status = None;

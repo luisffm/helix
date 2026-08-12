@@ -29,7 +29,6 @@ pub const TINY: f32 = 10.5;
 pub const MICRO: f32 = 10.0;
 
 const SPINNER_PERIOD: Duration = Duration::from_millis(900);
-const PULSE_PERIOD: Duration = Duration::from_millis(1400);
 
 /// 10.5px, 600, dim. Callers pass the text already upper-cased, so drawing a
 /// label costs no allocation. The design also asks for .09em of tracking, which
@@ -44,16 +43,6 @@ pub fn section_label(text: impl Into<SharedString>, theme: &Theme) -> Div {
 
 pub fn status_dot(color: Hsla) -> Div {
   div().size(px(7.0)).rounded_full().bg(color).flex_none()
-}
-
-/// A running agent. Driven by the element animator rather than a notifier, so
-/// the pulse costs frames only while a session is actually working.
-pub fn pulsing_dot(id: impl Into<ElementId>, color: Hsla) -> impl IntoElement {
-  status_dot(color).with_animation(id, Animation::new(PULSE_PERIOD).repeat(), |dot, delta| {
-    let phase = (delta * std::f32::consts::TAU).cos() * 0.5 + 0.5;
-
-    dot.opacity(0.45 + 0.55 * phase)
-  })
 }
 
 /// What an agent is waiting for, as a badge beside its mark: a ring with `?`
@@ -228,6 +217,12 @@ pub fn git_branch_icon(color: Hsla, size: f32) -> impl IntoElement {
 
 /// Driven by the element animator rather than a notifier, so the rotation is
 /// continuous and only costs frames while a spinner is actually on screen.
+///
+/// "Only while on screen" is the whole caveat: gpui has no per-element
+/// invalidation, so an animated element asks the window for a frame every frame
+/// and the entire element tree is rebuilt on each one. Measured at ~20% of a core
+/// against ~5% with nothing animating. Worth it for a control the user is waiting
+/// on; think twice before putting one somewhere it lives permanently.
 pub fn spinner(id: impl Into<ElementId>, color: Hsla, size: f32) -> impl IntoElement {
   div().flex_none().text_color(color).child(
     Icon::new(IconName::LoaderCircle)
