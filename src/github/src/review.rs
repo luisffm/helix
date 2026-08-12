@@ -83,6 +83,7 @@ pub struct BranchReview {
   pub number: u64,
   pub state: ReviewState,
   pub checks: CheckStatus,
+  pub conflicting: bool,
 }
 
 /// A listing collapses to the newest review each branch has.
@@ -94,6 +95,7 @@ pub fn by_branch(reviews: Vec<HostedReview>) -> HashMap<String, BranchReview> {
       number: review.number,
       state: review.state,
       checks: review.checks,
+      conflicting: review.conflicting,
     });
   }
 
@@ -485,6 +487,14 @@ mod tests {
 
     assert_eq!(found["feature"].checks, CheckStatus::Failing);
     assert_eq!(found["feature"].number, 214);
+  }
+
+  #[test]
+  fn a_branch_carries_its_conflict_flag() {
+    let mut clashing = review("feature", ReviewState::Open);
+    clashing.conflicting = true;
+
+    assert!(by_branch(vec![clashing])["feature"].conflicting);
   }
 
   #[test]

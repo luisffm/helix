@@ -172,7 +172,7 @@ impl Render for WorktreeEditDialog {
             div()
               .flex_none()
               .text_color(theme.purple)
-              .child(Icon::new(HelixIcon::GitBranch).size_3p5()),
+              .child(Icon::new(HelixIcon::GitBranch).size(px(12.0))),
           )
           .child(
             div()

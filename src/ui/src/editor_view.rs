@@ -357,7 +357,7 @@ impl EditorView {
         div()
           .flex_none()
           .text_color(color)
-          .child(Icon::new(IconName::TriangleAlert).size_3p5()),
+          .child(Icon::new(IconName::TriangleAlert).size(px(12.0))),
       )
       .child(
         div()

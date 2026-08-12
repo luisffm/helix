@@ -111,7 +111,7 @@ impl ListDelegate for ExistingDelegate {
             .items_center()
             .gap_2()
             .size_full()
-            .child(crate::components::git_branch_icon(theme.purple))
+            .child(crate::components::git_branch_icon(theme.purple, 12.0))
             .child(
               div()
                 .flex_none()
@@ -548,7 +548,7 @@ impl AddDialog {
 
         cx.notify();
       }))
-      .child(crate::components::git_branch_icon(theme.purple))
+      .child(crate::components::git_branch_icon(theme.purple, 12.0))
       .child(
         div()
           .flex_1()

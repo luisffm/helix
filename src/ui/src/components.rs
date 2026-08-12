@@ -148,22 +148,26 @@ pub fn sparkline(values: &[f32], color: Hsla) -> impl IntoElement {
   )
 }
 
-pub fn git_branch_icon(color: Hsla) -> impl IntoElement {
+/// An icon reads as part of the line it sits on, so callers give it that line's
+/// text size rather than one of the library's fixed steps.
+pub fn git_branch_icon(color: Hsla, size: f32) -> impl IntoElement {
   div()
     .flex_none()
     .text_color(color)
-    .child(Icon::new(crate::icons::HelixIcon::GitBranch).size_3p5())
+    .child(Icon::new(crate::icons::HelixIcon::GitBranch).size(px(size)))
 }
 
 /// Driven by the element animator rather than a notifier, so the rotation is
 /// continuous and only costs frames while a spinner is actually on screen.
-pub fn spinner(id: impl Into<ElementId>, color: Hsla) -> impl IntoElement {
+pub fn spinner(id: impl Into<ElementId>, color: Hsla, size: f32) -> impl IntoElement {
   div().flex_none().text_color(color).child(
-    Icon::new(IconName::LoaderCircle).size_3p5().with_animation(
-      id,
-      Animation::new(SPINNER_PERIOD).repeat(),
-      |icon, delta| icon.transform(Transformation::rotate(percentage(delta))),
-    ),
+    Icon::new(IconName::LoaderCircle)
+      .size(px(size))
+      .with_animation(
+        id,
+        Animation::new(SPINNER_PERIOD).repeat(),
+        |icon, delta| icon.transform(Transformation::rotate(percentage(delta))),
+      ),
   )
 }
 

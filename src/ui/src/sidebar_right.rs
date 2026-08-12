@@ -667,6 +667,12 @@ impl ContextPanel {
 
     self.git = git;
 
+    // The lookup needs a branch, so a tab opened before the snapshot arrived —
+    // or left open across a project switch — asks again once it does.
+    if self.active == RightTab::Pr && self.pr_eligibility.is_none() && self.git.is_some() {
+      self.refresh_pull_request(cx);
+    }
+
     cx.notify();
   }
 
@@ -708,6 +714,14 @@ impl ContextPanel {
     self.file_status.clear();
     self.dir_status.clear();
     self.selected = None;
+
+    // Every one of these describes the branch that was open a moment ago. Left
+    // behind, a settled eligibility also stops the tab from ever looking the new
+    // branch up, because it only looks when it has nothing.
+    self.pr = None;
+    self.pr_eligibility = None;
+    self.pr_error = None;
+    self.merge_armed = false;
 
     self.reset_scans();
 
@@ -1958,7 +1972,7 @@ impl ContextPanel {
           .text_size(px(BODY))
           .font_weight(gpui::FontWeight::MEDIUM)
           .text_color(theme.text)
-          .child(crate::components::git_branch_icon(theme.text_muted))
+          .child(crate::components::git_branch_icon(theme.text_muted, 12.0))
           .child(git.branch.clone()),
       );
 
@@ -2191,7 +2205,7 @@ impl ContextPanel {
             )
             .child(div().flex_1())
             .when(self.pr_busy, |el| {
-              el.child(spinner("pr-spin", theme.text_dim))
+              el.child(spinner("pr-spin", theme.text_dim, 12.0))
             })
             .when(!self.pr_busy, |el| {
               el.child(
@@ -2624,6 +2638,7 @@ impl ContextPanel {
       CheckStatus::Pending => row.child(spinner(
         SharedString::from(format!("pr-check-spin-{ix}")),
         color,
+        11.0,
       )),
       _ => row.child(
         div()
@@ -2727,7 +2742,7 @@ impl ContextPanel {
     };
 
     if self.merge_busy {
-      button = button.child(spinner("pr-merge-spin", fg));
+      button = button.child(spinner("pr-merge-spin", fg, 12.0));
     } else {
       button = button.child(
         div()

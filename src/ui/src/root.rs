@@ -59,7 +59,7 @@ pub struct HelixRoot {
   resources: UsageSnapshot,
   resources_history: HashMap<PathBuf, Vec<f32>>,
   resources_open: bool,
-  reviews_busy: bool,
+  reviews_inflight: std::collections::HashSet<PathBuf>,
   reviews_at: HashMap<PathBuf, Instant>,
   resources_expanded: std::collections::HashSet<PathBuf>,
   focus_handle: FocusHandle,
@@ -141,7 +141,7 @@ impl HelixRoot {
       resources: UsageSnapshot::default(),
       resources_history: HashMap::new(),
       resources_open: false,
-      reviews_busy: false,
+      reviews_inflight: std::collections::HashSet::new(),
       reviews_at: HashMap::new(),
       resources_expanded: std::collections::HashSet::new(),
       focus_handle: cx.focus_handle(),
@@ -404,19 +404,24 @@ impl HelixRoot {
     }
   }
 
-  /// One listing covers every branch the sidebar draws, so it is tied to
-  /// project-level refreshes rather than to watcher batches.
+  /// One listing covers every branch a project draws, so it is tied to
+  /// project-level refreshes rather than to watcher batches, and no project is
+  /// described again inside a minute.
+  ///
+  /// The in-flight set is per project rather than one flag for all of them: a
+  /// single flag meant whichever project asked second was dropped, and nothing
+  /// ever asked again on its behalf.
   fn refresh_reviews(&mut self, owner: PathBuf, cx: &mut Context<Self>) {
     let fresh = self
       .reviews_at
       .get(&owner)
       .is_some_and(|at| at.elapsed() < REVIEW_MIN_INTERVAL);
 
-    if self.reviews_busy || fresh {
+    if fresh || self.reviews_inflight.contains(&owner) {
       return;
     }
 
-    self.reviews_busy = true;
+    self.reviews_inflight.insert(owner.clone());
     self.reviews_at.insert(owner.clone(), Instant::now());
 
     let task = cx
@@ -428,7 +433,7 @@ impl HelixRoot {
 
       this
         .update(cx, |root_view, cx| {
-          root_view.reviews_busy = false;
+          root_view.reviews_inflight.remove(&owner);
 
           let Ok(reviews) = listed else { return };
 
@@ -460,13 +465,18 @@ impl HelixRoot {
       let owner = helix_worktree::primary_root(&root).unwrap_or(root);
 
       let only = (!every_project).then_some(owner.as_path());
-      let worktrees = rows_for_projects(&helix_state::config::load().projects, only);
+      let projects = helix_state::config::load().projects;
+      let owners: Vec<PathBuf> = projects
+        .iter()
+        .map(|project| project.path.clone())
+        .collect();
+      let worktrees = rows_for_projects(&projects, only);
 
-      (snapshot, worktrees, owner)
+      (snapshot, worktrees, owner, owners)
     });
 
     cx.spawn(async move |this, cx| {
-      let (snapshot, worktrees, owner) = task.await;
+      let (snapshot, worktrees, owner, owners) = task.await;
 
       this
         .update(cx, |root_view, cx| {
@@ -474,7 +484,7 @@ impl HelixRoot {
           root_view.worktrees = worktrees.get(&owner).cloned().unwrap_or_default();
 
           root_view.project_panel.update(cx, |panel, cx| {
-            panel.set_git(snapshot.clone(), cx);
+            panel.set_git(&root_view.project.root, snapshot.clone(), cx);
             panel.set_worktrees(worktrees, every_project, cx);
           });
 
@@ -483,8 +493,13 @@ impl HelixRoot {
             panel.refresh_files(changed.as_deref(), cx);
           });
 
+          // The sidebar draws a branch icon and a pull request number for every
+          // project it lists, not only the one in front. Keyed by the configured
+          // path, which is what the panel looks up.
           if every_project {
-            root_view.refresh_reviews(owner, cx);
+            for project in owners {
+              root_view.refresh_reviews(project, cx);
+            }
           }
 
           cx.notify();
@@ -843,7 +858,7 @@ impl HelixRoot {
             div()
               .flex_none()
               .text_color(theme.text_muted)
-              .child(gpui_component::Icon::new(gpui_component::IconName::ChartPie).size_3p5()),
+              .child(gpui_component::Icon::new(gpui_component::IconName::ChartPie).size(px(13.0))),
           )
           .child(
             div()
@@ -1321,7 +1336,7 @@ impl HelixRoot {
           .flex()
           .items_center()
           .gap(px(5.0))
-          .child(crate::components::git_branch_icon(theme.text_muted))
+          .child(crate::components::git_branch_icon(theme.text_muted, 11.0))
           .child(branch),
       )
       .child(if dirty == 0 {

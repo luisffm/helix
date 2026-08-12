@@ -14,12 +14,12 @@ use helix_commands::{
   CopyPathAction, DeleteWorktreeAction, EditWorktreeAction, OpenInFinderAction, OpenInZedAction,
   OpenProjectSettingsAction, RemoveProjectAction, RemoveWorktreeAction,
 };
-use helix_github::{BranchReview, CheckStatus};
+use helix_github::{BranchReview, ReviewState};
 use helix_models::AgentStatus;
 use helix_models::{GitSnapshot, ProjectInfo, SessionKind};
 use helix_worktree::{WorktreeRow, canonical_path};
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 const COLLAPSE_MS: u64 = 160;
@@ -28,16 +28,24 @@ pub enum ProjectPanelEvent {
   OpenProject(PathBuf),
 }
 
-/// The branch icon is the only place a worktree's checks are reported, so it
-/// separates a running suite from a finished one rather than folding both into
-/// the "nothing to say" colour the design gives an unreviewed branch.
-fn checks_color(review: Option<&BranchReview>, theme: &Theme) -> gpui::Hsla {
-  match review.map(|review| review.checks) {
-    Some(CheckStatus::Passing) => theme.green,
-    Some(CheckStatus::Failing) => theme.red,
-    Some(CheckStatus::Pending) => theme.yellow,
-    _ => theme.text_muted,
-  }
+/// The branch icon carries where the pull request stands. Conflicts outrank an
+/// open state: a branch that cannot merge is the one worth looking at, and the
+/// rest of the app already reports that in yellow. A branch nobody has reviewed
+/// keeps the muted icon the design gives it.
+fn review_visual(review: Option<&BranchReview>, theme: &Theme) -> (gpui::Hsla, String) {
+  let Some(review) = review else {
+    return (theme.text_muted, "No pull request".to_string());
+  };
+
+  let (color, state) = match review.state {
+    ReviewState::Merged => (theme.purple, "merged"),
+    ReviewState::Closed => (theme.red, "closed"),
+    ReviewState::Draft => (theme.text_dim, "draft"),
+    ReviewState::Open if review.conflicting => (theme.yellow, "conflicts"),
+    ReviewState::Open => (theme.green, "open"),
+  };
+
+  (color, format!("PR #{} · {state}", review.number))
 }
 
 #[derive(Clone)]
@@ -50,10 +58,11 @@ pub struct ProjectPanel {
   projects: Vec<ProjectEntry>,
   active_root: PathBuf,
   active_canonical: PathBuf,
-  /// Added and removed lines for the active worktree only. Folded once per git
-  /// refresh out of the snapshot the panel is handed anyway, so a row costs no
-  /// git work and no summing per frame.
-  active_lines: Option<(usize, usize)>,
+  /// Added and removed lines per worktree, keyed by canonical path. Only the
+  /// worktree in front produces a snapshot, so an entry appears the first time
+  /// its worktree is opened and keeps reporting after the user moves on. Folded
+  /// once per git refresh, never per frame.
+  lines: HashMap<PathBuf, (usize, usize)>,
   worktrees: HashMap<PathBuf, Vec<WorktreeRow>>,
   workspaces: HashMap<PathBuf, Entity<Workspace>>,
   observed: HashSet<EntityId>,
@@ -123,7 +132,7 @@ impl ProjectPanel {
       active_canonical: canonical_path(&project.root),
       projects,
       active_root: project.root,
-      active_lines: None,
+      lines: HashMap::new(),
       worktrees: HashMap::new(),
       workspaces: HashMap::new(),
       observed: HashSet::new(),
@@ -201,19 +210,23 @@ impl ProjectPanel {
     cx.notify();
   }
 
-  pub fn set_git(&mut self, git: Option<GitSnapshot>, cx: &mut Context<Self>) {
-    let lines = git
+  pub fn set_git(&mut self, root: &Path, git: Option<GitSnapshot>, cx: &mut Context<Self>) {
+    let root = canonical_path(root);
+    let stats = git
       .as_ref()
       .map(GitSnapshot::line_stats)
       .filter(|(added, removed)| *added > 0 || *removed > 0);
 
-    if self.active_lines == lines {
-      return;
+    // A worktree that went clean drops its entry rather than reporting the
+    // numbers it had before the commit landed.
+    let changed = match stats {
+      Some(stats) => self.lines.insert(root, stats) != Some(stats),
+      None => self.lines.remove(&root).is_some(),
+    };
+
+    if changed {
+      cx.notify();
     }
-
-    self.active_lines = lines;
-
-    cx.notify();
   }
 
   pub fn set_worktrees(
@@ -224,6 +237,17 @@ impl ProjectPanel {
   ) {
     if every_project {
       self.worktrees = worktrees;
+
+      // A full listing is the only place that knows which worktrees still
+      // exist, so it is where the line cache is pruned.
+      let listed: HashSet<PathBuf> = self
+        .worktrees
+        .values()
+        .flatten()
+        .map(|row| row.canonical.clone())
+        .collect();
+
+      self.lines.retain(|root, _| listed.contains(root));
     } else {
       self.worktrees.extend(worktrees);
     }
@@ -311,7 +335,6 @@ impl ProjectPanel {
     ix: usize,
     row: &WorktreeRow,
     review: Option<&BranchReview>,
-    is_active: bool,
     theme: &Theme,
     cx: &App,
   ) -> Option<gpui::AnyElement> {
@@ -329,7 +352,9 @@ impl ProjectPanel {
         AgentStatus::Running | AgentStatus::Waiting | AgentStatus::Thinking
       );
 
-      let trailing: gpui::AnyElement = if working {
+      // Sits with the sunburst it belongs to rather than drifting to the far
+      // edge, where it read as the row's status instead of the session's.
+      let glyph: gpui::AnyElement = if working {
         pulsing_dot(
           SharedString::from(format!("agent-dot-{project_ix}-{ix}")),
           theme.claude,
@@ -351,7 +376,9 @@ impl ProjectPanel {
 
       return Some(
         line
+          .gap(px(5.0))
           .child(claude_icon(theme.claude, 11.0))
+          .child(glyph)
           .child(
             div()
               .flex_1()
@@ -366,7 +393,6 @@ impl ProjectPanel {
               .text_ellipsis()
               .child(title),
           )
-          .child(trailing)
           .into_any_element(),
       );
     }
@@ -374,7 +400,26 @@ impl ProjectPanel {
     let reference = review
       .map(|review| format!("#{}", review.number))
       .or_else(|| row.pr.as_deref().map(helix_github::short_ref))
-      .or_else(|| row.issue.as_deref().map(helix_github::short_ref));
+      .or_else(|| row.issue.as_deref().map(helix_github::short_ref))?;
+
+    Some(
+      line
+        .child(
+          div()
+            .flex_none()
+            .font_family(theme.font_mono.clone())
+            .text_size(px(TINY))
+            .text_color(theme.text_dim)
+            .child(reference),
+        )
+        .into_any_element(),
+    )
+  }
+
+  /// The diffstat rides the branch line so it never competes with the pull
+  /// request or the agent for the row's second line.
+  fn worktree_diffstat(&self, row: &WorktreeRow, theme: &Theme) -> Option<gpui::Div> {
+    let (added, removed) = self.lines.get(&row.canonical).copied()?;
 
     let mono = |text: String, color: gpui::Hsla| {
       div()
@@ -385,23 +430,13 @@ impl ProjectPanel {
         .child(text)
     };
 
-    if let Some(reference) = reference {
-      return Some(
-        line
-          .child(mono(reference, theme.text_dim))
-          .into_any_element(),
-      );
-    }
-
-    // No review to point at: the local diff is the only thing left to report,
-    // and it is only known for the worktree being worked in.
-    let (added, removed) = self.active_lines.filter(|_| is_active)?;
-
     Some(
-      line
-        .child(mono(format!("+{added}"), theme.text_dim))
-        .child(mono(format!("\u{2212}{removed}"), theme.text_dim))
-        .into_any_element(),
+      div()
+        .flex_none()
+        .flex()
+        .gap(px(5.0))
+        .child(mono(format!("+{added}"), theme.green))
+        .child(mono(format!("\u{2212}{removed}"), theme.red)),
     )
   }
 
@@ -426,7 +461,8 @@ impl ProjectPanel {
       .get(project_root)
       .and_then(|found| found.get(&wt.branch));
 
-    let detail = self.worktree_detail(project_ix, ix, row, review, is_active, theme, cx);
+    let detail = self.worktree_detail(project_ix, ix, row, review, theme, cx);
+    let (state_color, state_label) = review_visual(review, theme);
     let click_root = wt.path.clone();
 
     let element = div()
@@ -449,8 +485,14 @@ impl ProjectPanel {
           .gap(px(7.0))
           .child(
             div()
+              .id(SharedString::from(format!(
+                "branch-state-{project_ix}-{ix}"
+              )))
               .flex_none()
-              .text_color(checks_color(review, theme))
+              .text_color(state_color)
+              .tooltip(move |window, cx| {
+                gpui_component::tooltip::Tooltip::new(state_label.clone()).build(window, cx)
+              })
               .child(Icon::new(crate::icons::HelixIcon::GitBranch).size(px(12.0))),
           )
           .child(
@@ -468,7 +510,8 @@ impl ProjectPanel {
               .whitespace_nowrap()
               .text_ellipsis()
               .child(label.clone()),
-          ),
+          )
+          .children(self.worktree_diffstat(row, theme)),
       )
       .children(detail);
 
