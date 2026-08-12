@@ -1,4 +1,6 @@
-use crate::components::{BODY, HEADER_HEIGHT, META, PROJECT_ACCENTS, TITLE, UI, project_accent};
+use crate::components::{
+  BODY, HEADER_HEIGHT, META, PROJECT_ACCENTS, TITLE, TRAFFIC_LIGHTS, UI, project_accent,
+};
 use crate::theme::{BLUR_LEVELS, Mode, Theme};
 use gpui::{
   AnyElement, App, Context, Div, Entity, EventEmitter, FocusHandle, Focusable, Hsla, IntoElement,
@@ -461,7 +463,7 @@ impl Render for SettingsPage {
       .items_center()
       .gap(px(10.0))
       .h(px(HEADER_HEIGHT))
-      .pl(px(70.0))
+      .pl(px(TRAFFIC_LIGHTS))
       .pr(px(14.0))
       .border_b_1()
       .border_color(theme.panel_border)

@@ -1,4 +1,4 @@
-use crate::components::{HEADER_HEIGHT, UI, icon_button};
+use crate::components::{HEADER_HEIGHT, TRAFFIC_LIGHTS, UI, icon_button};
 use crate::diff_view::DiffView;
 use crate::editor_view::{EditorView, EditorViewEvent};
 use crate::icons::HelixIcon;
@@ -544,7 +544,7 @@ impl Render for Workspace {
     if !self.left_sidebar_open {
       tab_bar = tab_bar.child(
         div()
-          .w(px(70.0))
+          .w(px(TRAFFIC_LIGHTS))
           .flex_none()
           .flex()
           .items_center()

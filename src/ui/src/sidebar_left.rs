@@ -1,5 +1,6 @@
 use crate::components::{
-  BODY, HEADER_HEIGHT, SMALL, TINY, TITLE, claude_icon, icon_button, project_avatar, pulsing_dot,
+  BODY, HEADER_HEIGHT, SMALL, TINY, TITLE, TRAFFIC_LIGHTS, claude_icon, icon_button,
+  project_avatar, pulsing_dot,
 };
 use crate::theme::Theme;
 use crate::workspace::Workspace;
@@ -49,7 +50,10 @@ pub struct ProjectPanel {
   projects: Vec<ProjectEntry>,
   active_root: PathBuf,
   active_canonical: PathBuf,
-  git: Option<GitSnapshot>,
+  /// Added and removed lines for the active worktree only. Folded once per git
+  /// refresh out of the snapshot the panel is handed anyway, so a row costs no
+  /// git work and no summing per frame.
+  active_lines: Option<(usize, usize)>,
   worktrees: HashMap<PathBuf, Vec<WorktreeRow>>,
   workspaces: HashMap<PathBuf, Entity<Workspace>>,
   observed: HashSet<EntityId>,
@@ -119,7 +123,7 @@ impl ProjectPanel {
       active_canonical: canonical_path(&project.root),
       projects,
       active_root: project.root,
-      git: None,
+      active_lines: None,
       worktrees: HashMap::new(),
       workspaces: HashMap::new(),
       observed: HashSet::new(),
@@ -198,7 +202,16 @@ impl ProjectPanel {
   }
 
   pub fn set_git(&mut self, git: Option<GitSnapshot>, cx: &mut Context<Self>) {
-    self.git = git;
+    let lines = git
+      .as_ref()
+      .map(GitSnapshot::line_stats)
+      .filter(|(added, removed)| *added > 0 || *removed > 0);
+
+    if self.active_lines == lines {
+      return;
+    }
+
+    self.active_lines = lines;
 
     cx.notify();
   }
@@ -298,6 +311,7 @@ impl ProjectPanel {
     ix: usize,
     row: &WorktreeRow,
     review: Option<&BranchReview>,
+    is_active: bool,
     theme: &Theme,
     cx: &App,
   ) -> Option<gpui::AnyElement> {
@@ -360,18 +374,33 @@ impl ProjectPanel {
     let reference = review
       .map(|review| format!("#{}", review.number))
       .or_else(|| row.pr.as_deref().map(helix_github::short_ref))
-      .or_else(|| row.issue.as_deref().map(helix_github::short_ref))?;
+      .or_else(|| row.issue.as_deref().map(helix_github::short_ref));
+
+    let mono = |text: String, color: gpui::Hsla| {
+      div()
+        .flex_none()
+        .font_family(theme.font_mono.clone())
+        .text_size(px(TINY))
+        .text_color(color)
+        .child(text)
+    };
+
+    if let Some(reference) = reference {
+      return Some(
+        line
+          .child(mono(reference, theme.text_dim))
+          .into_any_element(),
+      );
+    }
+
+    // No review to point at: the local diff is the only thing left to report,
+    // and it is only known for the worktree being worked in.
+    let (added, removed) = self.active_lines.filter(|_| is_active)?;
 
     Some(
       line
-        .child(
-          div()
-            .flex_none()
-            .font_family(theme.font_mono.clone())
-            .text_size(px(TINY))
-            .text_color(theme.text_dim)
-            .child(reference),
-        )
+        .child(mono(format!("+{added}"), theme.text_dim))
+        .child(mono(format!("\u{2212}{removed}"), theme.text_dim))
         .into_any_element(),
     )
   }
@@ -397,7 +426,7 @@ impl ProjectPanel {
       .get(project_root)
       .and_then(|found| found.get(&wt.branch));
 
-    let detail = self.worktree_detail(project_ix, ix, row, review, theme, cx);
+    let detail = self.worktree_detail(project_ix, ix, row, review, is_active, theme, cx);
     let click_root = wt.path.clone();
 
     let element = div()
@@ -530,7 +559,7 @@ impl Render for ProjectPanel {
       .items_center()
       .gap_2()
       .h(px(HEADER_HEIGHT))
-      .pl(px(70.0))
+      .pl(px(TRAFFIC_LIGHTS))
       .pr(px(10.0))
       .border_b_1()
       .border_color(theme.panel_border)

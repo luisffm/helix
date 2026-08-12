@@ -10,6 +10,10 @@ use gpui_component::{Icon, IconName, Sizable as _};
 use std::time::Duration;
 
 pub const HEADER_HEIGHT: f32 = 32.0;
+/// What the window's own traffic lights occupy, measured rather than derived:
+/// three 13px buttons on a 22.5px pitch from x=14, plus room to breathe. Any
+/// header drawn level with them starts after this.
+pub const TRAFFIC_LIGHTS: f32 = 84.0;
 pub const STATUS_HEIGHT: f32 = 30.0;
 pub const SIDEBAR_LEFT_WIDTH: f32 = 262.0;
 pub const SIDEBAR_RIGHT_WIDTH: f32 = 302.0;
