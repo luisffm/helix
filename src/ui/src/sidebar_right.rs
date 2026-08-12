@@ -1,4 +1,7 @@
-use crate::components::{HEADER_HEIGHT, ago, icon_button, section_label, spinner};
+use crate::components::{
+  BODY, HEADER_HEIGHT, META, MICRO, SMALL, TINY, TITLE, UI, ago, icon_button, pill, section_label,
+  spinner,
+};
 use crate::file_icons;
 use crate::icons::HelixIcon;
 use crate::theme::Theme;
@@ -8,7 +11,7 @@ use gpui::{
 };
 use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::{Icon, IconName, Sizable};
-use helix_filesystem::scan::{FileNode, scan_dir, scan_matches};
+use helix_filesystem::scan::{FileNode, scan_contents, scan_dir, scan_matches};
 use helix_git::IgnoreProbe;
 use helix_git::ops::{GitAction, IndexOp, perform_remote};
 use helix_github::{
@@ -20,10 +23,11 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::Duration;
 
-const ROW_HEIGHT: f32 = 24.0;
+const ROW_HEIGHT: f32 = 26.0;
+const GIT_ROW_HEIGHT: f32 = 28.0;
 const CHECK_POLL_INTERVAL: Duration = Duration::from_secs(30);
 const INDENT: f32 = 16.0;
-const BASE_PAD: f32 = 8.0;
+const BASE_PAD: f32 = 6.0;
 const MAX_ROWS: usize = 2000;
 const MAX_DEPTH: usize = 16;
 const MAX_CACHED_DIRS: usize = 4096;
@@ -33,6 +37,29 @@ pub enum ContextPanelEvent {
   OpenFile { path: PathBuf, preview: bool },
   OpenDiff { relative: String, base: DiffBase },
   GitChanged,
+}
+
+/// Which side of the workspace the file filter searches.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum FileSearch {
+  Names,
+  Contents,
+}
+
+impl FileSearch {
+  fn label(self) -> &'static str {
+    match self {
+      FileSearch::Names => "Names",
+      FileSearch::Contents => "Contents",
+    }
+  }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum CommentFilter {
+  All,
+  Humans,
+  Bots,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -55,7 +82,7 @@ impl RightTab {
     match self {
       RightTab::Files => Icon::new(IconName::File),
       RightTab::Git => Icon::new(HelixIcon::GitBranch),
-      RightTab::Pr => Icon::new(HelixIcon::GitCompare),
+      RightTab::Pr => Icon::new(HelixIcon::GitPullRequest),
     }
   }
 }
@@ -143,6 +170,8 @@ pub struct ContextPanel {
   dir_status: HashMap<PathBuf, GitFileKind>,
   selected: Option<PathBuf>,
   show_dotfiles: bool,
+  comment_filter: CommentFilter,
+  file_search: FileSearch,
   file_filter: Entity<InputState>,
   commit_message: Entity<InputState>,
   generating_message: bool,
@@ -203,6 +232,8 @@ impl ContextPanel {
       dir_status: HashMap::new(),
       selected: None,
       show_dotfiles: false,
+      comment_filter: CommentFilter::All,
+      file_search: FileSearch::Names,
       file_filter,
       commit_message,
       generating_message: false,
@@ -250,26 +281,29 @@ impl ContextPanel {
       .group(SharedString::from(id))
       .flex()
       .items_center()
-      .gap_1()
-      .px_1()
-      .pt_3()
-      .pb_1()
-      .rounded_md()
+      .gap(px(6.0))
+      .px(px(4.0))
+      .pt(px(12.0))
+      .pb(px(4.0))
       .cursor_pointer()
-      .text_xs()
       .text_color(theme.text_dim)
       .hover(|s| s.text_color(theme.text_muted))
       .on_click(cx.listener(move |this, _, _, cx| this.toggle_section(section, cx)))
       .child(
-        Icon::new(if open {
-          IconName::ChevronDown
-        } else {
-          IconName::ChevronRight
-        })
-        .size_3(),
+        div().flex_none().child(
+          Icon::new(if open {
+            IconName::ChevronDown
+          } else {
+            IconName::ChevronRight
+          })
+          .size(px(11.0)),
+        ),
       )
-      .child(format!("{label} ({count})"))
-      .child(div().flex_1())
+      .child(
+        div()
+          .flex_1()
+          .child(section_label(format!("{label} \u{b7} {count}"), theme)),
+      )
       .children(action)
       .into_any_element()
   }
@@ -965,6 +999,7 @@ impl ContextPanel {
 
     let root = self.root.clone();
     let show_dotfiles = self.show_dotfiles;
+    let search = self.file_search;
 
     cx.spawn(async move |this, cx| {
       cx.background_executor().timer(FILTER_DEBOUNCE).await;
@@ -978,12 +1013,16 @@ impl ContextPanel {
         .background_executor()
         .spawn(async move {
           let probe = IgnoreProbe::open(&root);
-
-          scan_matches(&root, &query, show_dotfiles, &|path, is_dir| {
+          let ignored = |path: &Path, is_dir: bool| {
             probe
               .as_ref()
               .is_some_and(|probe| probe.is_ignored(path, is_dir))
-          })
+          };
+
+          match search {
+            FileSearch::Names => scan_matches(&root, &query, show_dotfiles, &ignored),
+            FileSearch::Contents => scan_contents(&root, &query, show_dotfiles, &ignored),
+          }
         })
         .await;
 
@@ -1009,20 +1048,19 @@ impl ContextPanel {
       .flex()
       .flex_none()
       .items_center()
-      .gap_1()
+      .gap_2()
       .h(px(28.0))
-      .mx_2()
-      .mt_2()
-      .px_2()
-      .rounded_md()
+      .px(px(9.0))
+      .rounded(px(8.0))
       .border_1()
       .border_color(theme.panel_border)
-      .bg(theme.elevated)
+      .bg(theme.panel)
+      .text_size(px(UI))
       .child(
         div()
           .flex_none()
           .text_color(theme.text_dim)
-          .child(Icon::new(IconName::Search).size_3()),
+          .child(Icon::new(HelixIcon::ListFilter).size(px(12.0))),
       )
       .child(
         div()
@@ -1085,7 +1123,6 @@ impl ContextPanel {
         .track_scroll(self.rows_scroll.clone())
         .flex_1()
         .min_h_0()
-        .px_2()
         .into_any_element()
       }
     } else if self.matches.is_empty() {
@@ -1109,7 +1146,6 @@ impl ContextPanel {
       .track_scroll(self.matches_scroll.clone())
       .flex_1()
       .min_h_0()
-      .px_2()
       .into_any_element()
     };
 
@@ -1122,7 +1158,9 @@ impl ContextPanel {
       .flex()
       .flex_col()
       .gap_2()
+      .p(px(10.0))
       .child(filter)
+      .child(self.render_search_mode(theme, cx))
       .child(body)
       .into_any_element()
   }
@@ -1157,7 +1195,7 @@ impl ContextPanel {
     let status = self.file_status.get(&node.path).copied();
     let name_color = match status {
       Some(kind) => file_icons::status_color(kind, theme),
-      None if node.ignored => file_icons::ignored_color(),
+      None if node.ignored => file_icons::ignored_color(theme),
       None => theme.text,
     };
     let parent = node
@@ -1178,14 +1216,10 @@ impl ContextPanel {
       .h(px(ROW_HEIGHT))
       .pl(px(BASE_PAD))
       .pr_2()
-      .rounded_md()
+      .rounded(px(6.0))
       .cursor_pointer()
-      .text_xs()
-      .when(is_selected, |el| {
-        el.bg(theme.elevated)
-          .border_1()
-          .border_color(theme.panel_border)
-      })
+      .text_size(px(BODY))
+      .when(is_selected, |el| el.bg(theme.hover))
       .when(!is_selected, |el| el.hover(|s| s.bg(theme.hover)))
       .on_click(
         cx.listener(move |this, event: &gpui::ClickEvent, _window, cx| {
@@ -1201,7 +1235,7 @@ impl ContextPanel {
         div()
           .flex_none()
           .text_color(if node.ignored {
-            file_icons::ignored_color()
+            file_icons::ignored_color(theme)
           } else {
             theme.text_dim
           })
@@ -1229,12 +1263,7 @@ impl ContextPanel {
     }
 
     if let Some(kind) = status {
-      row = row.child(
-        div()
-          .flex_none()
-          .text_color(file_icons::status_color(kind, theme))
-          .child(kind.status_letter()),
-      );
+      row = row.child(status_letter(kind, theme));
     }
 
     row.into_any_element()
@@ -1257,11 +1286,11 @@ impl ContextPanel {
     };
     let name_color = match status {
       Some(kind) => file_icons::status_color(kind, theme),
-      None if node.ignored => file_icons::ignored_color(),
+      None if node.ignored => file_icons::ignored_color(theme),
       None => theme.text,
     };
     let icon_color = if node.ignored {
-      file_icons::ignored_color()
+      file_icons::ignored_color(theme)
     } else {
       theme.text_dim
     };
@@ -1305,14 +1334,10 @@ impl ContextPanel {
       .h(px(ROW_HEIGHT))
       .pl(px(BASE_PAD + depth as f32 * INDENT))
       .pr_2()
-      .rounded_md()
+      .rounded(px(6.0))
       .cursor_pointer()
-      .text_xs()
-      .when(is_selected, |el| {
-        el.bg(theme.elevated)
-          .border_1()
-          .border_color(theme.panel_border)
-      })
+      .text_size(px(BODY))
+      .when(is_selected, |el| el.bg(theme.hover))
       .when(!is_selected, |el| el.hover(|s| s.bg(theme.hover)))
       .on_click(
         cx.listener(move |this, event: &gpui::ClickEvent, _window, cx| {
@@ -1351,39 +1376,73 @@ impl ContextPanel {
       );
 
     if let Some(kind) = status {
-      row = row.child(
-        div()
-          .flex_none()
-          .text_color(file_icons::status_color(kind, theme))
-          .child(kind.status_letter()),
-      );
+      row = row.child(status_letter(kind, theme));
     }
 
     row.into_any_element()
   }
 
-  fn render_files_toolbar(&self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
-    let name = helix_state::config::dir_label(&self.root);
-
+  /// `Names | Contents`, plus the tree actions the design leaves out but the
+  /// panel still needs: collapsing every folder, rescanning, and dotfiles.
+  fn render_search_mode(&self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
     div()
       .flex()
       .flex_none()
       .items_center()
-      .gap_2()
-      .h(px(32.0))
-      .px_2()
-      .border_b_1()
-      .border_color(theme.panel_border)
+      .gap_1()
       .child(
         div()
           .flex_1()
-          .min_w_0()
-          .overflow_hidden()
-          .whitespace_nowrap()
-          .text_xs()
-          .text_color(theme.text)
-          .child(name),
+          .flex()
+          .gap(px(2.0))
+          .p(px(2.0))
+          .rounded(px(8.0))
+          .bg(theme.panel)
+          .border_1()
+          .border_color(theme.panel_border)
+          .children([FileSearch::Names, FileSearch::Contents].map(|mode| {
+            let is_active = mode == self.file_search;
+
+            div()
+              .id(SharedString::from(format!("file-search-{}", mode.label())))
+              .flex_1()
+              .flex()
+              .items_center()
+              .justify_center()
+              .py(px(3.0))
+              .rounded(px(6.0))
+              .cursor_pointer()
+              .text_size(px(SMALL))
+              .when(is_active, |el| {
+                el.bg(theme.active)
+                  .font_weight(gpui::FontWeight::MEDIUM)
+                  .text_color(theme.text)
+              })
+              .when(!is_active, |el| {
+                el.text_color(theme.text_dim).hover(|s| s.bg(theme.hover))
+              })
+              .on_click(cx.listener(move |this, _, _, cx| {
+                if this.file_search == mode {
+                  return;
+                }
+
+                this.file_search = mode;
+
+                this.schedule_filter(cx);
+                cx.notify();
+              }))
+              .child(mode.label())
+          })),
       )
+      .child(self.render_files_toolbar(theme, cx))
+      .into_any_element()
+  }
+
+  fn render_files_toolbar(&self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
+    div()
+      .flex()
+      .flex_none()
+      .items_center()
       .child(
         icon_button("files-collapse", HelixIcon::ListCollapse, theme)
           .tooltip("Collapse every folder")
@@ -1434,7 +1493,6 @@ impl ContextPanel {
         let discard_path = file.path.clone();
         let base = base.clone();
         let armed = self.discard_armed.as_deref() == Some(file.path.as_str());
-        let as_path = Path::new(&file.path);
 
         let stat = div()
           .flex_none()
@@ -1442,19 +1500,31 @@ impl ContextPanel {
           .items_center()
           .gap_1()
           .group_hover(group.clone(), |s| s.invisible())
-          .children(
-            file
-              .added
-              .clone()
-              .map(|added| div().text_color(theme.green).child(added)),
+          .child(
+            div()
+              .flex()
+              .gap_1()
+              .font_family(theme.font_mono.clone())
+              .text_size(px(META))
+              .children(
+                file
+                  .added
+                  .clone()
+                  .map(|added| div().text_color(theme.green).child(added)),
+              )
+              .children(
+                file
+                  .removed
+                  .clone()
+                  .map(|removed| div().text_color(theme.red).child(removed)),
+              ),
           )
-          .children(
-            file
-              .removed
-              .clone()
-              .map(|removed| div().text_color(theme.red).child(removed)),
-          )
-          .child(div().text_color(color).child(file.kind.status_letter()));
+          .child(
+            div()
+              .text_size(px(META))
+              .text_color(color)
+              .child(file.kind.status_letter()),
+          );
 
         let toggle = div()
           .id(file.toggle_id.clone())
@@ -1538,12 +1608,12 @@ impl ContextPanel {
           .relative()
           .flex()
           .items_center()
-          .gap_2()
-          .h(px(ROW_HEIGHT))
-          .px_2()
-          .rounded_md()
+          .gap(px(7.0))
+          .h(px(GIT_ROW_HEIGHT))
+          .px(px(8.0))
+          .rounded(px(7.0))
           .cursor_pointer()
-          .text_xs()
+          .text_size(px(BODY))
           .hover(|s| s.bg(theme.hover))
           .on_click(cx.listener(move |this, _, _, cx| {
             this.discard_armed = None;
@@ -1552,12 +1622,6 @@ impl ContextPanel {
               base: base.clone(),
             });
           }))
-          .child(
-            div()
-              .flex_none()
-              .text_color(theme.text_dim)
-              .child(file_icons::icon(as_path).size_3()),
-          )
           .child(
             div()
               .flex_none()
@@ -1570,6 +1634,7 @@ impl ContextPanel {
               .min_w_0()
               .overflow_hidden()
               .whitespace_nowrap()
+              .text_size(px(META))
               .text_color(theme.text_dim)
               .child(parent)
           }))
@@ -1665,7 +1730,7 @@ impl ContextPanel {
       .rounded_lg()
       .border_1()
       .border_color(theme.panel_border)
-      .bg(crate::theme::ca(0x1b1b1bfa))
+      .bg(theme.win_tint)
       .shadow_lg()
       .py_1()
       .flex()
@@ -1727,19 +1792,22 @@ impl ContextPanel {
     // no click, no tooltip and no way to learn why. It now explains itself.
     let write = div()
       .id("generate-message-button")
-      .size(px(20.0))
+      .size(px(26.0))
       .flex()
       .flex_none()
       .items_center()
       .justify_center()
-      .rounded_sm()
+      .rounded(px(7.0))
+      .border_1()
+      .border_color(theme.panel_border)
       .cursor_pointer()
+      .text_size(px(UI))
       .text_color(if can_write {
         theme.claude
       } else {
         theme.text_dim
       })
-      .hover(|s| s.bg(theme.hover))
+      .hover(|s| s.bg(theme.claude_soft))
       .tooltip(move |window, cx| {
         gpui_component::tooltip::Tooltip::new(if can_write {
           "Write the message from the staged diff"
@@ -1750,67 +1818,51 @@ impl ContextPanel {
       })
       .on_click(cx.listener(|this, _, window, cx| this.generate_commit_message(window, cx)))
       .child(if self.generating_message {
-        "…"
+        "\u{2026}"
       } else {
-        "✦"
+        "\u{2726}"
       });
 
     div()
       .flex()
       .flex_none()
       .flex_col()
-      .gap_1()
-      .px_2()
-      .py_2()
-      .border_b_1()
+      .gap(px(9.0))
+      .p(px(10.0))
+      .rounded(px(10.0))
+      .border_1()
       .border_color(theme.panel_border)
+      .bg(theme.panel)
       .child(
-        // The sparkle is an overlay rather than Input::suffix: the suffix slot
-        // is vertically centred (wrong for a multi-line field) and the input
-        // captures the mouse on press for drag-selection, so a click there
-        // never completes. `occlude` keeps the press off the editor below.
         div()
-          .relative()
-          .rounded_md()
-          .border_1()
-          .border_color(theme.panel_border)
-          .bg(theme.elevated)
-          .pl_1()
-          .pr(px(24.0))
-          .child(Input::new(&self.commit_message).appearance(false))
-          .child(
-            div()
-              .absolute()
-              .top(px(3.0))
-              .right(px(3.0))
-              .occlude()
-              .child(write),
-          ),
+          .min_h(px(34.0))
+          .text_size(px(BODY))
+          .child(Input::new(&self.commit_message).appearance(false)),
       )
       .child(
         div()
           .relative()
           .flex()
           .items_center()
-          .gap_0p5()
+          .gap(px(6.0))
+          .child(write)
+          .child(div().flex_1())
           .child(
             div()
               .id("commit-button")
-              .flex_1()
               .h(px(26.0))
+              .px(px(12.0))
               .flex()
               .items_center()
               .justify_center()
-              .rounded_md()
-              .border_1()
-              .border_color(theme.panel_border)
               .gap_1()
-              .text_xs()
-              .bg(theme.elevated)
+              .rounded(px(7.0))
+              .text_size(px(UI))
+              .font_weight(gpui::FontWeight::SEMIBOLD)
               .when(primary_enabled, |el| {
-                el.text_color(theme.text)
+                el.bg(theme.accent)
+                  .text_color(theme.accent_text)
                   .cursor_pointer()
-                  .hover(|s| s.bg(theme.hover))
                   .on_click(cx.listener(move |this, _, window, cx| {
                     if can_commit {
                       this.run_git_action(GitAction::Commit, window, cx);
@@ -1819,13 +1871,18 @@ impl ContextPanel {
                     }
                   }))
               })
-              .when(!primary_enabled, |el| el.text_color(theme.text_dim))
+              .when(!primary_enabled, |el| {
+                el.bg(theme.panel2)
+                  .border_1()
+                  .border_color(theme.panel_border)
+                  .text_color(theme.text_dim)
+              })
               .children(
                 (!can_commit && !self.git_busy)
                   .then(|| div().flex_none().child(Icon::new(IconName::Plus).size_3())),
               )
               .child(if self.git_busy {
-                "Working…".to_string()
+                "Working\u{2026}".to_string()
               } else if can_commit {
                 format!("Commit ({})", git.staged.len())
               } else {
@@ -1835,16 +1892,14 @@ impl ContextPanel {
           .child(
             div()
               .id("commit-menu-button")
-              .flex_none()
-              .w(px(26.0))
-              .h(px(26.0))
+              .size(px(26.0))
               .flex()
+              .flex_none()
               .items_center()
               .justify_center()
-              .rounded_md()
+              .rounded(px(7.0))
               .border_1()
               .border_color(theme.panel_border)
-              .bg(theme.elevated)
               .text_color(theme.text_muted)
               .cursor_pointer()
               .hover(|s| s.bg(theme.hover).text_color(theme.text))
@@ -1856,7 +1911,7 @@ impl ContextPanel {
                 this.git_menu_open = !this.git_menu_open;
                 cx.notify();
               }))
-              .child(Icon::new(IconName::ChevronDown).size_3()),
+              .child(Icon::new(IconName::ChevronDown).size(px(11.0))),
           )
           .children(
             self
@@ -1868,7 +1923,7 @@ impl ContextPanel {
         self
           .git_error
           .clone()
-          .map(|err| div().text_xs().text_color(theme.red).child(err)),
+          .map(|err| div().text_size(px(META)).text_color(theme.red).child(err)),
       )
       .into_any_element()
   }
@@ -1876,41 +1931,49 @@ impl ContextPanel {
   fn render_git(&mut self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
     let Some(git) = self.git.as_ref() else {
       return div()
-        .p_3()
-        .text_xs()
+        .p(px(10.0))
+        .text_size(px(BODY))
         .text_color(theme.text_dim)
-        .child("not a git repository")
+        .child("Not a git repository")
         .into_any_element();
     };
 
-    let commit_box = self.render_commit_box(git, theme, cx);
     let mut content = div()
       .id("git-scroll")
       .flex_1()
       .min_h_0()
       .overflow_y_scroll()
-      .px_1()
+      .p(px(10.0))
       .flex()
       .flex_col()
+      .child(self.render_commit_box(git, theme, cx))
       .child(
         div()
           .flex()
           .items_center()
-          .gap_2()
-          .px_2()
-          .pt_2()
-          .text_xs()
+          .gap(px(7.0))
+          .px(px(4.0))
+          .pt(px(12.0))
+          .pb(px(4.0))
+          .text_size(px(BODY))
+          .font_weight(gpui::FontWeight::MEDIUM)
           .text_color(theme.text)
-          .child(div().text_color(theme.purple).child("⎇"))
+          .child(crate::components::git_branch_icon(theme.text_muted))
           .child(git.branch.clone()),
       );
 
     if !git.conflicted.is_empty() {
       content = content
-        .child(section_label(
-          format!("CONFLICTS ({})", git.conflicted.len()),
-          theme,
-        ))
+        .child(
+          div()
+            .px(px(4.0))
+            .pt(px(12.0))
+            .pb(px(4.0))
+            .child(section_label(
+              format!("Conflicts \u{b7} {}", git.conflicted.len()),
+              theme,
+            )),
+        )
         .children(self.git_file_rows(
           &self.git_rows.conflicted,
           DiffBase::Unstaged,
@@ -2024,19 +2087,20 @@ impl ContextPanel {
         div()
           .flex()
           .flex_col()
-          .px_2()
+          .px(px(8.0))
           .py_1()
           .child(
             div()
               .flex()
               .items_center()
               .gap_2()
-              .text_xs()
+              .text_size(px(BODY))
               .text_color(theme.text_muted)
               .child(
                 div()
                   .font_family(theme.font_mono.clone())
-                  .text_color(theme.accent)
+                  .text_size(px(META))
+                  .text_color(theme.text_muted)
                   .child(commit.short_id.clone()),
               )
               .child(
@@ -2047,56 +2111,60 @@ impl ContextPanel {
                   .child(commit.summary.clone()),
               ),
           )
-          .child(div().text_xs().text_color(theme.text_dim).child(format!(
-            "{} · {} ago",
-            commit.author,
-            ago(commit.epoch_seconds)
-          )))
+          .child(
+            div()
+              .text_size(px(META))
+              .text_color(theme.text_dim)
+              .child(format!(
+                "{} · {} ago",
+                commit.author,
+                ago(commit.epoch_seconds)
+              )),
+          )
       }));
 
     if git.stash_count > 0 {
-      content = content.child(section_label("STASH", theme)).child(
-        div()
-          .px_2()
-          .text_xs()
-          .text_color(theme.text_muted)
-          .child(format!("{} entries", git.stash_count)),
-      );
+      content = content
+        .child(
+          div()
+            .px(px(4.0))
+            .pt(px(12.0))
+            .pb(px(4.0))
+            .child(section_label("STASH", theme)),
+        )
+        .child(
+          div()
+            .px(px(8.0))
+            .text_size(px(BODY))
+            .text_color(theme.text_muted)
+            .child(format!("{} entries", git.stash_count)),
+        );
     }
 
-    div()
-      .flex_1()
-      .min_h_0()
-      .flex()
-      .flex_col()
-      .child(commit_box)
-      .child(content)
-      .into_any_element()
+    content.into_any_element()
   }
 
   fn render_pr(&mut self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
     let mut panel = div()
+      .id("pr-scroll")
       .flex_1()
       .min_h_0()
-      .p_3()
+      .overflow_y_scroll()
+      .p(px(12.0))
       .flex()
       .flex_col()
-      .gap_2()
-      .text_xs();
+      .gap(px(12.0))
+      .text_size(px(UI));
 
     if let Some(review) = self.pr.clone() {
-      let (state_label, state_color) = match review.state {
-        helix_github::ReviewState::Open => ("open", theme.green),
-        helix_github::ReviewState::Draft => ("draft", theme.text_dim),
-        helix_github::ReviewState::Merged => ("merged", theme.purple),
-        helix_github::ReviewState::Closed => ("closed", theme.red),
+      let (state_label, state_color, state_bg) = match review.state {
+        helix_github::ReviewState::Open => ("OPEN", theme.green, theme.green_soft),
+        helix_github::ReviewState::Draft => ("DRAFT", theme.text_muted, theme.panel),
+        helix_github::ReviewState::Merged => ("MERGED", theme.purple, theme.purple_soft),
+        helix_github::ReviewState::Closed => ("CLOSED", theme.red, theme.claude_soft),
       };
-      let check_color = match review.checks {
-        helix_github::CheckStatus::Passing => theme.green,
-        helix_github::CheckStatus::Failing => theme.red,
-        helix_github::CheckStatus::Pending => theme.yellow,
-        helix_github::CheckStatus::None => theme.text_dim,
-      };
+      let url = review.url.clone();
+
       panel = panel
         .child(
           div()
@@ -2106,71 +2174,166 @@ impl ContextPanel {
             .child(
               div()
                 .flex_none()
-                .text_color(theme.accent)
-                .child(format!("#{}", review.number)),
+                .text_color(theme.text_muted)
+                .child(Icon::new(HelixIcon::GitPullRequest).size(px(14.0))),
             )
             .child(
               div()
-                .flex_1()
-                .min_w_0()
-                .overflow_hidden()
-                .text_color(theme.text)
-                .child(review.title.clone()),
+                .flex_none()
+                .font_family(theme.font_mono.clone())
+                .text_size(px(TITLE))
+                .font_weight(gpui::FontWeight::MEDIUM)
+                .child(format!("#{}", review.number)),
             )
-            .child(div().flex_none().text_color(state_color).child(state_label)),
+            .child(
+              pill(state_label, state_color, state_bg, MICRO)
+                .font_weight(gpui::FontWeight::SEMIBOLD),
+            )
+            .child(div().flex_1())
+            .when(self.pr_busy, |el| {
+              el.child(spinner("pr-spin", theme.text_dim))
+            })
+            .when(!self.pr_busy, |el| {
+              el.child(
+                icon_button("pr-refresh", HelixIcon::Refresh, theme)
+                  .tooltip("Refresh the pull request")
+                  .on_click(cx.listener(|this, _, _, cx| this.refresh_pull_request(cx))),
+              )
+            })
+            .child(
+              icon_button("pr-open", IconName::ExternalLink, theme)
+                .tooltip("Open on GitHub")
+                .on_click(cx.listener(move |_, _, _, cx| {
+                  let url = url.clone();
+
+                  cx.background_executor()
+                    .spawn(async move { helix_process::open_url(&url) })
+                    .detach();
+                })),
+            ),
         )
-        .child(div().text_color(check_color).child(review.checks.label()))
         .child(
           div()
-            .text_color(theme.text_dim)
-            .child(format!("{} → {}", review.head_ref, review.base_ref)),
+            .flex()
+            .flex_col()
+            .gap(px(5.0))
+            .child(
+              div()
+                .text_size(px(TITLE))
+                .font_weight(gpui::FontWeight::SEMIBOLD)
+                .line_height(px(19.0))
+                .child(review.title.clone()),
+            )
+            .child(div().text_size(px(META)).text_color(theme.text_dim).child(
+              if review.updated_epoch_seconds > 0 {
+                format!("Updated {} ago", ago(review.updated_epoch_seconds))
+              } else {
+                format!("{} \u{2192} {}", review.head_ref, review.base_ref)
+              },
+            )),
         );
-      if !review.check_runs.is_empty() {
-        panel = panel.child(
-          div().flex().flex_col().gap_0p5().children(
-            review
-              .check_runs
-              .iter()
-              .enumerate()
-              .map(|(ix, run)| self.render_check_run(ix, run, theme, cx)),
-          ),
-        );
-      }
-      if let Some(decision) = review.review_decision.clone() {
-        panel = panel.child(div().text_color(theme.text_muted).child(decision));
-      }
-      if review.conflicting {
-        panel = panel.child(div().text_color(theme.red).child("merge conflicts"));
-      }
-      panel = panel.child(
-        div()
-          .text_color(theme.text_dim)
-          .overflow_hidden()
-          .child(review.url.clone()),
-      );
 
       if let Some(button) = self.render_merge_button(&review, theme, cx) {
         panel = panel.child(button);
       }
+
+      if review.conflicting {
+        panel = panel.child(self.render_conflict_banner(theme, cx));
+      }
+
+      panel = panel.child(
+        div()
+          .font_family(theme.font_mono.clone())
+          .text_size(px(META))
+          .text_color(theme.text_dim)
+          .child(format!("{} \u{2192} {}", review.head_ref, review.base_ref)),
+      );
+
+      if !review.check_runs.is_empty() {
+        let passing = review
+          .check_runs
+          .iter()
+          .filter(|run| run.status == CheckStatus::Passing)
+          .count();
+        let rollup = check_color(review.checks, theme);
+
+        panel =
+          panel.child(
+            div()
+              .flex()
+              .flex_col()
+              .gap(px(2.0))
+              .pt(px(10.0))
+              .border_t_1()
+              .border_color(theme.panel_border)
+              .child(
+                div()
+                  .flex()
+                  .items_center()
+                  .gap(px(7.0))
+                  .pb(px(6.0))
+                  .child(
+                    div()
+                      .flex_none()
+                      .text_color(rollup)
+                      .child(Icon::new(check_icon(review.checks)).size(px(12.0))),
+                  )
+                  .child(div().font_weight(gpui::FontWeight::SEMIBOLD).child(
+                    match review.checks {
+                      CheckStatus::Passing => format!("{passing} passing"),
+                      _ => review.checks.label().to_string(),
+                    },
+                  )),
+              )
+              .children(
+                review
+                  .check_runs
+                  .iter()
+                  .enumerate()
+                  .map(|(ix, run)| self.render_check_run(ix, run, theme, cx)),
+              ),
+          );
+      }
+
+      if let Some(decision) = review.review_decision.clone() {
+        panel = panel.child(
+          div()
+            .text_size(px(META))
+            .text_color(theme.text_muted)
+            .child(decision),
+        );
+      }
+
+      if !review.comments.is_empty() {
+        panel = panel.child(self.render_comments(&review, theme, cx));
+      }
     }
 
     if let Some(error) = &self.pr_error {
-      panel = panel.child(div().text_color(theme.red).child(error.clone()));
+      panel = panel.child(
+        div()
+          .text_size(px(META))
+          .text_color(theme.red)
+          .child(error.clone()),
+      );
     }
 
     match &self.pr_eligibility {
       None => {
-        panel = panel.child(div().text_color(theme.text_dim).child(if self.pr_busy {
-          "Checking GitHub…"
-        } else {
-          "No pull request data yet."
-        }));
+        panel = panel.child(div().text_size(px(BODY)).text_color(theme.text_dim).child(
+          if self.pr_busy {
+            "Checking GitHub\u{2026}"
+          } else {
+            "No pull request data yet."
+          },
+        ));
       }
       Some(eligibility) => {
         if let Some(reason) = eligibility.blocked_reason {
           if reason != BlockedReason::ExistingReview {
             panel = panel.child(
               div()
+                .text_size(px(META))
                 .text_color(if reason == BlockedReason::LookupUnavailable {
                   theme.yellow
                 } else {
@@ -2180,21 +2343,23 @@ impl ContextPanel {
             );
           }
         }
+
         if let Some(label) = primary_action_label(eligibility.next_action) {
           let action = eligibility.next_action;
+
           panel = panel.child(
             div()
               .id("pr-primary-action")
-              .h(px(26.0))
+              .h(px(30.0))
               .px_3()
               .flex()
               .items_center()
               .justify_center()
-              .rounded_md()
-              .bg(theme.elevated)
-              .text_color(theme.text)
+              .rounded(px(8.0))
+              .bg(theme.accent)
+              .text_color(theme.accent_text)
+              .font_weight(gpui::FontWeight::SEMIBOLD)
               .cursor_pointer()
-              .hover(|s| s.bg(theme.hover))
               .on_click(cx.listener(move |this, _, _, cx| {
                 this.run_primary_action(action, cx);
               }))
@@ -2205,6 +2370,235 @@ impl ContextPanel {
     }
 
     panel.into_any_element()
+  }
+
+  /// Resolving conflicts is agent work, so the banner's action opens a Claude
+  /// session on this worktree rather than pretending the app can merge them.
+  fn render_conflict_banner(&self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
+    div()
+      .flex()
+      .items_center()
+      .gap(px(9.0))
+      .p(px(10.0))
+      .rounded(px(10.0))
+      .border_1()
+      .border_color(theme.panel_border)
+      .bg(theme.panel)
+      .child(crate::components::status_dot(theme.yellow))
+      .child(
+        div()
+          .flex_1()
+          .min_w_0()
+          .flex()
+          .flex_col()
+          .child(
+            div()
+              .font_weight(gpui::FontWeight::SEMIBOLD)
+              .child("Conflicts block this PR"),
+          )
+          .child(
+            div()
+              .text_size(px(META))
+              .text_color(theme.text_dim)
+              .overflow_hidden()
+              .whitespace_nowrap()
+              .text_ellipsis()
+              .child("Resolve conflicts before checks can run"),
+          ),
+      )
+      .child(
+        div()
+          .id("pr-resolve")
+          .flex_none()
+          .flex()
+          .items_center()
+          .gap(px(5.0))
+          .h(px(24.0))
+          .px(px(10.0))
+          .rounded(px(7.0))
+          .bg(theme.claude)
+          .text_size(px(SMALL))
+          .font_weight(gpui::FontWeight::SEMIBOLD)
+          .text_color(theme.claude_text)
+          .cursor_pointer()
+          .tooltip(move |window, cx| {
+            gpui_component::tooltip::Tooltip::new("Open a Claude session to resolve them")
+              .build(window, cx)
+          })
+          .on_click(cx.listener(|_, _, window, cx| {
+            window.dispatch_action(Box::new(helix_commands::NewClaudeSession), cx);
+          }))
+          .child("\u{2726} Resolve"),
+      )
+      .into_any_element()
+  }
+
+  fn render_comments(
+    &self,
+    review: &HostedReview,
+    theme: &Theme,
+    cx: &mut Context<Self>,
+  ) -> AnyElement {
+    let bots = review.comments.iter().filter(|c| c.bot).count();
+    let humans = review.comments.len() - bots;
+
+    let shown: Vec<&helix_github::ReviewComment> = review
+      .comments
+      .iter()
+      .filter(|comment| match self.comment_filter {
+        CommentFilter::All => true,
+        CommentFilter::Humans => !comment.bot,
+        CommentFilter::Bots => comment.bot,
+      })
+      .collect();
+
+    div()
+      .flex()
+      .flex_col()
+      .gap_2()
+      .pt(px(10.0))
+      .border_t_1()
+      .border_color(theme.panel_border)
+      .child(
+        div()
+          .flex()
+          .items_center()
+          .gap(px(7.0))
+          .child(section_label("COMMENTS", theme))
+          .child(
+            div()
+              .flex_none()
+              .min_w(px(16.0))
+              .h(px(16.0))
+              .px_1()
+              .flex()
+              .items_center()
+              .justify_center()
+              .rounded_full()
+              .bg(theme.panel)
+              .border_1()
+              .border_color(theme.panel_border)
+              .text_size(px(MICRO))
+              .text_color(theme.text_muted)
+              .child(review.comments.len().to_string()),
+          ),
+      )
+      .child(
+        div()
+          .flex()
+          .gap(px(2.0))
+          .p(px(2.0))
+          .rounded(px(8.0))
+          .bg(theme.panel)
+          .border_1()
+          .border_color(theme.panel_border)
+          .children(
+            [
+              (CommentFilter::All, "All", review.comments.len()),
+              (CommentFilter::Humans, "Humans", humans),
+              (CommentFilter::Bots, "Bots", bots),
+            ]
+            .map(|(filter, label, count)| {
+              let is_active = filter == self.comment_filter;
+
+              div()
+                .id(SharedString::from(format!("comment-filter-{label}")))
+                .flex_1()
+                .flex()
+                .items_center()
+                .justify_center()
+                .py(px(3.0))
+                .rounded(px(6.0))
+                .cursor_pointer()
+                .text_size(px(SMALL))
+                .when(is_active, |el| {
+                  el.bg(theme.active)
+                    .font_weight(gpui::FontWeight::MEDIUM)
+                    .text_color(theme.text)
+                })
+                .when(!is_active, |el| {
+                  el.text_color(theme.text_dim).hover(|s| s.bg(theme.hover))
+                })
+                .on_click(cx.listener(move |this, _, _, cx| {
+                  this.comment_filter = filter;
+                  cx.notify();
+                }))
+                .child(format!("{label} {count}"))
+            }),
+          ),
+      )
+      .children(shown.into_iter().enumerate().map(|(ix, comment)| {
+        div()
+          .flex()
+          .flex_col()
+          .rounded(px(10.0))
+          .border_1()
+          .border_color(theme.panel_border)
+          .bg(theme.panel)
+          .overflow_hidden()
+          .child(
+            div()
+              .flex()
+              .items_center()
+              .gap_2()
+              .px(px(10.0))
+              .py(px(9.0))
+              .border_b_1()
+              .border_color(theme.panel_border)
+              .child(
+                div()
+                  .size(px(20.0))
+                  .flex_none()
+                  .flex()
+                  .items_center()
+                  .justify_center()
+                  .rounded_full()
+                  .bg(theme.claude_soft)
+                  .text_color(theme.claude)
+                  .text_size(px(META))
+                  .child(if comment.bot {
+                    "\u{2726}".to_string()
+                  } else {
+                    comment
+                      .author
+                      .chars()
+                      .next()
+                      .map(|c| c.to_uppercase().to_string())
+                      .unwrap_or_default()
+                  }),
+              )
+              .child(
+                div()
+                  .flex()
+                  .flex_col()
+                  .child(
+                    div()
+                      .font_weight(gpui::FontWeight::SEMIBOLD)
+                      .child(comment.author.clone()),
+                  )
+                  .child(
+                    div()
+                      .text_size(px(TINY))
+                      .text_color(theme.text_dim)
+                      .child(format!("{} ago", ago(comment.epoch_seconds))),
+                  ),
+              )
+              .child(div().flex_1())
+              .when(comment.bot, |el| {
+                el.child(crate::components::cap("BOT", theme))
+              }),
+          )
+          .child(
+            div()
+              .id(SharedString::from(format!("pr-comment-{ix}")))
+              .px(px(10.0))
+              .py(px(10.0))
+              .line_height(px(18.0))
+              .text_color(theme.text_muted)
+              .child(comment.body.clone()),
+          )
+      }))
+      .into_any_element()
   }
 
   fn render_check_run(
@@ -2221,10 +2615,10 @@ impl ContextPanel {
       .id(SharedString::from(format!("pr-check-{ix}")))
       .flex()
       .items_center()
-      .gap_1p5()
-      .h(px(20.0))
-      .px_1()
-      .rounded_sm();
+      .gap_2()
+      .h(px(28.0))
+      .px(px(6.0))
+      .rounded(px(7.0));
 
     row = match run.status {
       CheckStatus::Pending => row.child(spinner(
@@ -2235,7 +2629,7 @@ impl ContextPanel {
         div()
           .flex_none()
           .text_color(color)
-          .child(Icon::new(check_icon(run.status)).size_3()),
+          .child(Icon::new(check_icon(run.status)).size(px(11.0))),
       ),
     };
 
@@ -2247,12 +2641,24 @@ impl ContextPanel {
           .overflow_hidden()
           .whitespace_nowrap()
           .text_ellipsis()
-          .text_color(theme.text_muted)
           .child(run.name.clone()),
+      )
+      .child(
+        div()
+          .flex_none()
+          .text_size(px(META))
+          .text_color(theme.text_dim)
+          .child(check_run_label(run.status)),
       )
       .when_some(url, |el, url| {
         el.cursor_pointer()
           .hover(|s| s.bg(theme.hover))
+          .child(
+            div()
+              .flex_none()
+              .text_color(theme.text_dim)
+              .child(Icon::new(IconName::ExternalLink).size(px(10.0))),
+          )
           .on_click(cx.listener(move |_, _, _, cx| {
             let url = url.clone();
 
@@ -2273,31 +2679,39 @@ impl ContextPanel {
     let readiness = merge_readiness(review)?;
     let ready = readiness.is_ready();
     let label = if self.merge_busy {
-      "Merging…"
+      "Merging\u{2026}"
     } else if self.merge_armed {
       "Confirm merge"
     } else {
       readiness.label()
     };
 
+    let (fg, bg) = if self.merge_armed {
+      (theme.yellow, theme.yellow_soft)
+    } else if ready {
+      (theme.green, theme.green_soft)
+    } else {
+      (theme.yellow, theme.yellow_soft)
+    };
+
     let mut button = div()
       .id("pr-merge")
-      .h(px(26.0))
+      .h(px(30.0))
       .px_3()
       .flex()
       .items_center()
       .justify_center()
-      .gap_1p5()
-      .rounded_md();
+      .gap(px(7.0))
+      .rounded(px(8.0))
+      .border_1()
+      .border_color(theme.panel_border)
+      .font_weight(gpui::FontWeight::SEMIBOLD)
+      .text_size(px(BODY));
 
     button = if ready && !self.merge_busy {
       button
-        .bg(if self.merge_armed {
-          theme.yellow
-        } else {
-          theme.green
-        })
-        .text_color(theme.bg)
+        .bg(bg)
+        .text_color(fg)
         .cursor_pointer()
         .on_click(cx.listener(|this, _, _, cx| {
           if this.merge_armed {
@@ -2309,53 +2723,20 @@ impl ContextPanel {
           cx.notify();
         }))
     } else {
-      button.bg(theme.elevated).text_color(theme.text_dim)
+      button.bg(bg).text_color(fg)
     };
 
     if self.merge_busy {
-      button = button.child(spinner("pr-merge-spin", theme.text_dim));
+      button = button.child(spinner("pr-merge-spin", fg));
+    } else {
+      button = button.child(
+        div()
+          .flex_none()
+          .child(Icon::new(HelixIcon::GitBranch).size(px(12.0))),
+      );
     }
 
     Some(button.child(label).into_any_element())
-  }
-
-  fn render_pr_toolbar(&self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
-    let label = self
-      .pr
-      .as_ref()
-      .map(|review| format!("#{}", review.number))
-      .unwrap_or_else(|| "Pull request".to_string());
-
-    div()
-      .flex()
-      .flex_none()
-      .items_center()
-      .gap_2()
-      .h(px(32.0))
-      .px_2()
-      .border_b_1()
-      .border_color(theme.panel_border)
-      .child(
-        div()
-          .flex_1()
-          .min_w_0()
-          .overflow_hidden()
-          .whitespace_nowrap()
-          .text_xs()
-          .text_color(theme.text)
-          .child(label),
-      )
-      .when(self.pr_busy, |el| {
-        el.child(spinner("pr-spin", theme.text_dim))
-      })
-      .when(!self.pr_busy, |el| {
-        el.child(
-          icon_button("pr-refresh", HelixIcon::Refresh, theme)
-            .tooltip("Refresh the pull request")
-            .on_click(cx.listener(|this, _, _, cx| this.refresh_pull_request(cx))),
-        )
-      })
-      .into_any_element()
   }
 
   fn run_primary_action(&mut self, action: NextAction, cx: &mut Context<Self>) {
@@ -2437,12 +2818,31 @@ impl ContextPanel {
   }
 }
 
+/// The design draws a status letter as plain coloured text at 11px: no badge,
+/// no weight, nothing behind it.
+fn status_letter(kind: GitFileKind, theme: &Theme) -> gpui::Div {
+  div()
+    .flex_none()
+    .text_size(px(META))
+    .text_color(file_icons::status_color(kind, theme))
+    .child(kind.status_letter())
+}
+
 fn check_color(status: CheckStatus, theme: &Theme) -> gpui::Hsla {
   match status {
     CheckStatus::Passing => theme.green,
     CheckStatus::Failing => theme.red,
     CheckStatus::Pending => theme.yellow,
     CheckStatus::None => theme.text_dim,
+  }
+}
+
+fn check_run_label(status: CheckStatus) -> &'static str {
+  match status {
+    CheckStatus::Passing => "Successful",
+    CheckStatus::Failing => "Failed",
+    CheckStatus::Pending => "Running",
+    CheckStatus::None => "Skipped",
   }
 }
 
@@ -2479,9 +2879,9 @@ impl Render for ContextPanel {
       .flex()
       .flex_none()
       .items_center()
-      .gap_1()
+      .gap(px(3.0))
       .h(px(HEADER_HEIGHT))
-      .px_2()
+      .px(px(10.0))
       .border_b_1()
       .border_color(theme.panel_border)
       .children(
@@ -2490,18 +2890,21 @@ impl Render for ContextPanel {
           .map(|tab| {
             let is_active = tab == active;
             let label = tab.label();
+
             div()
               .id(SharedString::from(format!("right-tab-{label}")))
-              .size(px(28.0))
+              .w(px(28.0))
+              .h(px(26.0))
               .flex()
               .flex_none()
               .items_center()
               .justify_center()
-              .rounded_md()
+              .rounded(px(7.0))
               .cursor_pointer()
-              .when(is_active, |el| el.bg(theme.elevated).text_color(theme.text))
+              .when(is_active, |el| el.bg(theme.active).text_color(theme.text))
               .when(!is_active, |el| {
-                el.text_color(theme.text_dim).hover(|s| s.bg(theme.hover))
+                el.text_color(theme.text_dim)
+                  .hover(|s| s.bg(theme.hover).text_color(theme.text))
               })
               .tooltip(move |window, cx| {
                 gpui_component::tooltip::Tooltip::new(label).build(window, cx)
@@ -2518,12 +2921,38 @@ impl Render for ContextPanel {
                 }
                 cx.notify();
               }))
-              .child(tab.icon().size_4())
+              .child(tab.icon().size(px(13.0)))
           }),
       )
       .child(div().flex_1())
       .child(
-        icon_button("close-right-sidebar", IconName::PanelRightClose, &theme)
+        icon_button(
+          "toggle-theme",
+          if theme.is_dark() {
+            IconName::Sun
+          } else {
+            IconName::Moon
+          },
+          &theme,
+        )
+        .tooltip(if theme.is_dark() {
+          "Switch to the light theme"
+        } else {
+          "Switch to the dark theme"
+        })
+        .on_click(|_, window, cx| {
+          window.dispatch_action(Box::new(helix_commands::ToggleTheme), cx);
+        }),
+      )
+      .child(
+        icon_button("open-settings", HelixIcon::Sliders, &theme)
+          .tooltip_with_action("Settings", &helix_commands::OpenAppSettings, None)
+          .on_click(|_, window, cx| {
+            window.dispatch_action(Box::new(helix_commands::OpenAppSettings), cx);
+          }),
+      )
+      .child(
+        icon_button("close-right-sidebar", IconName::PanelRight, &theme)
           .tooltip_with_action(
             "Hide the context sidebar",
             &helix_commands::ToggleRightSidebar,
@@ -2533,12 +2962,6 @@ impl Render for ContextPanel {
             window.dispatch_action(Box::new(helix_commands::ToggleRightSidebar), cx);
           }),
       );
-
-    let toolbar = match active {
-      RightTab::Files => Some(self.render_files_toolbar(&theme, cx)),
-      RightTab::Pr => Some(self.render_pr_toolbar(&theme, cx)),
-      RightTab::Git => None,
-    };
 
     let body = match self.active {
       RightTab::Files => self.render_files(&theme, cx),
@@ -2550,9 +2973,6 @@ impl Render for ContextPanel {
       .flex()
       .flex_col()
       .size_full()
-      .bg(theme.panel)
-      .border_l_1()
-      .border_color(theme.panel_border)
       .when(self.git_menu_open, |el| {
         el.on_mouse_down(
           gpui::MouseButton::Left,
@@ -2563,7 +2983,6 @@ impl Render for ContextPanel {
         )
       })
       .child(tabs)
-      .children(toolbar)
       .child(body)
   }
 }

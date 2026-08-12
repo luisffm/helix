@@ -81,7 +81,7 @@ pub fn named_color(theme: &Theme, named: NamedColor) -> Hsla {
     NamedColor::BrightCyan => p[14],
     NamedColor::BrightWhite => p[15],
     NamedColor::Cursor => theme.term.cursor,
-    NamedColor::Background => theme.bg,
+    NamedColor::Background => theme.term.bg,
     _ => theme.term.fg,
   }
 }
@@ -129,7 +129,7 @@ pub fn color_for_osc_index(index: usize, theme: &Theme) -> AnsiRgb {
   match index {
     0..=255 => hsla_to_rgb(indexed(theme, index as u8)),
     256 => hsla_to_rgb(theme.term.fg),
-    257 => hsla_to_rgb(theme.bg),
+    257 => hsla_to_rgb(theme.term.bg),
     258 => hsla_to_rgb(theme.term.cursor),
     _ => hsla_to_rgb(theme.term.fg),
   }

@@ -1,15 +1,15 @@
-use crate::components::key_hint;
+use crate::components::{BODY, META, cap, key_hint, section_label};
 use crate::theme::Theme;
 use gpui::{
   App, Context, Entity, EventEmitter, FocusHandle, Focusable, IntoElement, ParentElement, Render,
   Task, WeakEntity, Window, div, prelude::*, px,
 };
 use gpui_component::list::{List, ListDelegate, ListItem, ListState};
-use gpui_component::{Icon, IconName, IndexPath};
+use gpui_component::{Icon, IconName, IndexPath, Sizable as _};
 use helix_fuzzy::Ranker;
 use std::path::PathBuf;
 
-const ROW_HEIGHT: f32 = 34.0;
+const ROW_HEIGHT: f32 = 32.0;
 
 #[derive(Clone, Debug)]
 pub enum SearchTarget {
@@ -46,8 +46,15 @@ impl SearchTarget {
       SearchTarget::Worktree(_) => IconName::GalleryVerticalEnd,
       SearchTarget::Tab(_) => IconName::SquareTerminal,
       SearchTarget::Project(_) => IconName::Folder,
-      SearchTarget::NewTerminal => IconName::Plus,
-      SearchTarget::NewClaude => IconName::Asterisk,
+      SearchTarget::NewTerminal => IconName::SquareTerminal,
+      SearchTarget::NewClaude => IconName::Plus,
+    }
+  }
+
+  fn icon_color(&self, theme: &Theme) -> gpui::Hsla {
+    match self {
+      SearchTarget::NewClaude => theme.claude,
+      _ => theme.text_dim,
     }
   }
 }
@@ -99,9 +106,9 @@ impl Render for SearchDialog {
       .flex_none()
       .items_center()
       .justify_end()
-      .gap_3()
-      .h(px(38.0))
-      .px_3()
+      .gap(px(14.0))
+      .h(px(36.0))
+      .px(px(14.0))
       .border_t_1()
       .border_color(theme.panel_border)
       .child(key_hint("enter", "Open", &theme))
@@ -113,18 +120,19 @@ impl Render for SearchDialog {
       .occlude()
       .track_focus(&self.focus_handle)
       .on_click(|_, _, cx| cx.stop_propagation())
-      .w(px(640.0))
-      .max_h(px(520.0))
-      .rounded_xl()
+      .w(px(600.0))
+      .max_h(px(480.0))
+      .rounded(px(14.0))
       .border_1()
-      .border_color(theme.panel_border)
-      .bg(crate::theme::ca(0x161616f5))
-      .shadow_lg()
+      .border_color(theme.win_border)
+      .bg(theme.win_tint)
+      .shadow_2xl()
       .flex()
       .flex_col()
       .overflow_hidden()
       .child(
         List::new(&self.list)
+          .with_size(gpui_component::Size::Large)
           .search_placeholder("Search worktrees, tabs, projects, and actions...")
           .flex_1()
           .min_h_0(),
@@ -241,11 +249,10 @@ impl ListDelegate for SearchDelegate {
       div()
         .flex()
         .items_center()
-        .h(px(26.0))
-        .px_3()
-        .text_xs()
-        .text_color(theme.text_dim)
-        .child(name),
+        .pt(px(8.0))
+        .pb(px(4.0))
+        .px(px(8.0))
+        .child(section_label(name, &theme)),
     )
   }
 
@@ -262,47 +269,40 @@ impl ListDelegate for SearchDelegate {
       ListItem::new(("search-item", ix.section * 1000 + ix.row))
         .selected(self.selected == Some(ix))
         .h(px(ROW_HEIGHT))
-        .mx_2()
-        .px_2()
-        .rounded_md()
+        .mx_1()
+        .px(px(9.0))
+        .rounded(px(8.0))
         .child(
           div()
             .flex()
             .items_center()
-            .gap_2()
+            .gap(px(9.0))
             .size_full()
             .child(
               div()
                 .flex_none()
-                .text_color(theme.text_dim)
-                .child(Icon::new(item.target.icon()).size_4()),
+                .text_color(item.target.icon_color(&theme))
+                .child(Icon::new(item.target.icon()).size(px(13.0))),
             )
             .child(
               div()
-                .text_sm()
+                .flex_none()
+                .text_size(px(BODY))
                 .text_color(theme.text)
                 .child(item.label.clone()),
             )
             .child(
               div()
                 .flex_1()
-                .text_xs()
+                .min_w_0()
+                .text_size(px(META))
                 .text_color(theme.text_dim)
                 .overflow_hidden()
+                .whitespace_nowrap()
+                .text_ellipsis()
                 .child(item.detail.clone()),
             )
-            .child(
-              div()
-                .flex_none()
-                .px_1p5()
-                .py_0p5()
-                .rounded_sm()
-                .border_1()
-                .border_color(theme.panel_border)
-                .text_xs()
-                .text_color(theme.text_muted)
-                .child(item.badge.clone()),
-            ),
+            .child(cap(item.badge.clone(), &theme)),
         ),
     )
   }
@@ -316,7 +316,7 @@ impl ListDelegate for SearchDelegate {
 
     div()
       .p_4()
-      .text_sm()
+      .text_size(px(BODY))
       .text_color(theme.text_dim)
       .child("No results")
   }

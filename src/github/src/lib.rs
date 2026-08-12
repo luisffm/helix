@@ -6,7 +6,7 @@ pub mod review;
 pub use eligibility::{
   BlockedReason, Eligibility, MergeReadiness, NextAction, ReviewLookupOutcome, merge_readiness,
 };
-pub use review::{CheckStatus, HostedReview, ReviewCheck, ReviewState};
+pub use review::{CheckStatus, HostedReview, ReviewCheck, ReviewComment, ReviewState};
 
 #[derive(Clone, Debug)]
 pub struct PullRequestInfo {

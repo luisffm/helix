@@ -4,7 +4,7 @@ use gpui::{
 };
 
 use helix_commands::Quit;
-use helix_ui::{HelixRoot, Theme};
+use helix_ui::HelixRoot;
 
 mod assets;
 mod single_instance;
@@ -54,13 +54,9 @@ fn main() {
     .with_assets(assets::HelixAssets)
     .run(move |cx: &mut App| {
       gpui_component::init(cx);
+      assets::register_fonts(cx);
 
-      let blur_level = helix_state::config::load()
-        .blur_level
-        .unwrap_or_else(|| "medium".to_string());
-
-      let mut theme = Theme::dark();
-      helix_ui::theme::apply_blur_level(&mut theme, &blur_level);
+      let (theme, blur_level) = helix_ui::theme::configured();
 
       cx.set_global(theme);
       helix_ui::theme::sync_component_theme(cx);
@@ -74,7 +70,7 @@ fn main() {
         titlebar: Some(TitlebarOptions {
           title: Some(format!("Helix — {}", project.name).into()),
           appears_transparent: true,
-          traffic_light_position: Some(point(px(12.0), px(14.0))),
+          traffic_light_position: Some(point(px(14.0), px(10.0))),
         }),
         window_background: helix_ui::theme::appearance_for_level(&blur_level),
         window_min_size: Some(size(px(800.0), px(500.0))),

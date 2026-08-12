@@ -5,6 +5,7 @@ use gpui_component::IconNamed;
 /// resolve against the asset source registered in the app crate.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum HelixIcon {
+  ClaudeSunburst,
   FileCode,
   FileImage,
   FileSliders,
@@ -13,13 +14,17 @@ pub enum HelixIcon {
   FolderPlus,
   GitBranch,
   GitCompare,
+  GitPullRequest,
   ListCollapse,
+  ListFilter,
   Refresh,
+  Sliders,
 }
 
 impl IconNamed for HelixIcon {
   fn path(self) -> SharedString {
     match self {
+      HelixIcon::ClaudeSunburst => "icons/claude-sunburst.svg",
       HelixIcon::FileCode => "icons/file-code.svg",
       HelixIcon::FileImage => "icons/file-image.svg",
       HelixIcon::FileSliders => "icons/file-sliders.svg",
@@ -28,8 +33,11 @@ impl IconNamed for HelixIcon {
       HelixIcon::FolderPlus => "icons/folder-plus.svg",
       HelixIcon::GitBranch => "icons/git-branch.svg",
       HelixIcon::GitCompare => "icons/git-compare.svg",
+      HelixIcon::GitPullRequest => "icons/git-pull-request.svg",
       HelixIcon::ListCollapse => "icons/list-collapse.svg",
+      HelixIcon::ListFilter => "icons/list-filter.svg",
       HelixIcon::Refresh => "icons/refresh.svg",
+      HelixIcon::Sliders => "icons/sliders.svg",
     }
     .into()
   }

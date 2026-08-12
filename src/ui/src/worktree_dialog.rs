@@ -153,7 +153,7 @@ impl Render for WorktreeEditDialog {
       .rounded_xl()
       .border_1()
       .border_color(theme.panel_border)
-      .bg(crate::theme::ca(0x161616f5))
+      .bg(theme.win_tint)
       .shadow_lg()
       .flex()
       .flex_col()

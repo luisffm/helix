@@ -4,6 +4,12 @@ use std::path::{Path, PathBuf};
 const FILTER_MAX_MATCHES: usize = 300;
 const FILTER_MAX_DIRS: usize = 4000;
 
+/// A grep over a workspace has to stay bounded or one vendored bundle stalls the
+/// whole scan, so files above this size and anything holding a NUL byte early on
+/// are skipped rather than read.
+const GREP_MAX_BYTES: u64 = 256 * 1024;
+const GREP_SNIFF_BYTES: usize = 1024;
+
 #[derive(Clone)]
 pub struct FileNode {
   pub path: PathBuf,
@@ -103,6 +109,84 @@ pub fn scan_matches(
       };
 
       ranked.push((score, node));
+    }
+  }
+
+  ranked.sort_by(|a, b| {
+    a.1
+      .ignored
+      .cmp(&b.1.ignored)
+      .then_with(|| b.0.cmp(&a.0))
+      .then_with(|| name_cmp(&a.1, &b.1))
+  });
+
+  ranked.into_iter().map(|(_, node)| node).collect()
+}
+
+fn holds_text(bytes: &[u8]) -> bool {
+  !bytes.iter().take(GREP_SNIFF_BYTES).any(|byte| *byte == 0)
+}
+
+/// Files whose contents hold `needle`, matched case-insensitively. Ranking is by
+/// how many times the needle occurs, so the file that talks about it most sorts
+/// first, and ignored files stay below tracked ones as they do by name.
+pub fn scan_contents(
+  root: &Path,
+  query: &str,
+  show_dotfiles: bool,
+  ignored: &dyn Fn(&Path, bool) -> bool,
+) -> Vec<FileNode> {
+  let needle = query.to_lowercase();
+
+  if needle.is_empty() {
+    return Vec::new();
+  }
+
+  let mut ranked: Vec<(usize, FileNode)> = Vec::new();
+  let mut queue = std::collections::VecDeque::from([root.to_path_buf()]);
+  let mut dirs = 0usize;
+
+  while let Some(dir) = queue.pop_front() {
+    if dirs >= FILTER_MAX_DIRS || ranked.len() >= FILTER_MAX_MATCHES {
+      break;
+    }
+
+    dirs += 1;
+
+    for node in scan_dir(&dir, show_dotfiles, ignored) {
+      if node.is_dir {
+        if !node.ignored {
+          queue.push_back(node.path.clone());
+        }
+
+        continue;
+      }
+
+      let too_big = std::fs::metadata(&node.path)
+        .map(|meta| meta.len() > GREP_MAX_BYTES)
+        .unwrap_or(true);
+
+      if too_big {
+        continue;
+      }
+
+      let Ok(bytes) = std::fs::read(&node.path) else {
+        continue;
+      };
+
+      if !holds_text(&bytes) {
+        continue;
+      }
+
+      let Ok(text) = String::from_utf8(bytes) else {
+        continue;
+      };
+
+      let hits = text.to_lowercase().matches(&needle).count();
+
+      if hits > 0 {
+        ranked.push((hits, node));
+      }
     }
   }
 

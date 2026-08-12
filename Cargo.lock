@@ -2777,6 +2777,7 @@ dependencies = [
  "helix-terminal",
  "helix-worktree",
  "objc",
+ "serde_json",
  "tokio",
 ]
 

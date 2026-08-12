@@ -63,6 +63,8 @@ pub struct ProjectConfig {
   pub icon: Option<String>,
   #[serde(default, skip_serializing_if = "Option::is_none")]
   pub display_name: Option<String>,
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  pub accent: Option<String>,
   #[serde(
     default,
     skip_serializing_if = "Vec::is_empty",
@@ -78,6 +80,7 @@ impl ProjectConfig {
       emoji: None,
       icon: None,
       display_name: None,
+      accent: None,
       worktrees: Vec::new(),
     }
   }
@@ -100,6 +103,8 @@ pub struct HelixConfig {
   pub terminal_font_size: Option<f32>,
   #[serde(default, skip_serializing_if = "Option::is_none")]
   pub blur_level: Option<String>,
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  pub theme: Option<String>,
   #[serde(default, skip_serializing_if = "Vec::is_empty")]
   pub sessions: Vec<WorkspaceSession>,
 }
@@ -185,6 +190,12 @@ pub fn set_terminal_font_size(size: f32) {
 pub fn set_blur_level(level: &str) {
   let mut config = load();
   config.blur_level = Some(level.to_string());
+  save(&config);
+}
+
+pub fn set_theme(theme: &str) {
+  let mut config = load();
+  config.theme = Some(theme.to_string());
   save(&config);
 }
 
@@ -351,10 +362,9 @@ pub fn set_display_name(root: &Path, name: &str) {
   update_project(root, |project| project.display_name = stored);
 }
 
-pub fn set_icon(root: &Path, icon: &str) {
+pub fn set_accent(root: &Path, accent: &str) {
   update_project(root, |project| {
-    project.icon = Some(icon.to_string());
-    project.emoji = None;
+    project.accent = Some(accent.to_string());
   });
 }
 
@@ -375,19 +385,4 @@ pub fn worktrees_for(project_root: &Path) -> Vec<PathBuf> {
     .find(|p| p.path == project_root)
     .map(|p| p.worktrees.iter().map(|w| w.path.clone()).collect())
     .unwrap_or_default()
-}
-
-pub fn emoji_for(root: &Path) -> Option<String> {
-  load()
-    .projects
-    .iter()
-    .find(|p| p.path == root)
-    .and_then(|p| p.emoji.clone())
-}
-
-pub fn set_emoji(root: &Path, emoji: &str) {
-  update_project(root, |project| {
-    project.emoji = Some(emoji.to_string());
-    project.icon = None;
-  });
 }

@@ -25,6 +25,12 @@ use helix_terminal::{SpawnOptions, TerminalBackend};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 
+/// The design sets the transcript at 12.5px on 1.65, and insets the agent's
+/// output further than a shell's so the session reads as a document.
+const LINE_HEIGHT_RATIO: f32 = 1.65;
+const CLAUDE_PADDING: (Pixels, Pixels) = (px(18.0), px(22.0));
+const SHELL_PADDING: (Pixels, Pixels) = (px(10.0), px(10.0));
+
 const DRAIN_LIMIT: usize = 512;
 const FLUSH_INTERVAL: Duration = Duration::from_millis(16);
 const ACTIVITY_EMIT_INTERVAL: Duration = Duration::from_secs(1);
@@ -277,7 +283,7 @@ impl TerminalView {
       cols: 80,
       rows: 24,
       cell_width: px(8.0),
-      line_height: px(font_size * 1.45),
+      line_height: px(font_size * LINE_HEIGHT_RATIO),
       font_size: px(font_size),
       origin: point(px(0.0), px(0.0)),
       scroll_accum: 0.0,
@@ -839,7 +845,7 @@ impl TerminalView {
   }
 
   fn base_font(&self, theme: &Theme) -> Font {
-    let mut base = font(theme.font_mono.clone());
+    let mut base = font(theme.font_term.clone());
 
     base.fallbacks = Some(FontFallbacks::from_fonts(vec![
       "Symbols Nerd Font Mono".to_string(),
@@ -911,7 +917,7 @@ impl TerminalView {
         if cell.flags.contains(Flags::INVERSE) {
           let old_fg = fg;
 
-          fg = bg.unwrap_or(theme.bg);
+          fg = bg.unwrap_or(theme.term.bg);
           bg = Some(old_fg);
         }
 
@@ -1012,11 +1018,11 @@ impl Render for TerminalView {
       .width;
 
     let key = FrameKey {
-      font: theme.font_mono.clone(),
+      font: theme.font_term.clone(),
       font_size: self.font_size,
       cell_width: self.cell_width,
       line_height: self.line_height,
-      bg: theme.bg,
+      bg: theme.term.bg,
       fg: theme.term.fg,
       selection: theme.term.selection,
       cols: self.cols,
@@ -1036,7 +1042,10 @@ impl Render for TerminalView {
       .as_ref()
       .is_some_and(|frame| frame.mouse_reporting);
     let entity = cx.entity().downgrade();
-    let padding = px(10.0);
+    let padding = match self.kind {
+      SessionKind::ClaudeCode => CLAUDE_PADDING,
+      SessionKind::Terminal => SHELL_PADDING,
+    };
 
     let mut content = div().relative().size_full().child(
       canvas(
@@ -1126,8 +1135,10 @@ impl Render for TerminalView {
       .track_focus(&self.focus_handle)
       .size_full()
       .overflow_hidden()
-      .p(padding)
-      .font_family(theme.font_mono.clone())
+      .bg(theme.code_bg)
+      .px(padding.1)
+      .py(padding.0)
+      .font_family(theme.font_term.clone())
       .text_size(self.font_size)
       .line_height(self.line_height)
       .text_color(theme.term.fg)
@@ -1167,8 +1178,10 @@ impl Render for TerminalView {
           .right_2()
           .px_2()
           .py_1()
-          .rounded_md()
-          .bg(theme.elevated)
+          .rounded(px(7.0))
+          .bg(theme.panel)
+          .border_1()
+          .border_color(theme.panel_border)
           .text_color(if code == 0 {
             theme.text_muted
           } else {

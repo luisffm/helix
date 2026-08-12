@@ -6,6 +6,11 @@ use std::path::Path;
 
 const LOOKUP_FIELDS: &str = "number,title,state,url,statusCheckRollup,updatedAt,isDraft,mergeable,reviewDecision,mergeStateStatus,baseRefName,headRefName,headRefOid";
 
+/// Comments are only ever read for the branch in front of the user. Asking for
+/// them in the repository-wide listing would pull every comment of a hundred
+/// pull requests to colour a handful of sidebar rows.
+const DETAIL_FIELDS: &str = "number,title,state,url,statusCheckRollup,updatedAt,isDraft,mergeable,reviewDecision,mergeStateStatus,baseRefName,headRefName,headRefOid,comments";
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ReviewState {
   Open,
@@ -34,6 +39,14 @@ impl CheckStatus {
 }
 
 #[derive(Clone, Debug)]
+pub struct ReviewComment {
+  pub author: String,
+  pub body: String,
+  pub epoch_seconds: i64,
+  pub bot: bool,
+}
+
+#[derive(Clone, Debug)]
 pub struct ReviewCheck {
   pub name: String,
   pub status: CheckStatus,
@@ -52,6 +65,8 @@ pub struct HostedReview {
   pub review_decision: Option<String>,
   pub conflicting: bool,
   pub check_runs: Vec<ReviewCheck>,
+  pub updated_epoch_seconds: i64,
+  pub comments: Vec<ReviewComment>,
 }
 
 impl HostedReview {
@@ -93,6 +108,30 @@ struct RawReview {
   head_ref_name: String,
   #[serde(default)]
   status_check_rollup: Option<Vec<RawCheck>>,
+  #[serde(default)]
+  updated_at: Option<String>,
+  #[serde(default)]
+  comments: Option<Vec<RawComment>>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RawAuthor {
+  #[serde(default)]
+  login: Option<String>,
+  #[serde(default)]
+  is_bot: Option<bool>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RawComment {
+  #[serde(default)]
+  author: Option<RawAuthor>,
+  #[serde(default)]
+  body: Option<String>,
+  #[serde(default)]
+  created_at: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -181,6 +220,65 @@ pub fn check_runs(checks: &[RawCheck]) -> Vec<ReviewCheck> {
     .collect()
 }
 
+/// Days since the civil epoch, from Howard Hinnant's `days_from_civil`. Only
+/// the timestamps gh reports are parsed here, which are always UTC and always
+/// `YYYY-MM-DDTHH:MM:SSZ`, so a date crate would be a dependency for one format.
+fn days_from_civil(year: i64, month: u32, day: u32) -> i64 {
+  let year = if month <= 2 { year - 1 } else { year };
+  let era = if year >= 0 { year } else { year - 399 } / 400;
+  let year_of_era = year - era * 400;
+  let month = month as i64;
+  let day_of_year =
+    (153 * (if month > 2 { month - 3 } else { month + 9 }) + 2) / 5 + day as i64 - 1;
+  let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
+
+  era * 146_097 + day_of_era - 719_468
+}
+
+pub fn epoch_seconds(timestamp: &str) -> i64 {
+  let bytes = timestamp.as_bytes();
+
+  if bytes.len() < 19 {
+    return 0;
+  }
+
+  let number = |range: std::ops::Range<usize>| timestamp[range].parse::<i64>().unwrap_or(0);
+
+  let year = number(0..4);
+  let month = number(5..7) as u32;
+  let day = number(8..10) as u32;
+  let hour = number(11..13);
+  let minute = number(14..16);
+  let second = number(17..19);
+
+  if !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+    return 0;
+  }
+
+  days_from_civil(year, month, day) * 86_400 + hour * 3_600 + minute * 60 + second
+}
+
+fn comments(raw: Vec<RawComment>) -> Vec<ReviewComment> {
+  raw
+    .into_iter()
+    .map(|comment| {
+      let author = comment.author.unwrap_or(RawAuthor {
+        login: None,
+        is_bot: None,
+      });
+      let login = author.login.unwrap_or_else(|| "unknown".to_string());
+      let bot = author.is_bot.unwrap_or(false) || login.ends_with("[bot]");
+
+      ReviewComment {
+        author: login.trim_end_matches("[bot]").to_string(),
+        body: comment.body.unwrap_or_default(),
+        epoch_seconds: comment.created_at.map(|at| epoch_seconds(&at)).unwrap_or(0),
+        bot,
+      }
+    })
+    .collect()
+}
+
 fn map(mut raw: RawReview) -> HostedReview {
   let rollup = raw.status_check_rollup.take().unwrap_or_default();
 
@@ -205,6 +303,11 @@ fn map(mut raw: RawReview) -> HostedReview {
     head_ref: raw.head_ref_name,
     review_decision: raw.review_decision.filter(|value| !value.is_empty()),
     conflicting,
+    updated_epoch_seconds: raw
+      .updated_at
+      .map(|at| epoch_seconds(&at))
+      .unwrap_or_default(),
+    comments: comments(raw.comments.unwrap_or_default()),
   }
 }
 
@@ -221,7 +324,7 @@ pub fn for_branch(cwd: &Path, branch: &str) -> Result<Option<HostedReview>> {
       "--limit",
       "1",
       "--json",
-      LOOKUP_FIELDS,
+      DETAIL_FIELDS,
     ],
   )?;
 
@@ -342,6 +445,8 @@ mod tests {
       review_decision: None,
       conflicting: false,
       check_runs: Vec::new(),
+      updated_epoch_seconds: 0,
+      comments: Vec::new(),
     }
   }
 
@@ -418,5 +523,28 @@ mod tests {
     ];
 
     assert_eq!(derive_check_status(&checks), CheckStatus::Passing);
+  }
+}
+
+#[cfg(test)]
+mod timestamps {
+  use super::epoch_seconds;
+
+  #[test]
+  fn parses_a_gh_timestamp() {
+    assert_eq!(epoch_seconds("1970-01-01T00:00:00Z"), 0);
+    assert_eq!(epoch_seconds("2026-08-12T09:12:00Z"), 1_786_525_920);
+  }
+
+  #[test]
+  fn a_leap_day_lands_where_it_should() {
+    assert_eq!(epoch_seconds("2000-02-29T12:00:00Z"), 951_825_600);
+  }
+
+  #[test]
+  fn junk_is_zero_rather_than_a_panic() {
+    assert_eq!(epoch_seconds(""), 0);
+    assert_eq!(epoch_seconds("not-a-date"), 0);
+    assert_eq!(epoch_seconds("2026-13-99T00:00:00Z"), 0);
   }
 }

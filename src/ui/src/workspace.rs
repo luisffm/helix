@@ -1,4 +1,4 @@
-use crate::components::{HEADER_HEIGHT, icon_button};
+use crate::components::{HEADER_HEIGHT, UI, icon_button};
 use crate::diff_view::DiffView;
 use crate::editor_view::{EditorView, EditorViewEvent};
 use crate::icons::HelixIcon;
@@ -83,7 +83,10 @@ impl TabItem {
             Icon::new(IconName::SquareTerminal),
             status_color(view.status(), theme),
           ),
-          SessionKind::ClaudeCode => (Icon::new(IconName::Asterisk), theme.claude),
+          SessionKind::ClaudeCode => (
+            Icon::new(crate::icons::HelixIcon::ClaudeSunburst),
+            theme.claude,
+          ),
         }
       }
       TabContent::Editor(view) => {
@@ -97,7 +100,7 @@ impl TabItem {
 
         (crate::file_icons::icon(&view.path), color)
       }
-      TabContent::Diff(_) => (Icon::new(HelixIcon::GitCompare), theme.purple),
+      TabContent::Diff(_) => (Icon::new(HelixIcon::GitBranch), theme.text_muted),
     }
   }
 
@@ -179,7 +182,7 @@ impl Workspace {
       tabs: Vec::new(),
       active: 0,
       left_sidebar_open: true,
-      right_sidebar_open: false,
+      right_sidebar_open: true,
       next_session: 0,
       terminal_count: 0,
       claude_count: 0,
@@ -534,24 +537,30 @@ impl Render for Workspace {
       .window_control_area(gpui::WindowControlArea::Drag)
       .flex()
       .flex_none()
-      .items_center()
       .h(px(HEADER_HEIGHT))
-      .px_2()
-      .gap_1()
       .border_b_1()
       .border_color(theme.panel_border);
 
     if !self.left_sidebar_open {
-      tab_bar = tab_bar.child(div().w(px(68.0)).flex_none()).child(
-        icon_button("reopen-left", IconName::PanelLeftOpen, &theme)
-          .tooltip_with_action(
-            "Show the project sidebar",
-            &helix_commands::ToggleLeftSidebar,
-            None,
-          )
-          .on_click(|_, window, cx| {
-            window.dispatch_action(Box::new(helix_commands::ToggleLeftSidebar), cx);
-          }),
+      tab_bar = tab_bar.child(
+        div()
+          .w(px(70.0))
+          .flex_none()
+          .flex()
+          .items_center()
+          .justify_end()
+          .pr(px(6.0))
+          .child(
+            icon_button("reopen-left", IconName::PanelLeft, &theme)
+              .tooltip_with_action(
+                "Show the project sidebar",
+                &helix_commands::ToggleLeftSidebar,
+                None,
+              )
+              .on_click(|_, window, cx| {
+                window.dispatch_action(Box::new(helix_commands::ToggleLeftSidebar), cx);
+              }),
+          ),
       );
     }
 
@@ -561,29 +570,26 @@ impl Render for Workspace {
         let title = tab.title(cx);
         let (kind_icon, icon_color) = tab.icon(cx, &theme);
         let preview = tab.preview;
+        let group = SharedString::from(format!("tab-group-{ix}"));
 
         div()
           .id(SharedString::from(format!("tab-{ix}")))
+          .group(group.clone())
+          .relative()
           .flex()
+          .flex_none()
           .items_center()
-          .gap_1p5()
-          .px_2()
-          .h(px(24.0))
-          .rounded_md()
-          .border_1()
+          .gap(px(7.0))
+          .px(px(14.0))
+          .border_r_1()
+          .border_color(theme.panel_border)
           .cursor_pointer()
-          .when(is_active, |el| {
-            el.border_color(theme.active)
-              .bg(theme.elevated)
-              .text_color(theme.text)
-          })
+          .text_size(px(UI))
+          .when(is_active, |el| el.bg(theme.panel).text_color(theme.text))
           .when(!is_active, |el| {
-            el.border_color(gpui::transparent_black())
-              .text_color(theme.text_dim)
-              .hover(|s| s.bg(theme.hover))
+            el.text_color(theme.text_muted).hover(|s| s.bg(theme.hover))
           })
           .when(preview, |el| el.italic())
-          .text_xs()
           .on_click(
             cx.listener(move |this, event: &gpui::ClickEvent, window, cx| {
               if event.click_count() >= 2 {
@@ -598,57 +604,87 @@ impl Render for Workspace {
             div()
               .flex_none()
               .text_color(icon_color)
-              .child(kind_icon.size_3p5()),
+              .child(kind_icon.size(px(12.0))),
           )
-          .child(title)
+          .child(
+            div()
+              .max_w(px(150.0))
+              .overflow_hidden()
+              .whitespace_nowrap()
+              .text_ellipsis()
+              .child(title),
+          )
           .child(
             div()
               .id(SharedString::from(format!("tab-close-{ix}")))
-              .ml_0p5()
               .size(px(14.0))
               .flex()
+              .flex_none()
               .items_center()
               .justify_center()
               .rounded_sm()
-              .text_xs()
               .text_color(theme.text_dim)
+              .when(!is_active, |el| {
+                el.invisible().group_hover(group, |s| s.visible())
+              })
               .hover(|s| s.bg(theme.hover).text_color(theme.text))
               .on_click(cx.listener(move |this, _, window, cx| {
                 cx.stop_propagation();
                 this.close_tab(ix, window, cx);
               }))
-              .child(Icon::new(IconName::Close).size_3()),
+              .child(Icon::new(IconName::Close).size(px(11.0))),
           )
+          .when(is_active, |el| {
+            el.child(
+              div()
+                .absolute()
+                .bottom_0()
+                .left_0()
+                .right_0()
+                .h(px(2.0))
+                .bg(theme.accent),
+            )
+          })
       }))
       .child(
-        icon_button("new-tab", IconName::Plus, &theme)
-          .tooltip("New session")
-          .dropdown_menu(|menu, _window, _cx| {
-            menu
-              .menu_with_icon(
-                "Terminal",
-                IconName::SquareTerminal,
-                Box::new(helix_commands::NewTerminal),
-              )
-              .menu_with_icon(
-                "Claude Code",
-                IconName::Asterisk,
-                Box::new(helix_commands::NewClaudeSession),
-              )
-          }),
+        div()
+          .w(px(38.0))
+          .flex_none()
+          .flex()
+          .items_center()
+          .justify_center()
+          .child(
+            icon_button("new-tab", IconName::Plus, &theme)
+              .tooltip("New session")
+              .dropdown_menu(|menu, _window, _cx| {
+                menu
+                  .menu_with_icon(
+                    "Terminal",
+                    IconName::SquareTerminal,
+                    Box::new(helix_commands::NewTerminal),
+                  )
+                  .menu_with_icon(
+                    "Claude Code",
+                    crate::icons::HelixIcon::ClaudeSunburst,
+                    Box::new(helix_commands::NewClaudeSession),
+                  )
+              }),
+          ),
       )
       .child(div().flex_1())
       .when(!self.right_sidebar_open, |el| {
         el.child(
-          icon_button("toggle-right", IconName::PanelRightOpen, &theme)
-            .tooltip_with_action(
-              "Show the context sidebar",
-              &helix_commands::ToggleRightSidebar,
-              None,
-            )
-            .on_click(|_, window, cx| {
-              window.dispatch_action(Box::new(helix_commands::ToggleRightSidebar), cx);
-            }),
+          div().flex_none().flex().items_center().pr(px(6.0)).child(
+            icon_button("toggle-right", IconName::PanelRight, &theme)
+              .tooltip_with_action(
+                "Show the context sidebar",
+                &helix_commands::ToggleRightSidebar,
+                None,
+              )
+              .on_click(|_, window, cx| {
+                window.dispatch_action(Box::new(helix_commands::ToggleRightSidebar), cx);
+              }),
+          ),
         )
       });
 

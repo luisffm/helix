@@ -1,15 +1,22 @@
+use crate::components::{SMALL, UI};
 use crate::theme::Theme;
 use gpui::{
   AnyElement, App, Context, FocusHandle, Focusable, Hsla, IntoElement, ParentElement, Render,
   SharedString, StyledText, TextRun, Window, div, prelude::*, px, uniform_list,
 };
+use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::highlighter::{HighlightTheme, SyntaxHighlighter};
 use gpui_component::input::Rope;
+use gpui_component::menu::DropdownMenu as _;
+use gpui_component::{Icon, IconName};
+use helix_commands::SetDiffBase;
 use helix_models::{DiffBase, DiffLineKind, DiffState, FileDiff};
 use std::path::PathBuf;
+use std::sync::Arc;
 
-const GUTTER_WIDTH: f32 = 92.0;
-const ROW_HEIGHT: f32 = 18.0;
+const NUMBER_WIDTH: f32 = 40.0;
+const MARKER_WIDTH: f32 = 18.0;
+const ROW_HEIGHT: f32 = 22.0;
 
 /// Hunks flattened into one row per rendered line so the body can be
 /// virtualized; headers carry their own label because their counts only change
@@ -104,11 +111,14 @@ impl DiffView {
     let root = self.root.clone();
     let relative = self.relative.clone();
     let base = self.base.clone();
+    let syntax = gpui_component::theme::Theme::global(cx)
+      .highlight_theme
+      .clone();
 
     let task = cx.background_executor().spawn(async move {
       let diff = helix_git::diff::file_diff(&root, &relative, &base)?;
-      let old_styles = highlight(&diff.language, &diff.old_text);
-      let new_styles = highlight(&diff.language, &diff.new_text);
+      let old_styles = highlight(&diff.language, &diff.old_text, &syntax);
+      let new_styles = highlight(&diff.language, &diff.new_text, &syntax);
 
       anyhow::Ok((diff, old_styles, new_styles))
     });
@@ -167,10 +177,10 @@ impl DiffView {
   ) -> AnyElement {
     let text = diff.line_text(line);
 
-    let (bg, marker, marker_color) = match line.kind {
-      DiffLineKind::Added => (Some(with_alpha(theme.green, 0.14)), "+", theme.green),
-      DiffLineKind::Removed => (Some(with_alpha(theme.red, 0.14)), "-", theme.red),
-      DiffLineKind::Context => (None, " ", theme.text_dim),
+    let (bg, marker, accent) = match line.kind {
+      DiffLineKind::Added => (Some(theme.add_bg), "+", theme.green),
+      DiffLineKind::Removed => (Some(theme.del_bg), "\u{2212}", theme.red),
+      DiffLineKind::Context => (None, "", theme.text_dim),
     };
 
     let runs = text_runs(
@@ -181,41 +191,46 @@ impl DiffView {
       line.kind,
     );
 
+    let number = |value: Option<u32>, color: Hsla| {
+      div()
+        .w(px(NUMBER_WIDTH))
+        .flex_none()
+        .pr_2()
+        .text_right()
+        .text_color(color)
+        .child(value.map(|n| n.to_string()).unwrap_or_default())
+    };
+
     div()
       .flex()
       .items_start()
       .w_full()
       .h(px(ROW_HEIGHT))
       .when_some(bg, |el, bg| el.bg(bg))
+      .child(number(
+        line.old_line,
+        if line.kind == DiffLineKind::Removed {
+          accent
+        } else {
+          theme.text_dim
+        },
+      ))
+      .child(number(
+        line.new_line,
+        if line.kind == DiffLineKind::Added {
+          accent
+        } else {
+          theme.text_dim
+        },
+      ))
       .child(
         div()
-          .flex()
+          .w(px(MARKER_WIDTH))
           .flex_none()
-          .w(px(GUTTER_WIDTH))
-          .gap_2()
-          .px_2()
-          .text_color(theme.text_dim)
-          .child(
-            div()
-              .w(px(30.0))
-              .flex_none()
-              .text_right()
-              .child(number(line.old_line)),
-          )
-          .child(
-            div()
-              .w(px(30.0))
-              .flex_none()
-              .text_right()
-              .child(number(line.new_line)),
-          )
-          .child(
-            div()
-              .w(px(8.0))
-              .flex_none()
-              .text_color(marker_color)
-              .child(marker),
-          ),
+          .flex()
+          .justify_center()
+          .text_color(accent)
+          .child(marker),
       )
       .child(
         div()
@@ -239,8 +254,8 @@ impl DiffView {
           .items_center()
           .w_full()
           .h(px(ROW_HEIGHT))
-          .px_2()
-          .bg(theme.elevated)
+          .pl(px(2.0 * NUMBER_WIDTH + MARKER_WIDTH + 8.0))
+          .bg(theme.panel2)
           .text_color(theme.text_dim)
           .child(label.clone())
           .into_any_element(),
@@ -287,8 +302,9 @@ impl DiffView {
     })
     .flex_1()
     .min_h_0()
+    .bg(theme.code_bg)
     .font_family(theme.font_mono.clone())
-    .text_size(px(12.0))
+    .text_size(px(12.5))
     .line_height(px(ROW_HEIGHT))
     .into_any_element()
   }
@@ -301,6 +317,85 @@ impl Render for DiffView {
     let (added, removed) = self.stats();
     let body = self.render_body(&theme, cx);
 
+    let (directory, name) = match self.relative.rsplit_once('/') {
+      Some((directory, name)) => (Some(directory.replace('/', " / ")), name.to_string()),
+      None => (None, self.relative.clone()),
+    };
+
+    let breadcrumb = div()
+      .flex()
+      .flex_none()
+      .items_center()
+      .gap_2()
+      .h(px(34.0))
+      .px(px(14.0))
+      .border_b_1()
+      .border_color(theme.panel_border)
+      .text_size(px(UI))
+      .when_some(directory, |el, directory| {
+        el.child(
+          div()
+            .flex_none()
+            .text_color(theme.text_dim)
+            .child(format!("{directory} /")),
+        )
+      })
+      .child(
+        div()
+          .flex_none()
+          .font_weight(gpui::FontWeight::MEDIUM)
+          .text_color(theme.text)
+          .child(name),
+      )
+      .child(div().flex_1())
+      .child(
+        Button::new("diff-base")
+          .ghost()
+          .label(base_label(&self.base))
+          .icon(Icon::new(IconName::ChevronDown).size(px(9.0)))
+          .text_color(theme.text_muted)
+          .text_size(px(SMALL))
+          .rounded_full()
+          .border_1()
+          .border_color(theme.panel_border)
+          .tooltip("Diff against")
+          .dropdown_menu(|menu, _window, _cx| {
+            menu
+              .menu(
+                "vs working tree",
+                Box::new(SetDiffBase {
+                  base: "unstaged".to_string(),
+                }),
+              )
+              .menu(
+                "vs staged",
+                Box::new(SetDiffBase {
+                  base: "staged".to_string(),
+                }),
+              )
+              .menu(
+                "vs HEAD",
+                Box::new(SetDiffBase {
+                  base: "head".to_string(),
+                }),
+              )
+          }),
+      )
+      .child(
+        div()
+          .flex_none()
+          .flex()
+          .gap_1()
+          .font_family(theme.font_mono.clone())
+          .text_size(px(SMALL))
+          .child(div().text_color(theme.green).child(format!("+{added}")))
+          .child(
+            div()
+              .text_color(theme.red)
+              .child(format!("\u{2212}{removed}")),
+          ),
+      );
+
     div()
       .key_context("Diff")
       .track_focus(&self.focus_handle)
@@ -308,55 +403,37 @@ impl Render for DiffView {
       .flex()
       .flex_col()
       .min_h_0()
-      .child(
-        div()
-          .flex()
-          .flex_none()
-          .items_center()
-          .gap_2()
-          .h(px(30.0))
-          .px_3()
-          .border_b_1()
-          .border_color(theme.panel_border)
-          .text_xs()
-          .child(
-            div()
-              .flex_1()
-              .overflow_hidden()
-              .text_color(theme.text_muted)
-              .child(self.relative.clone()),
-          )
-          .child(
-            div()
-              .flex_none()
-              .text_color(theme.text_dim)
-              .child(self.base.label()),
-          )
-          .child(
-            div()
-              .flex_none()
-              .text_color(theme.green)
-              .child(format!("+{added}")),
-          )
-          .child(
-            div()
-              .flex_none()
-              .text_color(theme.red)
-              .child(format!("-{removed}")),
-          ),
-      )
+      .bg(theme.code_bg)
+      .on_action(cx.listener(|this, action: &SetDiffBase, _, cx| {
+        let next = match action.base.as_str() {
+          "staged" => DiffBase::Staged,
+          "head" => DiffBase::Head,
+          _ => DiffBase::Unstaged,
+        };
+
+        if this.base == next {
+          return;
+        }
+
+        this.base = next;
+
+        this.reload(cx);
+        cx.notify();
+      }))
+      .child(breadcrumb)
       .child(body)
   }
 }
 
-fn number(line: Option<u32>) -> String {
-  line.map(|n| n.to_string()).unwrap_or_default()
-}
-
-fn with_alpha(mut color: Hsla, alpha: f32) -> Hsla {
-  color.a = alpha;
-
-  color
+/// The pill in the breadcrumb names the side being compared against, which reads
+/// differently from the short label the tab list uses.
+fn base_label(base: &DiffBase) -> &'static str {
+  match base {
+    DiffBase::Unstaged => "vs working tree",
+    DiffBase::Staged => "vs staged",
+    DiffBase::Head => "vs HEAD",
+    DiffBase::Branch { .. } => "vs merge-base",
+  }
 }
 
 fn message(text: String, color: Hsla) -> AnyElement {
@@ -371,7 +448,11 @@ fn message(text: String, color: Hsla) -> AnyElement {
     .into_any_element()
 }
 
-fn highlight(language: &str, text: &str) -> Vec<(std::ops::Range<usize>, Hsla)> {
+fn highlight(
+  language: &str,
+  text: &str,
+  theme: &Arc<HighlightTheme>,
+) -> Vec<(std::ops::Range<usize>, Hsla)> {
   if text.is_empty() {
     return Vec::new();
   }
@@ -380,8 +461,6 @@ fn highlight(language: &str, text: &str) -> Vec<(std::ops::Range<usize>, Hsla)> 
   let mut highlighter = SyntaxHighlighter::new(language);
 
   highlighter.update(None, &rope);
-
-  let theme = HighlightTheme::default_dark();
 
   highlighter
     .styles(&(0..text.len()), theme.as_ref())

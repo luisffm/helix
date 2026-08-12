@@ -224,6 +224,8 @@ mod tests {
       review_decision: None,
       conflicting: false,
       check_runs: Vec::new(),
+      updated_epoch_seconds: 0,
+      comments: Vec::new(),
     }
   }
 

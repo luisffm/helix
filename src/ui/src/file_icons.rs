@@ -1,5 +1,5 @@
 use crate::icons::HelixIcon;
-use crate::theme::{Theme, c};
+use crate::theme::Theme;
 use gpui::Hsla;
 use gpui_component::{Icon, IconName};
 use helix_models::GitFileKind;
@@ -23,8 +23,8 @@ pub fn icon(path: &Path) -> Icon {
   Icon::new(svg)
 }
 
-pub fn ignored_color() -> Hsla {
-  c(0x4a4a4a)
+pub fn ignored_color(theme: &Theme) -> Hsla {
+  theme.text_dim
 }
 
 pub fn folder_icon(expanded: bool) -> Icon {
@@ -37,10 +37,9 @@ pub fn folder_icon(expanded: bool) -> Icon {
 
 pub fn status_color(kind: GitFileKind, theme: &Theme) -> Hsla {
   match kind {
-    GitFileKind::Modified | GitFileKind::Typechange => c(0xe2c08d),
-    GitFileKind::Added => c(0x81b88b),
-    GitFileKind::Deleted => c(0xc74e39),
-    GitFileKind::Renamed | GitFileKind::Untracked => c(0x73c991),
+    GitFileKind::Modified | GitFileKind::Typechange => theme.yellow,
+    GitFileKind::Added | GitFileKind::Renamed | GitFileKind::Untracked => theme.green,
+    GitFileKind::Deleted => theme.red,
     GitFileKind::Conflicted => theme.red,
   }
 }

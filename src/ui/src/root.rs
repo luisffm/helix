@@ -1,5 +1,5 @@
 use crate::add_dialog::{AddDialog, AddDialogEvent};
-use crate::components::HEADER_HEIGHT;
+use crate::components::{META, SIDEBAR_LEFT_WIDTH, SIDEBAR_RIGHT_WIDTH, STATUS_HEIGHT};
 use crate::search::{SearchDialog, SearchEvent, SearchItem, SearchTarget};
 use crate::settings_page::{Section, SettingsEvent, SettingsPage};
 use crate::sidebar_left::{ProjectPanel, ProjectPanelEvent};
@@ -15,7 +15,7 @@ use helix_commands::{
   ActivateTab, ActivateWorkspace, CloseActiveTab, CopyPathAction, DeleteWorktreeAction,
   EditWorktreeAction, NewClaudeSession, NewTerminal, NextTab, OpenAppSettings, OpenInFinderAction,
   OpenInZedAction, OpenProjectSettingsAction, OpenSearch, PrevTab, RemoveProjectAction,
-  RemoveWorktreeAction, ToggleLeftSidebar, ToggleRightSidebar,
+  RemoveWorktreeAction, ToggleLeftSidebar, ToggleRightSidebar, ToggleTheme,
 };
 use helix_filesystem::FsWatcher;
 use helix_models::{ProjectInfo, SessionKind};
@@ -107,14 +107,8 @@ impl HelixRoot {
         ProjectPanelEvent::OpenProject(path) => {
           this.switch_project(path.clone(), window, cx);
         }
-        ProjectPanelEvent::RequestAddProject => {
-          this.pick_workspace(window, cx);
-        }
-        ProjectPanelEvent::RequestAddWorktree => {
-          this.open_add_dialog(false, window, cx);
-        }
-        ProjectPanelEvent::OpenSettings(target) => {
-          this.open_settings(target.clone(), window, cx);
+        ProjectPanelEvent::RequestAdd => {
+          this.open_add_dialog(true, window, cx);
         }
       },
     )
@@ -129,12 +123,12 @@ impl HelixRoot {
       project,
       left_open: true,
       left_anim: 1.0,
-      right_anim: 0.0,
+      right_anim: 1.0,
       left_animating: false,
       right_animating: false,
-      right_open: false,
-      left_width: 280.0,
-      right_width: 320.0,
+      right_open: true,
+      left_width: SIDEBAR_LEFT_WIDTH,
+      right_width: SIDEBAR_RIGHT_WIDTH,
       resizing: None,
       git: None,
       worktrees: Vec::new(),
@@ -186,11 +180,11 @@ impl HelixRoot {
 
       this
         .update(cx, |_, cx| {
-          if cx.global::<Theme>().font_mono.as_ref() == mono.as_str() {
+          if cx.global::<Theme>().font_term.as_ref() == mono.as_str() {
             return;
           }
 
-          cx.global_mut::<Theme>().font_mono = mono.into();
+          cx.global_mut::<Theme>().font_term = mono.into();
 
           crate::theme::sync_component_theme(cx);
           cx.refresh_windows();
@@ -829,7 +823,7 @@ impl HelixRoot {
       .rounded_xl()
       .border_1()
       .border_color(theme.panel_border)
-      .bg(crate::theme::ca(0x161616f8))
+      .bg(theme.win_tint)
       .shadow_lg()
       .flex()
       .flex_col()
@@ -985,20 +979,12 @@ impl HelixRoot {
   }
 
   fn apply_settings_change(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-    let config = helix_state::config::load();
-
-    let level = config
-      .blur_level
-      .clone()
-      .unwrap_or_else(|| "medium".to_string());
-
-    let mut theme = Theme::dark();
-    crate::theme::apply_blur_level(&mut theme, &level);
+    let (mut theme, level) = crate::theme::configured();
 
     let fonts = cx.text_system().all_font_names();
 
     if let Some(mono) = helix_state::terminal_font::detect(&fonts) {
-      theme.font_mono = mono.into();
+      theme.font_term = mono.into();
     }
 
     cx.set_global(theme);
@@ -1300,13 +1286,11 @@ impl HelixRoot {
       window.focus(&self.focus_handle);
     }
   }
-}
 
-impl Render for HelixRoot {
-  fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-    let theme = Theme::of(cx).clone();
-    self.reclaim_focus(window, cx);
-
+  /// Everything below the window chrome: the three columns and the status bar.
+  /// Built only when the settings page is not standing in for all of it, so an
+  /// open settings screen costs no sidebar element tree per frame.
+  fn render_chrome(&mut self, theme: &Theme, cx: &mut Context<Self>) -> gpui::AnyElement {
     let branch = self
       .git
       .as_ref()
@@ -1318,39 +1302,59 @@ impl Render for HelixRoot {
       .flex()
       .flex_none()
       .items_center()
-      .h(px(26.0))
-      .px_3()
-      .gap_3()
+      .h(px(STATUS_HEIGHT))
+      .px(px(14.0))
+      .gap(px(14.0))
+      .bg(theme.side)
       .border_t_1()
       .border_color(theme.panel_border)
-      .text_xs()
-      .text_color(theme.text_dim)
+      .text_size(px(META))
+      .text_color(theme.text_muted)
       .child(
         div()
           .flex()
           .items_center()
-          .gap_1()
-          .child(crate::components::git_branch_icon(theme.text_dim))
+          .gap(px(5.0))
+          .child(crate::components::git_branch_icon(theme.text_muted))
           .child(branch),
       )
       .child(if dirty == 0 {
-        "clean".to_string()
+        div()
+          .text_color(theme.text_dim)
+          .child("clean")
+          .into_any_element()
       } else {
-        format!("● {dirty} changes")
+        div()
+          .flex()
+          .items_center()
+          .gap(px(5.0))
+          .child(
+            div()
+              .size(px(6.0))
+              .rounded_full()
+              .bg(theme.yellow)
+              .flex_none(),
+          )
+          .child(format!("{dirty} changes"))
+          .into_any_element()
       })
       .child(div().flex_1())
-      .child(format!(
-        "{sessions} session{}",
-        if sessions == 1 { "" } else { "s" }
-      ))
+      .child(
+        div()
+          .flex()
+          .items_center()
+          .gap(px(5.0))
+          .child(crate::components::claude_icon(theme.claude, 11.0))
+          .child(format!(
+            "{sessions} session{}",
+            if sessions == 1 { "" } else { "s" }
+          )),
+      )
       .child(
         div()
           .id("resource-manager-toggle")
-          .flex()
-          .items_center()
-          .gap_1()
-          .px_1p5()
-          .rounded_sm()
+          .px_1()
+          .rounded(px(5.0))
           .cursor_pointer()
           .hover(|s| s.bg(theme.hover))
           .when(self.resources_open, |el| el.bg(theme.hover))
@@ -1358,23 +1362,21 @@ impl Render for HelixRoot {
             this.resources_open = !this.resources_open;
             cx.notify();
           }))
-          .child(
-            div()
-              .flex_none()
-              .child(gpui_component::Icon::new(gpui_component::IconName::ChartPie).size_3()),
-          )
           .child(helix_process::usage::status_summary(&self.resources)),
       )
-      .child("Helix 0.1");
+      .child(div().text_color(theme.text_dim).child("Helix 0.1"));
 
+    // The grip overlays the hairline between two columns instead of sitting in
+    // the flow: five columns of layout would push the centre off the design's
+    // `262px | 1fr | 302px` and leave a gap the window background shows through.
     let resize_handle = |id: &'static str, side: ResizingSide, cx: &mut Context<Self>| {
       div()
         .id(id)
+        .occlude()
+        .absolute()
+        .top_0()
+        .bottom_0()
         .w(px(5.0))
-        .h_full()
-        .flex_none()
-        .flex()
-        .flex_col()
         .cursor_col_resize()
         .hover(|s| s.bg(theme.active))
         .when(self.resizing == Some(side), |el| el.bg(theme.active))
@@ -1385,19 +1387,12 @@ impl Render for HelixRoot {
             cx.notify();
           }),
         )
-        .child(
-          div()
-            .h(px(HEADER_HEIGHT))
-            .w_full()
-            .flex_none()
-            .border_b_1()
-            .border_color(theme.panel_border),
-        )
     };
 
     let ease = |t: f32| t * t * (3.0 - 2.0 * t);
 
-    let mut body = div().flex().flex_1().min_h_0();
+    let mut body = div().relative().flex().flex_1().min_h_0();
+
     if self.left_open || self.left_anim > 0.001 {
       body = body.child(
         div()
@@ -1405,6 +1400,9 @@ impl Render for HelixRoot {
           .flex_none()
           .h_full()
           .overflow_hidden()
+          .bg(theme.side)
+          .border_r_1()
+          .border_color(theme.panel_border)
           .child(
             div()
               .w(px(self.left_width))
@@ -1413,33 +1411,27 @@ impl Render for HelixRoot {
               .child(self.project_panel.clone()),
           ),
       );
-      if self.left_open && !self.left_animating {
-        body = body.child(resize_handle("resize-left", ResizingSide::Left, cx));
-      }
     }
-    let center: gpui::AnyElement = if let Some(settings) = &self.settings {
-      settings.clone().into_any_element()
-    } else {
-      self.workspace.clone().into_any_element()
-    };
+
     body = body.child(
       div()
         .flex_1()
         .min_w_0()
         .h_full()
-        .bg(theme.content)
-        .child(center),
+        .bg(theme.win_tint)
+        .child(self.workspace.clone()),
     );
+
     if self.right_open || self.right_anim > 0.001 {
-      if self.right_open && !self.right_animating {
-        body = body.child(resize_handle("resize-right", ResizingSide::Right, cx));
-      }
       body = body.child(
         div()
           .w(px(self.right_width * ease(self.right_anim)))
           .flex_none()
           .h_full()
           .overflow_hidden()
+          .bg(theme.side)
+          .border_l_1()
+          .border_color(theme.panel_border)
           .child(
             div()
               .w(px(self.right_width))
@@ -1449,6 +1441,39 @@ impl Render for HelixRoot {
           ),
       );
     }
+
+    if self.left_open && !self.left_animating {
+      body = body.child(
+        resize_handle("resize-left", ResizingSide::Left, cx).left(px(self.left_width - 2.0)),
+      );
+    }
+
+    if self.right_open && !self.right_animating {
+      body = body.child(
+        resize_handle("resize-right", ResizingSide::Right, cx).right(px(self.right_width - 2.0)),
+      );
+    }
+
+    div()
+      .flex()
+      .flex_col()
+      .flex_1()
+      .min_h_0()
+      .child(body)
+      .child(status_bar)
+      .into_any_element()
+  }
+}
+
+impl Render for HelixRoot {
+  fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    let theme = Theme::of(cx).clone();
+    self.reclaim_focus(window, cx);
+
+    let chrome: gpui::AnyElement = match self.settings.clone() {
+      Some(page) => div().flex_1().min_h_0().child(page).into_any_element(),
+      None => self.render_chrome(&theme, cx),
+    };
 
     let mut root = div()
       .key_context("Helix")
@@ -1547,6 +1572,12 @@ impl Render for HelixRoot {
           this.open_search(window, cx);
         }
       }))
+      .on_action(cx.listener(|this, _: &ToggleTheme, window, cx| {
+        let next = Theme::of(cx).mode.toggled();
+
+        helix_state::config::set_theme(next.id());
+        this.apply_settings_change(window, cx);
+      }))
       .on_action(cx.listener(|this, _: &OpenAppSettings, window, cx| {
         if this.settings.is_none() {
           this.open_settings(None, window, cx);
@@ -1614,8 +1645,7 @@ impl Render for HelixRoot {
           action.path.display().to_string(),
         ));
       }))
-      .child(body)
-      .child(status_bar);
+      .child(chrome);
 
     if let Some(dialog) = &self.search {
       root = root.child(
@@ -1628,7 +1658,7 @@ impl Render for HelixRoot {
           .justify_center()
           .items_start()
           .pt(px(110.0))
-          .bg(crate::theme::ca(0x00000066))
+          .bg(theme.overlay)
           .on_click(cx.listener(|this, _, _, cx| {
             this.search = None;
             cx.notify();
@@ -1652,7 +1682,7 @@ impl Render for HelixRoot {
           .justify_center()
           .items_start()
           .pt(px(140.0))
-          .bg(crate::theme::ca(0x00000066))
+          .bg(theme.overlay)
           .on_click(cx.listener(|this, _, _, cx| {
             this.worktree_edit = None;
             cx.notify();
@@ -1672,7 +1702,7 @@ impl Render for HelixRoot {
           .justify_center()
           .items_start()
           .pt(px(150.0))
-          .bg(crate::theme::ca(0x00000066))
+          .bg(theme.overlay)
           .on_click(cx.listener(|this, _, _, cx| {
             this.add_dialog = None;
             cx.notify();

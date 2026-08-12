@@ -9,16 +9,31 @@ use gpui_component::kbd::Kbd;
 use gpui_component::{Icon, IconName, Sizable as _};
 use std::time::Duration;
 
-pub const HEADER_HEIGHT: f32 = 42.0;
+pub const HEADER_HEIGHT: f32 = 32.0;
+pub const STATUS_HEIGHT: f32 = 30.0;
+pub const SIDEBAR_LEFT_WIDTH: f32 = 262.0;
+pub const SIDEBAR_RIGHT_WIDTH: f32 = 302.0;
+
+/// The design's type scale. gpui's `text_xs`/`text_sm` steps land between these
+/// sizes, so every size is stated in px against the token it belongs to.
+pub const TITLE: f32 = 13.0;
+pub const BODY: f32 = 12.5;
+pub const UI: f32 = 12.0;
+pub const SMALL: f32 = 11.5;
+pub const META: f32 = 11.0;
+pub const TINY: f32 = 10.5;
+pub const MICRO: f32 = 10.0;
 
 const SPINNER_PERIOD: Duration = Duration::from_millis(900);
+const PULSE_PERIOD: Duration = Duration::from_millis(1400);
 
+/// 10.5px, 600, dim. Callers pass the text already upper-cased, so drawing a
+/// label costs no allocation. The design also asks for .09em of tracking, which
+/// gpui has no styling for, so the labels carry every other property instead.
 pub fn section_label(text: impl Into<SharedString>, theme: &Theme) -> Div {
   div()
-    .px_1()
-    .pt_3()
-    .pb_1()
-    .text_xs()
+    .text_size(px(TINY))
+    .font_weight(gpui::FontWeight::SEMIBOLD)
     .text_color(theme.text_dim)
     .child(text.into())
 }
@@ -27,43 +42,90 @@ pub fn status_dot(color: Hsla) -> Div {
   div().size(px(7.0)).rounded_full().bg(color).flex_none()
 }
 
-pub const EMOJI_CHOICES: [&str; 24] = [
-  "🔥", "🚀", "⭐", "💎", "🦀", "🐍", "⚡", "🧠", "🛠️", "📦", "🌊", "🌙", "🍀", "🎯", "🧪", "🎨",
-  "🐳", "🔮", "💼", "🏗️", "📱", "🌐", "🤖", "📁",
-];
+/// A running agent. Driven by the element animator rather than a notifier, so
+/// the pulse costs frames only while a session is actually working.
+pub fn pulsing_dot(id: impl Into<ElementId>, color: Hsla) -> impl IntoElement {
+  status_dot(color).with_animation(id, Animation::new(PULSE_PERIOD).repeat(), |dot, delta| {
+    let phase = (delta * std::f32::consts::TAU).cos() * 0.5 + 0.5;
 
-pub const PROJECT_ICONS: [(&str, IconName); 24] = [
-  ("folder", IconName::Folder),
-  ("folder-open", IconName::FolderOpen),
-  ("folder-closed", IconName::FolderClosed),
-  ("bot", IconName::Bot),
-  ("square-terminal", IconName::SquareTerminal),
-  ("star", IconName::Star),
-  ("heart", IconName::Heart),
-  ("globe", IconName::Globe),
-  ("bell", IconName::Bell),
-  ("book-open", IconName::BookOpen),
-  ("chart-pie", IconName::ChartPie),
-  ("calendar", IconName::Calendar),
-  ("layout-dashboard", IconName::LayoutDashboard),
-  ("map", IconName::Map),
-  ("inbox", IconName::Inbox),
-  ("frame", IconName::Frame),
-  ("gallery", IconName::GalleryVerticalEnd),
-  ("github", IconName::GitHub),
-  ("palette", IconName::Palette),
-  ("settings", IconName::Settings),
-  ("user", IconName::User),
-  ("sun", IconName::Sun),
-  ("moon", IconName::Moon),
-  ("building", IconName::Building2),
-];
+    dot.opacity(0.45 + 0.55 * phase)
+  })
+}
 
-pub fn project_icon(name: &str) -> Option<IconName> {
-  PROJECT_ICONS
-    .iter()
-    .find(|(id, _)| *id == name)
-    .map(|(_, icon)| icon.clone())
+pub fn claude_icon(color: Hsla, size: f32) -> impl IntoElement {
+  div()
+    .flex_none()
+    .text_color(color)
+    .child(Icon::new(crate::icons::HelixIcon::ClaudeSunburst).size(px(size)))
+}
+
+/// A pill: the small capsule the design uses for `primary`, `OPEN`, `worktree`
+/// and the like.
+pub fn pill(text: impl Into<SharedString>, fg: Hsla, bg: Hsla, size: f32) -> Div {
+  div()
+    .flex_none()
+    .px(px(6.0))
+    .py(px(1.0))
+    .rounded_full()
+    .bg(bg)
+    .text_size(px(size))
+    .font_weight(gpui::FontWeight::MEDIUM)
+    .text_color(fg)
+    .child(text.into())
+}
+
+/// A bordered cap: the design's own key-cap and badge shape, used where the
+/// platform keystroke glyphs of `Kbd` are not what is being shown.
+pub fn cap(text: impl Into<SharedString>, theme: &Theme) -> Div {
+  div()
+    .flex_none()
+    .px(px(5.0))
+    .py(px(1.0))
+    .rounded(px(5.0))
+    .border_1()
+    .border_color(theme.panel_border)
+    .text_size(px(TINY))
+    .text_color(theme.text_muted)
+    .child(text.into())
+}
+
+pub const PROJECT_ACCENTS: [&str; 5] = ["coral", "blue", "green", "purple", "yellow"];
+
+/// A project's accent, as the foreground and the soft background its avatar is
+/// drawn in. Unknown and unset names fall back to the neutral pair, which is
+/// also what the active project is drawn in.
+pub fn project_accent(name: Option<&str>, theme: &Theme) -> (Hsla, Hsla) {
+  match name {
+    Some("coral") => (theme.claude, theme.claude_soft),
+    Some("blue") => (theme.blue, theme.blue_soft),
+    Some("green") => (theme.green, theme.green_soft),
+    Some("purple") => (theme.purple, theme.purple_soft),
+    Some("yellow") => (theme.yellow, theme.yellow_soft),
+    _ => (theme.text, theme.active),
+  }
+}
+
+/// The 18px rounded square carrying a project's initial.
+pub fn project_avatar(label: &str, accent: Option<&str>, theme: &Theme) -> Div {
+  let (fg, bg) = project_accent(accent, theme);
+  let initial = label
+    .chars()
+    .next()
+    .map(|c| c.to_uppercase().to_string())
+    .unwrap_or_default();
+
+  div()
+    .size(px(18.0))
+    .flex_none()
+    .flex()
+    .items_center()
+    .justify_center()
+    .rounded(px(5.0))
+    .bg(bg)
+    .text_size(px(MICRO))
+    .font_weight(gpui::FontWeight::SEMIBOLD)
+    .text_color(fg)
+    .child(initial)
 }
 
 pub fn sparkline(values: &[f32], color: Hsla) -> impl IntoElement {
@@ -121,7 +183,7 @@ pub fn icon_button(id: impl Into<SharedString>, icon: impl Into<Icon>, theme: &T
   Button::new(id.into())
     .icon(Icon::new(icon).size_3p5())
     .ghost()
-    .with_size(px(22.0))
+    .with_size(px(24.0))
     .text_color(theme.text_muted)
 }
 

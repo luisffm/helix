@@ -9,8 +9,8 @@ use gpui_component::{Icon, IconName, Sizable as _};
 use helix_buffer::FileContent;
 use std::path::{Path, PathBuf};
 
-const FONT_SIZE: f32 = 13.0;
-const LINE_HEIGHT: f32 = 19.0;
+const FONT_SIZE: f32 = 12.5;
+const LINE_HEIGHT: f32 = 22.0;
 
 pub enum EditorViewEvent {
   DirtyChanged,
@@ -352,7 +352,7 @@ impl EditorView {
       .py_2()
       .border_b_1()
       .border_color(theme.panel_border)
-      .bg(theme.elevated)
+      .bg(theme.panel)
       .child(
         div()
           .flex_none()
@@ -460,6 +460,7 @@ impl Render for EditorView {
       .flex()
       .flex_col()
       .min_h_0()
+      .bg(theme.code_bg)
       .font_family(theme.font_mono.clone())
       .text_size(px(FONT_SIZE))
       .line_height(px(LINE_HEIGHT))

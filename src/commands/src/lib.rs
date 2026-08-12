@@ -64,6 +64,14 @@ pub struct CopyPathAction {
   pub path: PathBuf,
 }
 
+/// Which side a diff is taken against, as the id the diff view resolves back to
+/// a base. Kept as a string so the action carries no domain type.
+#[derive(Clone, PartialEq, Action)]
+#[action(namespace = helix, no_json)]
+pub struct SetDiffBase {
+  pub base: String,
+}
+
 actions!(
   helix,
   [
@@ -76,6 +84,7 @@ actions!(
     ToggleRightSidebar,
     OpenSearch,
     OpenAppSettings,
+    ToggleTheme,
     Quit,
     SaveFile,
     TerminalCopy,
