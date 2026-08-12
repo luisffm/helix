@@ -543,9 +543,15 @@ impl Render for Workspace {
 
     if !self.left_sidebar_open {
       tab_bar = tab_bar.child(div().w(px(68.0)).flex_none()).child(
-        icon_button("reopen-left", IconName::PanelLeftOpen, &theme).on_click(|_, window, cx| {
-          window.dispatch_action(Box::new(helix_commands::ToggleLeftSidebar), cx);
-        }),
+        icon_button("reopen-left", IconName::PanelLeftOpen, &theme)
+          .tooltip_with_action(
+            "Show the project sidebar",
+            &helix_commands::ToggleLeftSidebar,
+            None,
+          )
+          .on_click(|_, window, cx| {
+            window.dispatch_action(Box::new(helix_commands::ToggleLeftSidebar), cx);
+          }),
       );
     }
 
@@ -615,28 +621,34 @@ impl Render for Workspace {
           )
       }))
       .child(
-        icon_button("new-tab", IconName::Plus, &theme).dropdown_menu(|menu, _window, _cx| {
-          menu
-            .menu_with_icon(
-              "Terminal",
-              IconName::SquareTerminal,
-              Box::new(helix_commands::NewTerminal),
-            )
-            .menu_with_icon(
-              "Claude Code",
-              IconName::Asterisk,
-              Box::new(helix_commands::NewClaudeSession),
-            )
-        }),
+        icon_button("new-tab", IconName::Plus, &theme)
+          .tooltip("New session")
+          .dropdown_menu(|menu, _window, _cx| {
+            menu
+              .menu_with_icon(
+                "Terminal",
+                IconName::SquareTerminal,
+                Box::new(helix_commands::NewTerminal),
+              )
+              .menu_with_icon(
+                "Claude Code",
+                IconName::Asterisk,
+                Box::new(helix_commands::NewClaudeSession),
+              )
+          }),
       )
       .child(div().flex_1())
       .when(!self.right_sidebar_open, |el| {
         el.child(
-          icon_button("toggle-right", IconName::PanelRightOpen, &theme).on_click(
-            |_, window, cx| {
+          icon_button("toggle-right", IconName::PanelRightOpen, &theme)
+            .tooltip_with_action(
+              "Show the context sidebar",
+              &helix_commands::ToggleRightSidebar,
+              None,
+            )
+            .on_click(|_, window, cx| {
               window.dispatch_action(Box::new(helix_commands::ToggleRightSidebar), cx);
-            },
-          ),
+            }),
         )
       });
 

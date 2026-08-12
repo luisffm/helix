@@ -322,9 +322,15 @@ impl Render for ProjectPanel {
           .child("Helix"),
       )
       .child(
-        icon_button("collapse-left", IconName::PanelLeftClose, &theme).on_click(|_, window, cx| {
-          window.dispatch_action(Box::new(helix_commands::ToggleLeftSidebar), cx);
-        }),
+        icon_button("collapse-left", IconName::PanelLeftClose, &theme)
+          .tooltip_with_action(
+            "Hide the project sidebar",
+            &helix_commands::ToggleLeftSidebar,
+            None,
+          )
+          .on_click(|_, window, cx| {
+            window.dispatch_action(Box::new(helix_commands::ToggleLeftSidebar), cx);
+          }),
       );
 
     let search = div()
@@ -366,16 +372,18 @@ impl Render for ProjectPanel {
           .child("Projects"),
       )
       .child(
-        icon_button("project-add", HelixIcon::FolderPlus, &theme).on_click(cx.listener(
-          |_, _, _, cx| {
+        icon_button("project-add", HelixIcon::FolderPlus, &theme)
+          .tooltip("Add a project")
+          .on_click(cx.listener(|_, _, _, cx| {
             cx.emit(ProjectPanelEvent::RequestAddProject);
-          },
-        )),
+          })),
       )
       .child(
-        icon_button("worktree-add", IconName::Plus, &theme).on_click(cx.listener(|_, _, _, cx| {
-          cx.emit(ProjectPanelEvent::RequestAddWorktree);
-        })),
+        icon_button("worktree-add", IconName::Plus, &theme)
+          .tooltip("Add a worktree")
+          .on_click(cx.listener(|_, _, _, cx| {
+            cx.emit(ProjectPanelEvent::RequestAddWorktree);
+          })),
       );
 
     let mut tree = div()
@@ -875,13 +883,13 @@ impl Render for ProjectPanel {
       .px_2()
       .gap_1()
       .child(
-        icon_button("sidebar-settings", IconName::Settings, &theme).on_click(cx.listener(
-          |_, _, _, cx| {
+        icon_button("sidebar-settings", IconName::Settings, &theme)
+          .tooltip("Open settings")
+          .on_click(cx.listener(|_, _, _, cx| {
             cx.emit(ProjectPanelEvent::OpenSettings(None));
-          },
-        )),
+          })),
       )
-      .child(icon_button("sidebar-help", IconName::Info, &theme))
+      .child(icon_button("sidebar-help", IconName::Info, &theme).tooltip("About Helix"))
       .child(div().flex_1())
       .child(
         div()

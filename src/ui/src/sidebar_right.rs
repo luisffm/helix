@@ -1385,33 +1385,33 @@ impl ContextPanel {
           .child(name),
       )
       .child(
-        icon_button("files-collapse", HelixIcon::ListCollapse, theme).on_click(cx.listener(
-          |this, _, _, cx| {
+        icon_button("files-collapse", HelixIcon::ListCollapse, theme)
+          .tooltip("Collapse every folder")
+          .on_click(cx.listener(|this, _, _, cx| {
             this.expanded.clear();
             this.invalidate_rows();
             cx.notify();
-          },
-        )),
+          })),
       )
       .child(
-        icon_button("files-refresh", HelixIcon::Refresh, theme).on_click(cx.listener(
-          |this, _, _, cx| {
+        icon_button("files-refresh", HelixIcon::Refresh, theme)
+          .tooltip("Rescan the workspace")
+          .on_click(cx.listener(|this, _, _, cx| {
             this.reset_scans();
             this.schedule_filter(cx);
             cx.notify();
-          },
-        )),
+          })),
       )
       .child(
-        icon_button("files-dotfiles", IconName::Eye, theme).on_click(cx.listener(
-          |this, _, _, cx| {
+        icon_button("files-dotfiles", IconName::Eye, theme)
+          .tooltip("Show hidden files")
+          .on_click(cx.listener(|this, _, _, cx| {
             this.show_dotfiles = !this.show_dotfiles;
 
             this.reset_scans();
             this.schedule_filter(cx);
             cx.notify();
-          },
-        )),
+          })),
       )
       .into_any_element()
   }
@@ -1802,6 +1802,8 @@ impl ContextPanel {
               .items_center()
               .justify_center()
               .rounded_md()
+              .border_1()
+              .border_color(theme.panel_border)
               .gap_1()
               .text_xs()
               .bg(theme.elevated)
@@ -1840,6 +1842,8 @@ impl ContextPanel {
               .items_center()
               .justify_center()
               .rounded_md()
+              .border_1()
+              .border_color(theme.panel_border)
               .bg(theme.elevated)
               .text_color(theme.text_muted)
               .cursor_pointer()
@@ -2347,6 +2351,7 @@ impl ContextPanel {
       .when(!self.pr_busy, |el| {
         el.child(
           icon_button("pr-refresh", HelixIcon::Refresh, theme)
+            .tooltip("Refresh the pull request")
             .on_click(cx.listener(|this, _, _, cx| this.refresh_pull_request(cx))),
         )
       })
@@ -2518,11 +2523,15 @@ impl Render for ContextPanel {
       )
       .child(div().flex_1())
       .child(
-        icon_button("close-right-sidebar", IconName::PanelRightClose, &theme).on_click(
-          |_, window, cx| {
+        icon_button("close-right-sidebar", IconName::PanelRightClose, &theme)
+          .tooltip_with_action(
+            "Hide the context sidebar",
+            &helix_commands::ToggleRightSidebar,
+            None,
+          )
+          .on_click(|_, window, cx| {
             window.dispatch_action(Box::new(helix_commands::ToggleRightSidebar), cx);
-          },
-        ),
+          }),
       );
 
     let toolbar = match active {
