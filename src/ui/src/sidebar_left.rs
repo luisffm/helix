@@ -662,7 +662,7 @@ impl Render for ProjectPanel {
       .pl(px(TRAFFIC_LIGHTS))
       .pr(px(10.0))
       .border_b_1()
-      .border_color(theme.panel_border)
+      .border_color(theme.divider)
       .child(
         div()
           .flex_1()
@@ -804,16 +804,7 @@ impl Render for ProjectPanel {
             .whitespace_nowrap()
             .text_ellipsis()
             .child(entry.info.name.clone()),
-        )
-        .when(expanded && !worktree_list.is_empty(), |el| {
-          el.child(
-            div()
-              .flex_none()
-              .text_size(px(TINY))
-              .text_color(theme.text_dim)
-              .child(worktree_list.len().to_string()),
-          )
-        });
+        );
 
       let ctx_root = project_root.clone();
       let ctx_name = entry.info.name.clone();

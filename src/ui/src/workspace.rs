@@ -541,8 +541,9 @@ impl Render for Workspace {
       .flex()
       .flex_none()
       .h(px(HEADER_HEIGHT))
+      .bg(theme.panel_alt)
       .border_b_1()
-      .border_color(theme.panel_border);
+      .border_color(theme.divider);
 
     if !self.left_sidebar_open {
       tab_bar = tab_bar.child(
@@ -585,7 +586,7 @@ impl Render for Workspace {
           .gap(px(7.0))
           .px(px(14.0))
           .border_r_1()
-          .border_color(theme.panel_border)
+          .border_color(theme.divider)
           .cursor_pointer()
           .text_size(px(UI))
           .when(is_active, |el| el.bg(theme.panel).text_color(theme.text))

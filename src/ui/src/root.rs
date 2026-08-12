@@ -1330,9 +1330,9 @@ impl HelixRoot {
       .h(px(STATUS_HEIGHT))
       .px(px(14.0))
       .gap(px(14.0))
-      .bg(theme.win_tint)
+      .bg(theme.panel_alt)
       .border_t_1()
-      .border_color(theme.panel_border)
+      .border_color(theme.divider)
       .text_size(px(META))
       .text_color(theme.text_muted)
       .child(
@@ -1438,7 +1438,7 @@ impl HelixRoot {
           .h_full()
           .overflow_hidden()
           .border_r_1()
-          .border_color(theme.panel_border)
+          .border_color(theme.divider)
           .child(
             div()
               .w(px(self.left_width))
@@ -1465,9 +1465,9 @@ impl HelixRoot {
           .flex_none()
           .h_full()
           .overflow_hidden()
-          .bg(theme.win_tint)
+          .bg(theme.panel_alt)
           .border_l_1()
-          .border_color(theme.panel_border)
+          .border_color(theme.divider)
           .child(
             div()
               .w(px(self.right_width))

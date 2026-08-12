@@ -2914,7 +2914,7 @@ impl Render for ContextPanel {
       .h(px(HEADER_HEIGHT))
       .px(px(10.0))
       .border_b_1()
-      .border_color(theme.panel_border)
+      .border_color(theme.divider)
       .children(
         [RightTab::Files, RightTab::Git, RightTab::Pr]
           .into_iter()

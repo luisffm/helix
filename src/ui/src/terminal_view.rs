@@ -1204,7 +1204,7 @@ impl Render for TerminalView {
       .track_focus(&self.focus_handle)
       .size_full()
       .overflow_hidden()
-      .bg(theme.code_bg)
+      .bg(theme.term.bg)
       .px(padding.1)
       .py(padding.0)
       .font_family(theme.font_term.clone())

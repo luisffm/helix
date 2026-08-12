@@ -586,7 +586,7 @@ impl Render for SettingsPage {
       .pl(px(TRAFFIC_LIGHTS))
       .pr(px(14.0))
       .border_b_1()
-      .border_color(theme.panel_border)
+      .border_color(theme.divider)
       .child(
         div()
           .id("settings-back")
@@ -630,7 +630,7 @@ impl Render for SettingsPage {
       .p(px(10.0))
       .gap(px(2.0))
       .border_r_1()
-      .border_color(theme.panel_border)
+      .border_color(theme.divider)
       .children(
         [(Section::General, "General"), (Section::Project, "Project")].map(|(section, label)| {
           let selected = self.section == section;

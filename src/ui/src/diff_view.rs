@@ -330,7 +330,7 @@ impl Render for DiffView {
       .h(px(34.0))
       .px(px(14.0))
       .border_b_1()
-      .border_color(theme.panel_border)
+      .border_color(theme.divider)
       .text_size(px(UI))
       .when_some(directory, |el, directory| {
         el.child(
