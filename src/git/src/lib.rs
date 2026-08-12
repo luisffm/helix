@@ -432,3 +432,52 @@ fn collect_ahead_behind(repo: &Repository, snap: &mut GitSnapshot) {
     snap.behind = behind;
   }
 }
+
+/// The mtime of the repository's index, which is the cheapest honest answer to
+/// "has anything happened here". A `stat` costs microseconds, where describing a
+/// worktree costs a status walk and a diff, so a caller holding a previous
+/// reading can skip the expensive part entirely.
+///
+/// A linked worktree keeps its own index beside its git dir, so this reports the
+/// worktree's own state rather than the primary repository's.
+pub fn index_stamp(root: &Path) -> Option<std::time::SystemTime> {
+  let repo = Repository::discover(root).ok()?;
+
+  std::fs::metadata(repo.path().join("index"))
+    .ok()?
+    .modified()
+    .ok()
+}
+
+/// Lines added and removed against HEAD, staged and unstaged together. Only the
+/// totals, which git2 already counts while walking the diff — describing every
+/// file the way `snapshot` does costs far more than a sidebar row needs.
+///
+/// Taken as two diffs because untracked files only appear in the workdir one. The
+/// two cover different hunks of a partly staged file, so adding them is the total
+/// against HEAD rather than a double count.
+pub fn line_stats(root: &Path) -> Result<(usize, usize)> {
+  let repo = Repository::discover(root)?;
+
+  let mut options = git2::DiffOptions::new();
+  // Without the content, an untracked file is a name in the diff and counts no
+  // lines, which reads as "nothing added" for a brand new file.
+  options
+    .include_untracked(true)
+    .recurse_untracked_dirs(true)
+    .show_untracked_content(true);
+
+  let head = repo.head().ok().and_then(|head| head.peel_to_tree().ok());
+
+  let staged = repo
+    .diff_tree_to_index(head.as_ref(), None, None)?
+    .stats()?;
+  let working = repo
+    .diff_index_to_workdir(None, Some(&mut options))?
+    .stats()?;
+
+  Ok((
+    staged.insertions() + working.insertions(),
+    staged.deletions() + working.deletions(),
+  ))
+}

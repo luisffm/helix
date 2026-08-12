@@ -168,25 +168,6 @@ impl GitSnapshot {
   pub fn dirty_count(&self) -> usize {
     self.staged.len() + self.unstaged.len() + self.untracked.len() + self.conflicted.len()
   }
-
-  fn tracked(&self) -> impl Iterator<Item = &GitFileStatus> {
-    self
-      .staged
-      .iter()
-      .chain(&self.unstaged)
-      .chain(&self.untracked)
-      .chain(&self.conflicted)
-  }
-
-  /// Lines added and removed across everything the worktree has touched since
-  /// HEAD. A partly staged file appears in both lists, and the two diffs cover
-  /// different hunks of it, so adding them is the total rather than a double
-  /// count.
-  pub fn line_stats(&self) -> (usize, usize) {
-    self.tracked().fold((0, 0), |(added, removed), file| {
-      (added + file.added, removed + file.removed)
-    })
-  }
 }
 
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -264,33 +245,7 @@ impl FileDiff {
 
 #[cfg(test)]
 mod tests {
-  use super::{GitFileKind, GitFileStatus, GitSnapshot};
-
-  fn file(added: usize, removed: usize) -> GitFileStatus {
-    let mut status = GitFileStatus::new("a.rs".to_string(), GitFileKind::Modified);
-
-    status.added = added;
-    status.removed = removed;
-
-    status
-  }
-
-  #[test]
-  fn line_stats_cover_every_list() {
-    let mut snapshot = GitSnapshot::default();
-
-    snapshot.staged.push(file(10, 2));
-    snapshot.unstaged.push(file(4, 1));
-    snapshot.untracked.push(file(170, 0));
-    snapshot.conflicted.push(file(0, 19));
-
-    assert_eq!(snapshot.line_stats(), (184, 22));
-  }
-
-  #[test]
-  fn a_clean_worktree_has_no_lines() {
-    assert_eq!(GitSnapshot::default().line_stats(), (0, 0));
-  }
+  use super::GitFileKind;
 
   #[test]
   fn deleted_outranks_modified() {

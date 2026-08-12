@@ -451,6 +451,84 @@ impl HelixRoot {
     .detach();
   }
 
+  /// Every worktree reports its own line counts, not just the one in front, and
+  /// the reading survives a restart. Doing that with a diff per worktree per
+  /// refresh would be indefensible, so the index's mtime is the gate: a `stat`
+  /// costs microseconds, and a worktree whose index has not moved since it was
+  /// last measured is served from the cache without touching git at all.
+  fn measure_worktrees(
+    &mut self,
+    described: Vec<PathBuf>,
+    changed: Option<Vec<PathBuf>>,
+    every_project: bool,
+    cx: &mut Context<Self>,
+  ) {
+    if described.is_empty() {
+      return;
+    }
+
+    // Editing a file does not touch `.git/index` — only staging does — so the
+    // stamp alone would serve yesterday's numbers for the most ordinary change
+    // there is. Whatever the watcher just reported is measured regardless.
+    let touched: Vec<PathBuf> = changed.unwrap_or_default();
+    let active = canonical_path(&self.project.root);
+
+    let task = cx.background_executor().spawn(async move {
+      let cached = helix_state::cache::load().worktrees;
+      let mut measured: Vec<(PathBuf, helix_state::cache::WorktreeStats)> = Vec::new();
+
+      for root in &described {
+        let stamp = helix_git::index_stamp(root)
+          .map(helix_state::cache::stamp_of)
+          .unwrap_or(0);
+
+        let edited = *root == active || touched.iter().any(|path| path.starts_with(root));
+
+        if !edited {
+          if let Some(known) = cached.get(root) {
+            if known.stamp == stamp {
+              measured.push((root.clone(), known.clone()));
+
+              continue;
+            }
+          }
+        }
+
+        let Ok((added, removed)) = helix_git::line_stats(root) else {
+          continue;
+        };
+
+        let stats = helix_state::cache::WorktreeStats {
+          added,
+          removed,
+          stamp,
+        };
+
+        helix_state::cache::set_worktree_stats(root, stats.clone());
+        measured.push((root.clone(), stats));
+      }
+
+      if every_project {
+        helix_state::cache::retain_worktrees(&described);
+      }
+
+      measured
+    });
+
+    cx.spawn(async move |this, cx| {
+      let measured = task.await;
+
+      this
+        .update(cx, |root_view, cx| {
+          root_view.project_panel.update(cx, |panel, cx| {
+            panel.set_worktree_lines(measured, cx);
+          });
+        })
+        .ok();
+    })
+    .detach();
+  }
+
   fn refresh_git(&mut self, cx: &mut Context<Self>) {
     self.refresh_git_for(None, cx);
   }
@@ -486,10 +564,17 @@ impl HelixRoot {
           root_view.git = snapshot.clone();
           root_view.worktrees = worktrees.get(&owner).cloned().unwrap_or_default();
 
+          let described: Vec<PathBuf> = worktrees
+            .values()
+            .flatten()
+            .map(|row| row.canonical.clone())
+            .collect();
+
           root_view.project_panel.update(cx, |panel, cx| {
-            panel.set_git(&root_view.project.root, snapshot.clone(), cx);
             panel.set_worktrees(worktrees, every_project, cx);
           });
+
+          root_view.measure_worktrees(described, changed.clone(), every_project, cx);
 
           root_view.context_panel.update(cx, |panel, cx| {
             panel.set_git(snapshot, cx);

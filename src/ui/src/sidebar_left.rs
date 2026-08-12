@@ -1,6 +1,6 @@
 use crate::components::{
-  BODY, GLYPH, HEADER_HEIGHT, MICRO, SMALL, TINY, TITLE, TRAFFIC_LIGHTS, attention_badge,
-  claude_icon, icon_button, pill, project_glyph, spinner,
+  BODY, EMPHASIS_MS, GLYPH, HEADER_HEIGHT, MICRO, SMALL, TINY, TITLE, TRAFFIC_LIGHTS,
+  attention_badge, blend, claude_icon, icon_button, pill, project_glyph, spinner,
 };
 use crate::icons::HelixIcon;
 use crate::theme::Theme;
@@ -17,10 +17,10 @@ use helix_commands::{
 };
 use helix_github::{BranchReview, ReviewState};
 use helix_models::{AgentAttention, AgentStatus};
-use helix_models::{GitSnapshot, ProjectInfo, SessionKind};
+use helix_models::{ProjectInfo, SessionKind};
 use helix_worktree::{WorktreeRow, canonical_path};
 use std::collections::{HashMap, HashSet};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::Duration;
 
 const COLLAPSE_MS: u64 = 160;
@@ -162,11 +162,18 @@ impl ProjectPanel {
 
     expanded.insert(project.root.clone());
 
+    let lines = helix_state::cache::load()
+      .worktrees
+      .into_iter()
+      .filter(|(_, stats)| stats.added > 0 || stats.removed > 0)
+      .map(|(root, stats)| (root, (stats.added, stats.removed)))
+      .collect();
+
     Self {
+      lines,
       active_canonical: canonical_path(&project.root),
       projects,
       active_root: project.root,
-      lines: HashMap::new(),
       worktrees: HashMap::new(),
       workspaces: HashMap::new(),
       observed: HashSet::new(),
@@ -244,19 +251,28 @@ impl ProjectPanel {
     cx.notify();
   }
 
-  pub fn set_git(&mut self, root: &Path, git: Option<GitSnapshot>, cx: &mut Context<Self>) {
-    let root = canonical_path(root);
-    let stats = git
-      .as_ref()
-      .map(GitSnapshot::line_stats)
-      .filter(|(added, removed)| *added > 0 || *removed > 0);
+  /// Fed from the cache rather than from the active worktree's snapshot, so every
+  /// worktree reports its own counts and keeps reporting them across a restart.
+  pub fn set_worktree_lines(
+    &mut self,
+    measured: Vec<(PathBuf, helix_state::cache::WorktreeStats)>,
+    cx: &mut Context<Self>,
+  ) {
+    let mut changed = false;
 
-    // A worktree that went clean drops its entry rather than reporting the
-    // numbers it had before the commit landed.
-    let changed = match stats {
-      Some(stats) => self.lines.insert(root, stats) != Some(stats),
-      None => self.lines.remove(&root).is_some(),
-    };
+    for (root, stats) in measured {
+      // A worktree that went clean drops its entry rather than reporting the
+      // numbers it had before the commit landed.
+      if stats.added == 0 && stats.removed == 0 {
+        changed |= self.lines.remove(&root).is_some();
+
+        continue;
+      }
+
+      let pair = (stats.added, stats.removed);
+
+      changed |= self.lines.insert(root, pair) != Some(pair);
+    }
 
     if changed {
       cx.notify();
@@ -271,17 +287,6 @@ impl ProjectPanel {
   ) {
     if every_project {
       self.worktrees = worktrees;
-
-      // A full listing is the only place that knows which worktrees still
-      // exist, so it is where the line cache is pruned.
-      let listed: HashSet<PathBuf> = self
-        .worktrees
-        .values()
-        .flatten()
-        .map(|row| row.canonical.clone())
-        .collect();
-
-      self.lines.retain(|root, _| listed.contains(root));
     } else {
       self.worktrees.extend(worktrees);
     }
@@ -496,6 +501,7 @@ impl ProjectPanel {
     ix: usize,
     project_root: &PathBuf,
     row: &WorktreeRow,
+    in_active_project: bool,
     theme: &Theme,
     cx: &mut Context<Self>,
   ) -> gpui::AnyElement {
@@ -505,6 +511,7 @@ impl ProjectPanel {
       .clone()
       .unwrap_or_else(|| wt.branch.clone());
     let is_active = row.canonical == self.active_canonical;
+    let (text, muted) = (theme.text, theme.text_muted);
 
     let review = self
       .reviews
@@ -557,11 +564,29 @@ impl ProjectPanel {
               } else {
                 gpui::FontWeight::MEDIUM
               })
-              .text_color(theme.text)
               .overflow_hidden()
               .whitespace_nowrap()
               .text_ellipsis()
-              .child(label.clone()),
+              .child(label.clone())
+              // A branch is only as prominent as the project holding it. At full
+              // strength it outshouted the muted project above it, which read as
+              // the wrong group being current. It eases across, so a switch reads
+              // as one group handing over to another.
+              .with_animation(
+                SharedString::from(format!(
+                  "branch-emphasis-{project_ix}-{ix}-{in_active_project}"
+                )),
+                Animation::new(Duration::from_millis(EMPHASIS_MS)).with_easing(gpui::ease_in_out),
+                move |name, delta| {
+                  let (from, to) = if in_active_project {
+                    (muted, text)
+                  } else {
+                    (text, muted)
+                  };
+
+                  name.text_color(blend(from, to, delta))
+                },
+              ),
           )
           .children(wt.is_primary.then(|| {
             pill("primary", theme.text_muted, theme.active, MICRO)
@@ -750,6 +775,7 @@ impl Render for ProjectPanel {
       let expanded = self.expanded.contains(&project_root);
       let closing = self.closing.contains(&project_root);
 
+      let (theme_text, theme_muted) = (theme.text, theme.text_muted);
       let toggle_root = project_root.clone();
       // A project whose worktrees have not been described yet has nothing to
       // expand into, so clicking it opens it rather than toggling an empty group.
@@ -799,12 +825,25 @@ impl Render for ProjectPanel {
             // row this is, colour says whether it is the one being worked in.
             .text_size(px(TITLE))
             .font_weight(gpui::FontWeight::SEMIBOLD)
-            .when(is_active_project, |el| el.text_color(theme.text))
-            .when(!is_active_project, |el| el.text_color(theme.text_muted))
             .overflow_hidden()
             .whitespace_nowrap()
             .text_ellipsis()
-            .child(entry.info.name.clone()),
+            .child(entry.info.name.clone())
+            .with_animation(
+              SharedString::from(format!(
+                "project-emphasis-{project_ix}-{is_active_project}"
+              )),
+              Animation::new(Duration::from_millis(EMPHASIS_MS)).with_easing(gpui::ease_in_out),
+              move |name, delta| {
+                let (from, to) = if is_active_project {
+                  (theme_muted, theme_text)
+                } else {
+                  (theme_text, theme_muted)
+                };
+
+                name.text_color(blend(from, to, delta))
+              },
+            ),
         );
 
       let ctx_root = project_root.clone();
@@ -874,12 +913,17 @@ impl Render for ProjectPanel {
         .pl(px(8.0))
         .border_l_1()
         .border_color(theme.panel_border)
-        .children(
-          worktree_list
-            .iter()
-            .enumerate()
-            .map(|(ix, row)| self.worktree_row(project_ix, ix, &project_root, row, &theme, cx)),
-        );
+        .children(worktree_list.iter().enumerate().map(|(ix, row)| {
+          self.worktree_row(
+            project_ix,
+            ix,
+            &project_root,
+            row,
+            is_active_project,
+            &theme,
+            cx,
+          )
+        }));
 
       tree = tree.child(group.with_animation(
         SharedString::from(format!(

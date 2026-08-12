@@ -68,6 +68,26 @@ pub fn attention_badge(kind: helix_models::AgentAttention, theme: &Theme) -> Div
   }
 }
 
+/// How long a row takes to pick up its new emphasis when the current project
+/// changes. One shot: the animator drives frames for this long and then stops, so
+/// it costs nothing once it has settled — unlike a loop, which never does.
+pub const EMPHASIS_MS: u64 = 220;
+
+/// Blends between two colours in the space they are stored in, which is HSL here.
+/// Interpolating hue would swing a muted grey through colours it should never
+/// visit, so only saturation, lightness and alpha move.
+pub fn blend(from: Hsla, to: Hsla, t: f32) -> Hsla {
+  let t = t.clamp(0.0, 1.0);
+  let mix = |a: f32, b: f32| a + (b - a) * t;
+
+  Hsla {
+    h: to.h,
+    s: mix(from.s, to.s),
+    l: mix(from.l, to.l),
+    a: mix(from.a, to.a),
+  }
+}
+
 pub fn claude_icon(color: Hsla, size: f32) -> impl IntoElement {
   div()
     .flex_none()
