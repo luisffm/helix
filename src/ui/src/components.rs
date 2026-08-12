@@ -173,23 +173,29 @@ pub fn project_icon(name: &str) -> Option<IconName> {
 
 /// A project's chosen glyph: the icon or emoji picked for it, drawn in its accent
 /// so the two settings compose instead of replacing one another.
+///
+/// It sits on a soft chip, which is what separates a project from the worktrees
+/// under it. Both levels are a line of text at nearly one size, so without the
+/// chip the list reads as a single flat run of rows.
 pub fn project_glyph(
   icon: Option<&str>,
   emoji: Option<&str>,
   accent: Option<&str>,
   theme: &Theme,
 ) -> Div {
-  let (fg, _) = project_accent(accent, theme);
-  let mark = div()
-    .size(px(16.0))
+  let (fg, bg) = project_accent(accent, theme);
+  let chip = div()
+    .size(px(20.0))
     .flex_none()
     .flex()
     .items_center()
-    .justify_center();
+    .justify_center()
+    .rounded(px(5.0))
+    .bg(bg);
 
   match (icon, emoji) {
-    (_, Some(emoji)) if icon.is_none() => mark.text_size(px(12.0)).child(emoji.to_string()),
-    (icon, _) => mark
+    (_, Some(emoji)) if icon.is_none() => chip.text_size(px(GLYPH)).child(emoji.to_string()),
+    (icon, _) => chip
       .text_color(fg)
       .child(Icon::new(icon.and_then(project_icon).unwrap_or(IconName::Folder)).size(px(GLYPH))),
   }

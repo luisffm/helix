@@ -749,7 +749,10 @@ impl Render for ProjectPanel {
         .flex()
         .items_center()
         .gap_2()
-        .h(px(30.0))
+        .h(px(32.0))
+        // Proximity is the cheapest hierarchy there is: a project pulls away from
+        // the branches of the one above it.
+        .when(project_ix > 0, |el| el.mt(px(10.0)))
         .px(px(8.0))
         .rounded(px(8.0))
         .cursor_pointer()
@@ -781,11 +784,11 @@ impl Render for ProjectPanel {
           div()
             .flex_1()
             .min_w_0()
-            .text_size(px(BODY))
-            .when(is_active_project, |el| {
-              el.font_weight(gpui::FontWeight::SEMIBOLD)
-                .text_color(theme.text)
-            })
+            // Always the larger, heavier of the two levels: size says what kind of
+            // row this is, colour says whether it is the one being worked in.
+            .text_size(px(TITLE))
+            .font_weight(gpui::FontWeight::SEMIBOLD)
+            .when(is_active_project, |el| el.text_color(theme.text))
             .when(!is_active_project, |el| el.text_color(theme.text_muted))
             .overflow_hidden()
             .whitespace_nowrap()
