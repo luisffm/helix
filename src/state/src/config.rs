@@ -362,6 +362,20 @@ pub fn set_display_name(root: &Path, name: &str) {
   update_project(root, |project| project.display_name = stored);
 }
 
+pub fn set_icon(root: &Path, icon: &str) {
+  update_project(root, |project| {
+    project.icon = Some(icon.to_string());
+    project.emoji = None;
+  });
+}
+
+pub fn set_emoji(root: &Path, emoji: &str) {
+  update_project(root, |project| {
+    project.emoji = Some(emoji.to_string());
+    project.icon = None;
+  });
+}
+
 pub fn set_accent(root: &Path, accent: &str) {
   update_project(root, |project| {
     project.accent = Some(accent.to_string());

@@ -42,14 +42,14 @@ impl SearchTarget {
     }
   }
 
-  fn icon(&self) -> IconName {
+  fn icon(&self) -> Icon {
     match self {
-      SearchTarget::Worktree(_) => IconName::GalleryVerticalEnd,
-      SearchTarget::Tab(_) => IconName::SquareTerminal,
-      SearchTarget::Project(_) => IconName::Folder,
-      SearchTarget::NewTerminal => IconName::SquareTerminal,
-      SearchTarget::NewClaude => IconName::Plus,
-      SearchTarget::AddWorktree => IconName::GalleryVerticalEnd,
+      SearchTarget::Worktree(_) => Icon::new(IconName::GalleryVerticalEnd),
+      SearchTarget::Tab(_) => Icon::new(IconName::SquareTerminal),
+      SearchTarget::Project(_) => Icon::new(IconName::Folder),
+      SearchTarget::NewTerminal => Icon::new(IconName::SquareTerminal),
+      SearchTarget::NewClaude => Icon::new(crate::icons::HelixIcon::Claude),
+      SearchTarget::AddWorktree => Icon::new(IconName::GalleryVerticalEnd),
     }
   }
 
@@ -284,7 +284,7 @@ impl ListDelegate for SearchDelegate {
               div()
                 .flex_none()
                 .text_color(item.target.icon_color(&theme))
-                .child(Icon::new(item.target.icon()).size(px(GLYPH))),
+                .child(item.target.icon().size(px(GLYPH))),
             )
             .child(
               div()

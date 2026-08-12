@@ -83,7 +83,7 @@ pub fn claude_icon(color: Hsla, size: f32) -> impl IntoElement {
   div()
     .flex_none()
     .text_color(color)
-    .child(Icon::new(crate::icons::HelixIcon::ClaudeSunburst).size(px(size)))
+    .child(Icon::new(crate::icons::HelixIcon::Claude).size(px(size)))
 }
 
 /// A pill: the small capsule the design uses for `primary`, `OPEN`, `worktree`
@@ -132,27 +132,67 @@ pub fn project_accent(name: Option<&str>, theme: &Theme) -> (Hsla, Hsla) {
   }
 }
 
-/// The 16px rounded square carrying a project's initial.
-pub fn project_avatar(label: &str, accent: Option<&str>, theme: &Theme) -> Div {
-  let (fg, bg) = project_accent(accent, theme);
-  let initial = label
-    .chars()
-    .next()
-    .map(|c| c.to_uppercase().to_string())
-    .unwrap_or_default();
+pub const EMOJI_CHOICES: [&str; 24] = [
+  "🔥", "🚀", "⭐", "💎", "🦀", "🐍", "⚡", "🧠", "🛠️", "📦", "🌊", "🌙", "🍀", "🎯", "🧪", "🎨",
+  "🐳", "🔮", "💼", "🏗️", "📱", "🌐", "🤖", "📁",
+];
 
-  div()
+pub const PROJECT_ICONS: [(&str, IconName); 24] = [
+  ("folder", IconName::Folder),
+  ("folder-open", IconName::FolderOpen),
+  ("folder-closed", IconName::FolderClosed),
+  ("bot", IconName::Bot),
+  ("square-terminal", IconName::SquareTerminal),
+  ("star", IconName::Star),
+  ("heart", IconName::Heart),
+  ("globe", IconName::Globe),
+  ("bell", IconName::Bell),
+  ("book-open", IconName::BookOpen),
+  ("chart-pie", IconName::ChartPie),
+  ("calendar", IconName::Calendar),
+  ("layout-dashboard", IconName::LayoutDashboard),
+  ("map", IconName::Map),
+  ("inbox", IconName::Inbox),
+  ("frame", IconName::Frame),
+  ("gallery", IconName::GalleryVerticalEnd),
+  ("github", IconName::GitHub),
+  ("palette", IconName::Palette),
+  ("settings", IconName::Settings),
+  ("user", IconName::User),
+  ("sun", IconName::Sun),
+  ("moon", IconName::Moon),
+  ("building", IconName::Building2),
+];
+
+pub fn project_icon(name: &str) -> Option<IconName> {
+  PROJECT_ICONS
+    .iter()
+    .find(|(id, _)| *id == name)
+    .map(|(_, icon)| icon.clone())
+}
+
+/// A project's chosen glyph: the icon or emoji picked for it, drawn in its accent
+/// so the two settings compose instead of replacing one another.
+pub fn project_glyph(
+  icon: Option<&str>,
+  emoji: Option<&str>,
+  accent: Option<&str>,
+  theme: &Theme,
+) -> Div {
+  let (fg, _) = project_accent(accent, theme);
+  let mark = div()
     .size(px(16.0))
     .flex_none()
     .flex()
     .items_center()
-    .justify_center()
-    .rounded(px(4.0))
-    .bg(bg)
-    .text_size(px(9.5))
-    .font_weight(gpui::FontWeight::SEMIBOLD)
-    .text_color(fg)
-    .child(initial)
+    .justify_center();
+
+  match (icon, emoji) {
+    (_, Some(emoji)) if icon.is_none() => mark.text_size(px(12.0)).child(emoji.to_string()),
+    (icon, _) => mark
+      .text_color(fg)
+      .child(Icon::new(icon.and_then(project_icon).unwrap_or(IconName::Folder)).size(px(GLYPH))),
+  }
 }
 
 pub fn sparkline(values: &[f32], color: Hsla) -> impl IntoElement {
@@ -210,15 +250,26 @@ pub fn key_hint(keys: &str, action: &'static str, theme: &Theme) -> Div {
     .child(div().text_xs().text_color(theme.text_dim).child(action))
 }
 
-/// Every icon-only control in the chrome draws at this size. The library's own
-/// steps land at 14px, which reads oversized next to 12.5px rows.
+/// An icon sitting inline with text takes the size of that text, so it reads as
+/// part of the line rather than as a picture beside it.
 pub const GLYPH: f32 = 12.0;
+
+/// An icon standing on its own in a header or a toolbar has no text to match and
+/// is a target as much as a mark, so it is drawn a step larger. Every such
+/// control shares this size — nothing in a row of them is bigger than its
+/// neighbour.
+pub const CHROME_GLYPH: f32 = 14.0;
+
+/// `Button` discards whatever size its icon was given and derives one from the
+/// button's own box, at three quarters of it. So the glyph is sized by picking
+/// the box that yields it — asking the icon does nothing.
+const ICON_BUTTON_BOX: f32 = CHROME_GLYPH / 0.75;
 
 pub fn icon_button(id: impl Into<SharedString>, icon: impl Into<Icon>, theme: &Theme) -> Button {
   Button::new(id.into())
-    .icon(Icon::new(icon).size(px(GLYPH)))
+    .icon(Icon::new(icon))
     .ghost()
-    .with_size(px(24.0))
+    .with_size(px(ICON_BUTTON_BOX))
     .text_color(theme.text_muted)
 }
 

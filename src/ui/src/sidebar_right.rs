@@ -1,6 +1,6 @@
 use crate::components::{
-  BODY, GLYPH, HEADER_HEIGHT, META, MICRO, SMALL, TINY, TITLE, UI, ago, icon_button, pill,
-  section_label, spinner,
+  BODY, CHROME_GLYPH, GLYPH, HEADER_HEIGHT, META, MICRO, SMALL, TINY, TITLE, UI, ago, icon_button,
+  pill, section_label, spinner,
 };
 use crate::file_icons;
 use crate::icons::HelixIcon;
@@ -1831,11 +1831,8 @@ impl ContextPanel {
         .build(window, cx)
       })
       .on_click(cx.listener(|this, _, window, cx| this.generate_commit_message(window, cx)))
-      .child(if self.generating_message {
-        "\u{2026}"
-      } else {
-        "\u{2726}"
-      });
+      .children(self.generating_message.then(|| "\u{2026}"))
+      .children((!self.generating_message).then(|| Icon::new(HelixIcon::Claude).size(px(GLYPH))));
 
     div()
       .flex()
@@ -2442,7 +2439,8 @@ impl ContextPanel {
           .on_click(cx.listener(|_, _, window, cx| {
             window.dispatch_action(Box::new(helix_commands::NewClaudeSession), cx);
           }))
-          .child("\u{2726} Resolve"),
+          .child(Icon::new(HelixIcon::Claude).size(px(GLYPH)))
+          .child("Resolve"),
       )
       .into_any_element()
   }
@@ -2570,16 +2568,19 @@ impl ContextPanel {
                   .bg(theme.claude_soft)
                   .text_color(theme.claude)
                   .text_size(px(META))
-                  .child(if comment.bot {
-                    "\u{2726}".to_string()
-                  } else {
+                  .children(
+                    comment
+                      .bot
+                      .then(|| Icon::new(HelixIcon::Claude).size(px(GLYPH))),
+                  )
+                  .children((!comment.bot).then(|| {
                     comment
                       .author
                       .chars()
                       .next()
                       .map(|c| c.to_uppercase().to_string())
                       .unwrap_or_default()
-                  }),
+                  })),
               )
               .child(
                 div()
@@ -2936,7 +2937,7 @@ impl Render for ContextPanel {
                 }
                 cx.notify();
               }))
-              .child(tab.icon().size(px(GLYPH)))
+              .child(tab.icon().size(px(CHROME_GLYPH)))
           }),
       )
       .child(div().flex_1())

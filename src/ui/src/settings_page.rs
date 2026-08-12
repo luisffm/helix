@@ -1,5 +1,6 @@
 use crate::components::{
-  BODY, HEADER_HEIGHT, META, PROJECT_ACCENTS, TITLE, TRAFFIC_LIGHTS, UI, project_accent,
+  BODY, EMOJI_CHOICES, GLYPH, HEADER_HEIGHT, META, PROJECT_ACCENTS, PROJECT_ICONS, TITLE,
+  TRAFFIC_LIGHTS, UI, project_accent,
 };
 use crate::theme::{BLUR_LEVELS, Mode, Theme};
 use gpui::{
@@ -25,6 +26,12 @@ pub enum Section {
   Project,
 }
 
+#[derive(Clone, Copy, PartialEq)]
+enum GlyphTab {
+  Icon,
+  Emoji,
+}
+
 pub struct SettingsPage {
   section: Section,
   project_root: PathBuf,
@@ -33,6 +40,9 @@ pub struct SettingsPage {
   name_input: Entity<InputState>,
   font_input: Entity<InputState>,
   accent_selected: Option<String>,
+  icon_selected: Option<String>,
+  emoji_selected: Option<String>,
+  glyph_tab: GlyphTab,
   font_size: f32,
   blur_level: String,
   mode: Mode,
@@ -67,9 +77,22 @@ impl SettingsPage {
       .map(|p| p.label())
       .unwrap_or_else(|| project_dir_name.clone());
 
-    let (display_name, accent_selected) = project
-      .map(|p| (p.display_name.unwrap_or_default(), p.accent))
+    let (display_name, accent_selected, icon_selected, emoji_selected) = project
+      .map(|p| {
+        (
+          p.display_name.unwrap_or_default(),
+          p.accent,
+          p.icon,
+          p.emoji,
+        )
+      })
       .unwrap_or_default();
+
+    let glyph_tab = if emoji_selected.is_some() {
+      GlyphTab::Emoji
+    } else {
+      GlyphTab::Icon
+    };
 
     let terminal_font = config.terminal_font.unwrap_or_default();
 
@@ -121,6 +144,9 @@ impl SettingsPage {
       name_input,
       font_input,
       accent_selected,
+      icon_selected,
+      emoji_selected,
+      glyph_tab,
       font_size: config.terminal_font_size.unwrap_or(13.0),
       blur_level: config.blur_level.unwrap_or_else(|| "medium".to_string()),
       mode: Mode::from_id(config.theme.as_deref().unwrap_or("dark")),
@@ -409,6 +435,91 @@ impl SettingsPage {
           .child(initial.clone())
       }));
 
+    let tabs =
+      div()
+        .flex()
+        .gap_1()
+        .children(
+          [(GlyphTab::Icon, "Icon"), (GlyphTab::Emoji, "Emoji")].map(|(tab, label)| {
+            self
+              .segment(
+                format!("glyph-tab-{label}"),
+                label,
+                self.glyph_tab == tab,
+                theme,
+              )
+              .on_click(cx.listener(move |this, _, _, cx| {
+                this.glyph_tab = tab;
+                cx.notify();
+              }))
+          }),
+        );
+
+    let cell = |selected: bool, theme: &Theme| {
+      div()
+        .size(px(30.0))
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(px(8.0))
+        .border(px(1.5))
+        .cursor_pointer()
+        .when(selected, |el| {
+          el.border_color(theme.accent).bg(theme.accent_soft)
+        })
+        .when(!selected, |el| {
+          el.border_color(Hsla::transparent_black())
+            .hover(|s| s.bg(theme.hover))
+        })
+    };
+
+    let grid: AnyElement = match self.glyph_tab {
+      GlyphTab::Icon => div()
+        .flex()
+        .flex_wrap()
+        .gap_1()
+        .children(PROJECT_ICONS.iter().map(|(icon_id, icon)| {
+          let selected = self.icon_selected.as_deref() == Some(*icon_id);
+          let chosen = icon_id.to_string();
+
+          cell(selected, theme)
+            .id(SharedString::from(format!("proj-icon-{icon_id}")))
+            .text_color(theme.text_muted)
+            .on_click(cx.listener(move |this, _, _, cx| {
+              helix_state::config::set_icon(&this.project_root, &chosen);
+
+              this.icon_selected = Some(chosen.clone());
+              this.emoji_selected = None;
+
+              cx.emit(SettingsEvent::Changed);
+              cx.notify();
+            }))
+            .child(Icon::new(icon.clone()).size(px(GLYPH)))
+        }))
+        .into_any_element(),
+      GlyphTab::Emoji => div()
+        .flex()
+        .flex_wrap()
+        .gap_1()
+        .children(EMOJI_CHOICES.iter().map(|emoji| {
+          let selected = self.emoji_selected.as_deref() == Some(*emoji);
+
+          cell(selected, theme)
+            .id(SharedString::from(format!("proj-emoji-{emoji}")))
+            .child(*emoji)
+            .on_click(cx.listener(move |this, _, _, cx| {
+              helix_state::config::set_emoji(&this.project_root, emoji);
+
+              this.emoji_selected = Some(emoji.to_string());
+              this.icon_selected = None;
+
+              cx.emit(SettingsEvent::Changed);
+              cx.notify();
+            }))
+        }))
+        .into_any_element(),
+    };
+
     div()
       .flex()
       .flex_col()
@@ -437,6 +548,15 @@ impl SettingsPage {
                   self.project_dir_name
                 ),
               )),
+          )
+          .child(
+            div()
+              .flex()
+              .flex_col()
+              .gap_2()
+              .child(self.field_label(theme, "Icon"))
+              .child(tabs)
+              .child(grid),
           )
           .child(
             div()

@@ -984,7 +984,10 @@ impl Render for AddDialog {
               .build(window, cx)
             })
             .on_click(cx.listener(|this, _, window, cx| this.ask_for_a_name(window, cx)))
-            .child(if self.generating_branch { "…" } else { "✦" });
+            .children(self.generating_branch.then(|| "…"))
+            .children((!self.generating_branch).then(|| {
+              Icon::new(crate::icons::HelixIcon::Claude).size(px(crate::components::GLYPH))
+            }));
 
           form = form.child(
             div()

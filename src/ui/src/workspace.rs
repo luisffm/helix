@@ -83,10 +83,7 @@ impl TabItem {
             Icon::new(IconName::SquareTerminal),
             status_color(view.status(), theme),
           ),
-          SessionKind::ClaudeCode => (
-            Icon::new(crate::icons::HelixIcon::ClaudeSunburst),
-            theme.claude,
-          ),
+          SessionKind::ClaudeCode => (Icon::new(crate::icons::HelixIcon::Claude), theme.claude),
         }
       }
       TabContent::Editor(view) => {
@@ -671,7 +668,7 @@ impl Render for Workspace {
                   )
                   .menu_with_icon(
                     "Claude Code",
-                    crate::icons::HelixIcon::ClaudeSunburst,
+                    crate::icons::HelixIcon::Claude,
                     Box::new(helix_commands::NewClaudeSession),
                   )
               }),

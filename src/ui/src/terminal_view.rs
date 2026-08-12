@@ -34,6 +34,12 @@ const SHELL_PADDING: (Pixels, Pixels) = (px(10.0), px(10.0));
 const DRAIN_LIMIT: usize = 512;
 const FLUSH_INTERVAL: Duration = Duration::from_millis(16);
 const ACTIVITY_EMIT_INTERVAL: Duration = Duration::from_secs(1);
+/// The foreground process is probed with a `tcgetpgrp`, which is cheap enough to
+/// ask often; only a pgid that actually moved pays for identifying the process.
+/// So the first look is immediate and the interval backs off from there, resetting
+/// whenever something changes — a shell the user just typed `claude` into is
+/// recognised in a blink, and an untouched tab settles at the slow rate.
+const DETECT_MIN: Duration = Duration::from_millis(250);
 const DETECT_INTERVAL: Duration = Duration::from_secs(5);
 const MOTION_WITHOUT_BUTTON: u8 = 3;
 
@@ -357,9 +363,12 @@ impl TerminalView {
   fn spawn_claude_detector(cx: &mut Context<Self>) {
     cx.spawn(async move |this, cx| {
       let mut probed: Option<i32> = None;
+      let mut delay = Duration::ZERO;
 
       loop {
-        cx.background_executor().timer(DETECT_INTERVAL).await;
+        if !delay.is_zero() {
+          cx.background_executor().timer(delay).await;
+        }
 
         let Ok((alive, probe)) = this.update(cx, |view, _| {
           if view.exited.is_some() {
@@ -383,10 +392,13 @@ impl TerminalView {
         }
 
         if probe == probed {
+          delay = (delay * 2).clamp(DETECT_MIN, DETECT_INTERVAL);
+
           continue;
         }
 
         probed = probe;
+        delay = DETECT_MIN;
 
         let detected = match probe {
           None => false,

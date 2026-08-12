@@ -1,6 +1,6 @@
 use crate::components::{
   BODY, GLYPH, HEADER_HEIGHT, SMALL, TINY, TITLE, TRAFFIC_LIGHTS, attention_badge, claude_icon,
-  icon_button, project_avatar, pulsing_dot,
+  icon_button, project_glyph, pulsing_dot,
 };
 use crate::icons::HelixIcon;
 use crate::theme::Theme;
@@ -78,6 +78,8 @@ impl AgentLine {
 #[derive(Clone)]
 struct ProjectEntry {
   info: ProjectInfo,
+  icon: Option<String>,
+  emoji: Option<String>,
   accent: Option<String>,
 }
 
@@ -108,6 +110,8 @@ fn load_project_entries() -> Vec<ProjectEntry> {
         name: p.label(),
         root: p.path.clone(),
       },
+      icon: p.icon.clone(),
+      emoji: p.emoji.clone(),
       accent: p.accent.clone(),
     })
     .collect()
@@ -744,13 +748,10 @@ impl Render for ProjectPanel {
             .size(px(10.0)),
           ),
         )
-        .child(project_avatar(
-          &entry.info.name,
-          if is_active_project {
-            None
-          } else {
-            entry.accent.as_deref()
-          },
+        .child(project_glyph(
+          entry.icon.as_deref(),
+          entry.emoji.as_deref(),
+          entry.accent.as_deref(),
           &theme,
         ))
         .child(
