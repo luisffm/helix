@@ -501,7 +501,6 @@ impl ProjectPanel {
     ix: usize,
     project_root: &PathBuf,
     row: &WorktreeRow,
-    in_active_project: bool,
     theme: &Theme,
     cx: &mut Context<Self>,
   ) -> gpui::AnyElement {
@@ -568,17 +567,15 @@ impl ProjectPanel {
               .whitespace_nowrap()
               .text_ellipsis()
               .child(label.clone())
-              // A branch is only as prominent as the project holding it. At full
-              // strength it outshouted the muted project above it, which read as
-              // the wrong group being current. It eases across, so a switch reads
-              // as one group handing over to another.
+              // Full strength marks the one branch being worked in. Everything
+              // else recedes, the other branches of the same project included: at
+              // equal strength the list gave no clue which one was current. It
+              // eases across so the handover is not a jump.
               .with_animation(
-                SharedString::from(format!(
-                  "branch-emphasis-{project_ix}-{ix}-{in_active_project}"
-                )),
+                SharedString::from(format!("branch-emphasis-{project_ix}-{ix}-{is_active}")),
                 Animation::new(Duration::from_millis(EMPHASIS_MS)).with_easing(gpui::ease_in_out),
                 move |name, delta| {
-                  let (from, to) = if in_active_project {
+                  let (from, to) = if is_active {
                     (muted, text)
                   } else {
                     (text, muted)
@@ -913,17 +910,12 @@ impl Render for ProjectPanel {
         .pl(px(8.0))
         .border_l_1()
         .border_color(theme.panel_border)
-        .children(worktree_list.iter().enumerate().map(|(ix, row)| {
-          self.worktree_row(
-            project_ix,
-            ix,
-            &project_root,
-            row,
-            is_active_project,
-            &theme,
-            cx,
-          )
-        }));
+        .children(
+          worktree_list
+            .iter()
+            .enumerate()
+            .map(|(ix, row)| self.worktree_row(project_ix, ix, &project_root, row, &theme, cx)),
+        );
 
       tree = tree.child(group.with_animation(
         SharedString::from(format!(
