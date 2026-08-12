@@ -10,8 +10,9 @@ build:
 check:
     cargo check --workspace
 
+# Rebuild and relaunch on every change (assets included: icons and fonts are compiled in)
 dev:
-    cargo run -p helix
+    cargo watch -c -w src -w assets -w Cargo.toml -x 'run --profile fast -p helix'
 
 bundle:
     ./scripts/bundle-mac.sh
