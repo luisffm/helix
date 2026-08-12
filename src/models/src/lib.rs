@@ -13,6 +13,15 @@ pub enum AgentStatus {
   Finished,
 }
 
+/// What an agent wants when it rings the bell: an answer to a question, or just
+/// to be read. Separate from `AgentStatus`, which reports whether the process is
+/// busy rather than whether it is waiting on a person.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum AgentAttention {
+  Answer,
+  Report,
+}
+
 impl AgentStatus {
   pub fn label(&self) -> &'static str {
     match self {

@@ -504,8 +504,14 @@ impl Workspace {
   }
 
   pub fn focus_active(&self, window: &mut Window, cx: &mut Context<Self>) {
-    if let Some(tab) = self.tabs.get(self.active) {
-      window.focus(&tab.focus_handle(cx));
+    let Some(tab) = self.tabs.get(self.active) else {
+      return;
+    };
+
+    window.focus(&tab.focus_handle(cx));
+
+    if let Some(view) = tab.terminal() {
+      view.update(cx, |view, cx| view.clear_attention(cx));
     }
   }
 

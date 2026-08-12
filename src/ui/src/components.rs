@@ -56,6 +56,29 @@ pub fn pulsing_dot(id: impl Into<ElementId>, color: Hsla) -> impl IntoElement {
   })
 }
 
+/// What an agent is waiting for, as a badge beside its mark: a ring with `?`
+/// when it asked something, a solid disc when it only wants reading. Both in the
+/// Claude accent, because both mean the session is holding for a person.
+pub fn attention_badge(kind: helix_models::AgentAttention, theme: &Theme) -> Div {
+  let badge = div()
+    .size(px(11.0))
+    .flex_none()
+    .flex()
+    .items_center()
+    .justify_center()
+    .rounded_full()
+    .bg(theme.claude);
+
+  match kind {
+    helix_models::AgentAttention::Answer => badge
+      .text_size(px(8.0))
+      .font_weight(gpui::FontWeight::BOLD)
+      .text_color(theme.claude_text)
+      .child("?"),
+    helix_models::AgentAttention::Report => badge.size(px(7.0)),
+  }
+}
+
 pub fn claude_icon(color: Hsla, size: f32) -> impl IntoElement {
   div()
     .flex_none()

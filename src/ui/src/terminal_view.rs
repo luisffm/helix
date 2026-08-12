@@ -15,7 +15,7 @@ use gpui::{
   point, prelude::*, px,
 };
 use helix_agents::launch_spec;
-use helix_models::{AgentStatus, SessionId, SessionKind, TitleStatus};
+use helix_models::{AgentAttention, AgentStatus, SessionId, SessionKind, TitleStatus};
 use helix_terminal::mouse::{
   BUTTON_LEFT, BUTTON_MIDDLE, BUTTON_RIGHT, BUTTON_WHEEL_DOWN, BUTTON_WHEEL_UP, MouseReport,
   alternate_scroll, encode as encode_mouse, reports_motion,
@@ -58,6 +58,7 @@ pub struct TerminalView {
   pub title: SharedString,
   title_status: Option<TitleStatus>,
   pub exited: Option<i32>,
+  attention: Option<AgentAttention>,
   pub last_activity: Instant,
   pub started_at: SystemTime,
   backend: Option<Arc<TerminalBackend>>,
@@ -271,6 +272,7 @@ impl TerminalView {
       title: title.into(),
       title_status: None,
       exited: None,
+      attention: None,
       last_activity: Instant::now(),
       started_at: SystemTime::now(),
       backend,
@@ -298,6 +300,43 @@ impl TerminalView {
 
   pub fn status(&self) -> AgentStatus {
     helix_state::activity_status(self.last_activity, self.exited, self.title_status)
+  }
+
+  pub fn attention(&self) -> Option<AgentAttention> {
+    self.attention
+  }
+
+  /// Cleared the moment the user is dealing with the session: a badge that
+  /// outlives the thing it points at trains people to ignore it.
+  pub fn clear_attention(&mut self, cx: &mut Context<Self>) {
+    if self.attention.take().is_some() {
+      cx.emit(TerminalViewEvent::Retitled);
+      cx.notify();
+    }
+  }
+
+  fn visible_lines(&self) -> Option<Vec<String>> {
+    let backend = self.backend.as_ref()?;
+
+    Some(backend.with_term(|term| {
+      let content = term.renderable_content();
+      let mut lines: Vec<String> = Vec::new();
+      let mut current: Option<i32> = None;
+
+      for indexed in content.display_iter {
+        if current != Some(indexed.point.line.0) {
+          current = Some(indexed.point.line.0);
+
+          lines.push(String::new());
+        }
+
+        if let Some(line) = lines.last_mut() {
+          line.push(indexed.cell.c);
+        }
+      }
+
+      lines
+    }))
   }
 
   pub fn shell_pid(&self) -> Option<u32> {
@@ -453,6 +492,22 @@ impl TerminalView {
         cx.emit(TerminalViewEvent::Exited(code));
         cx.notify();
       }
+      AlacEvent::Bell => {
+        // The grid holds the question at the instant the bell rings, so the
+        // reading is taken here rather than re-derived per frame.
+        let asking = self
+          .visible_lines()
+          .is_some_and(|lines| helix_agents::prompt::awaits_answer(&lines));
+
+        self.attention = Some(if asking {
+          AgentAttention::Answer
+        } else {
+          AgentAttention::Report
+        });
+
+        cx.emit(TerminalViewEvent::Retitled);
+        cx.notify();
+      }
       AlacEvent::PtyWrite(text) => self.write_bytes(text.into_bytes()),
       AlacEvent::ClipboardStore(_, text) => {
         cx.write_to_clipboard(ClipboardItem::new_string(text));
@@ -475,6 +530,8 @@ impl TerminalView {
   }
 
   fn on_key_down(&mut self, event: &KeyDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
+    self.clear_attention(cx);
+
     let Some(backend) = self.backend.clone() else {
       return;
     };

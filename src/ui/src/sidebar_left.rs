@@ -1,6 +1,6 @@
 use crate::components::{
-  BODY, GLYPH, HEADER_HEIGHT, SMALL, TINY, TITLE, TRAFFIC_LIGHTS, claude_icon, icon_button,
-  project_avatar, pulsing_dot,
+  BODY, GLYPH, HEADER_HEIGHT, SMALL, TINY, TITLE, TRAFFIC_LIGHTS, attention_badge, claude_icon,
+  icon_button, project_avatar, pulsing_dot,
 };
 use crate::icons::HelixIcon;
 use crate::theme::Theme;
@@ -16,7 +16,7 @@ use helix_commands::{
   OpenProjectSettingsAction, RemoveProjectAction, RemoveWorktreeAction,
 };
 use helix_github::{BranchReview, ReviewState};
-use helix_models::AgentStatus;
+use helix_models::{AgentAttention, AgentStatus};
 use helix_models::{GitSnapshot, ProjectInfo, SessionKind};
 use helix_worktree::{WorktreeRow, canonical_path};
 use std::collections::{HashMap, HashSet};
@@ -56,6 +56,23 @@ fn review_visual(review: Option<&BranchReview>, theme: &Theme) -> (HelixIcon, gp
   };
 
   (icon, color, format!("PR #{} · {state}", review.number))
+}
+
+/// One agent session as a row reports it.
+#[derive(Clone)]
+struct AgentLine {
+  title: String,
+  status: AgentStatus,
+  attention: Option<AgentAttention>,
+}
+
+impl AgentLine {
+  fn working(&self) -> bool {
+    matches!(
+      self.status,
+      AgentStatus::Running | AgentStatus::Waiting | AgentStatus::Thinking
+    )
+  }
 }
 
 #[derive(Clone)]
@@ -307,31 +324,31 @@ impl ProjectPanel {
 impl ProjectPanel {
   /// The one agent line a worktree row gets: a session still working wins over
   /// a finished one, because that is the row's live state.
-  fn agent_summary(&self, canonical: &PathBuf, cx: &App) -> Option<(String, AgentStatus)> {
+  fn agent_summary(&self, canonical: &PathBuf, cx: &App) -> Option<AgentLine> {
     let workspace = self.workspaces.get(canonical)?;
 
-    let sessions: Vec<(String, AgentStatus)> = workspace
+    let sessions: Vec<AgentLine> = workspace
       .read(cx)
       .terminals()
       .filter(|(_, view)| view.read(cx).agent_kind() == SessionKind::ClaudeCode)
       .map(|(_, view)| {
         let view = view.read(cx);
 
-        (
-          helix_agents::strip_spinner(&view.title).to_string(),
-          view.status(),
-        )
+        AgentLine {
+          title: helix_agents::strip_spinner(&view.title).to_string(),
+          status: view.status(),
+          attention: view.attention(),
+        }
       })
       .collect();
 
+    // A session holding for an answer is the one worth surfacing, then one that
+    // is working, then whatever there is.
     sessions
       .iter()
-      .find(|(_, status)| {
-        matches!(
-          status,
-          AgentStatus::Running | AgentStatus::Waiting | AgentStatus::Thinking
-        )
-      })
+      .find(|line| line.attention == Some(AgentAttention::Answer))
+      .or_else(|| sessions.iter().find(|line| line.attention.is_some()))
+      .or_else(|| sessions.iter().find(|line| line.working()))
       .or_else(|| sessions.first())
       .cloned()
   }
@@ -356,21 +373,21 @@ impl ProjectPanel {
       .pl(px(19.0))
       .text_size(px(SMALL));
 
-    if let Some((title, status)) = self.agent_summary(&row.canonical, cx) {
-      let working = matches!(
-        status,
-        AgentStatus::Running | AgentStatus::Waiting | AgentStatus::Thinking
-      );
+    if let Some(agent) = self.agent_summary(&row.canonical, cx) {
+      let working = agent.working();
 
       // Sits with the sunburst it belongs to rather than drifting to the far
-      // edge, where it read as the row's status instead of the session's.
-      let glyph: gpui::AnyElement = if working {
+      // edge, where it read as the row's status instead of the session's. What
+      // the session wants outranks what it is doing.
+      let glyph: gpui::AnyElement = if let Some(kind) = agent.attention {
+        attention_badge(kind, theme).into_any_element()
+      } else if working {
         pulsing_dot(
           SharedString::from(format!("agent-dot-{project_ix}-{ix}")),
           theme.claude,
         )
         .into_any_element()
-      } else if status == AgentStatus::Error {
+      } else if agent.status == AgentStatus::Error {
         div()
           .flex_none()
           .text_color(theme.red)
@@ -393,7 +410,7 @@ impl ProjectPanel {
             div()
               .flex_1()
               .min_w_0()
-              .text_color(if working {
+              .text_color(if working || agent.attention.is_some() {
                 theme.text_muted
               } else {
                 theme.text_dim
@@ -401,7 +418,7 @@ impl ProjectPanel {
               .overflow_hidden()
               .whitespace_nowrap()
               .text_ellipsis()
-              .child(title),
+              .child(agent.title),
           )
           .into_any_element(),
       );
