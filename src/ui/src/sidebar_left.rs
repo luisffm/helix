@@ -1,6 +1,6 @@
 use crate::components::{
-  BODY, GLYPH, HEADER_HEIGHT, SMALL, TINY, TITLE, TRAFFIC_LIGHTS, attention_badge, claude_icon,
-  icon_button, project_glyph, pulsing_dot,
+  BODY, GLYPH, HEADER_HEIGHT, MICRO, SMALL, TINY, TITLE, TRAFFIC_LIGHTS, attention_badge,
+  claude_icon, icon_button, pill, project_glyph, pulsing_dot,
 };
 use crate::icons::HelixIcon;
 use crate::theme::Theme;
@@ -530,8 +530,10 @@ impl ProjectPanel {
               .child(Icon::new(state_icon).size(px(GLYPH))),
           )
           .child(
+            // Shrinks rather than filling, so the tag that follows sits against
+            // the name instead of being pushed to the far edge.
             div()
-              .flex_1()
+              .flex_shrink()
               .min_w_0()
               .text_size(px(BODY))
               .font_weight(if is_active {
@@ -545,6 +547,12 @@ impl ProjectPanel {
               .text_ellipsis()
               .child(label.clone()),
           )
+          .children(wt.is_primary.then(|| {
+            pill("primary", theme.text_muted, theme.active, MICRO)
+              .border_1()
+              .border_color(theme.panel_border)
+          }))
+          .child(div().flex_1())
           .children(self.worktree_diffstat(row, theme)),
       )
       .children(detail);
