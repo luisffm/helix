@@ -1,9 +1,26 @@
+pub mod path;
 pub mod usage;
 
 use std::io::{Result, Write};
 use std::path::Path;
 use std::process::{Command, Output, Stdio};
 use std::time::Duration;
+
+/// Builds a `Command` that can still find tools installed outside the system
+/// directories, which a GUI launch would otherwise be unable to reach.
+pub fn command(program: &str) -> Command {
+  let mut command = Command::new(program);
+
+  if path::resolvable(program) {
+    return command;
+  }
+
+  if let Some(path) = path::inherited() {
+    command.env("PATH", path);
+  }
+
+  command
+}
 
 /// Runs `command` to completion and kills it if it outlives `timeout`, so a
 /// network operation that never answers cannot pin a task forever.

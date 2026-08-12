@@ -1,6 +1,5 @@
 use anyhow::{Result, anyhow};
 use std::path::Path;
-use std::process::Command;
 use std::time::Duration;
 
 pub const TIMEOUT: Duration = Duration::from_secs(60);
@@ -56,7 +55,7 @@ pub fn classify(stderr: &str) -> GhErrorKind {
 }
 
 pub fn run(cwd: &Path, args: &[&str]) -> Result<String> {
-  let mut command = Command::new("gh");
+  let mut command = helix_process::command("gh");
 
   command
     .args(args)
@@ -90,7 +89,7 @@ pub fn run(cwd: &Path, args: &[&str]) -> Result<String> {
 }
 
 pub fn is_authenticated() -> bool {
-  let mut command = Command::new("gh");
+  let mut command = helix_process::command("gh");
 
   command
     .args(["auth", "status"])
@@ -102,7 +101,7 @@ pub fn is_authenticated() -> bool {
 }
 
 pub fn is_installed() -> bool {
-  let mut command = Command::new("gh");
+  let mut command = helix_process::command("gh");
 
   command.arg("--version");
 

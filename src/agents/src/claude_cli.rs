@@ -1,7 +1,7 @@
 use anyhow::{Result, anyhow};
 use std::io::Write;
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::time::Duration;
 
 pub const TIMEOUT: Duration = Duration::from_secs(60);
@@ -36,7 +36,7 @@ pub fn print_mode(prompt: String, model: Option<&str>) -> Spec {
 }
 
 pub fn run(cwd: &Path, spec: &Spec) -> Result<String> {
-  let mut child = Command::new(&spec.program)
+  let mut child = helix_process::command(&spec.program)
     .args(&spec.args)
     .current_dir(cwd)
     .stdin(Stdio::piped())
