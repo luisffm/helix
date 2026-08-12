@@ -1,6 +1,5 @@
 use crate::components::{
-  BODY, HEADER_HEIGHT, META, MICRO, TINY, TITLE, claude_icon, git_branch_icon, icon_button, pill,
-  project_avatar, pulsing_dot, section_label, spinner,
+  BODY, HEADER_HEIGHT, SMALL, TINY, TITLE, claude_icon, icon_button, project_avatar, pulsing_dot,
 };
 use crate::theme::Theme;
 use crate::workspace::Workspace;
@@ -14,7 +13,7 @@ use helix_commands::{
   CopyPathAction, DeleteWorktreeAction, EditWorktreeAction, OpenInFinderAction, OpenInZedAction,
   OpenProjectSettingsAction, RemoveProjectAction, RemoveWorktreeAction,
 };
-use helix_github::{ReviewState, short_ref};
+use helix_github::{BranchReview, CheckStatus};
 use helix_models::AgentStatus;
 use helix_models::{GitSnapshot, ProjectInfo, SessionKind};
 use helix_worktree::{WorktreeRow, canonical_path};
@@ -26,17 +25,17 @@ const COLLAPSE_MS: u64 = 160;
 
 pub enum ProjectPanelEvent {
   OpenProject(PathBuf),
-  /// The sidebar's single `+`: the dialog it opens covers both adding a
-  /// worktree and picking a new workspace.
-  RequestAdd,
 }
 
-fn review_color(state: Option<ReviewState>, theme: &Theme) -> gpui::Hsla {
-  match state {
-    Some(ReviewState::Open) => theme.green,
-    Some(ReviewState::Merged) => theme.purple,
-    Some(ReviewState::Closed) => theme.red,
-    Some(ReviewState::Draft) | None => theme.text_dim,
+/// The branch icon is the only place a worktree's checks are reported, so it
+/// separates a running suite from a finished one rather than folding both into
+/// the "nothing to say" colour the design gives an unreviewed branch.
+fn checks_color(review: Option<&BranchReview>, theme: &Theme) -> gpui::Hsla {
+  match review.map(|review| review.checks) {
+    Some(CheckStatus::Passing) => theme.green,
+    Some(CheckStatus::Failing) => theme.red,
+    Some(CheckStatus::Pending) => theme.yellow,
+    _ => theme.text_muted,
   }
 }
 
@@ -56,7 +55,7 @@ pub struct ProjectPanel {
   observed: HashSet<EntityId>,
   expanded: HashSet<PathBuf>,
   closing: HashSet<PathBuf>,
-  reviews: HashMap<PathBuf, HashMap<String, ReviewState>>,
+  reviews: HashMap<PathBuf, HashMap<String, BranchReview>>,
 }
 
 impl EventEmitter<ProjectPanelEvent> for ProjectPanel {}
@@ -186,7 +185,7 @@ impl ProjectPanel {
   pub fn set_reviews(
     &mut self,
     owner: PathBuf,
-    states: HashMap<String, ReviewState>,
+    states: HashMap<String, BranchReview>,
     cx: &mut Context<Self>,
   ) {
     if self.reviews.get(&owner) == Some(&states) {
@@ -259,111 +258,125 @@ impl ProjectPanel {
 }
 
 impl ProjectPanel {
-  fn agent_rows(
-    &self,
-    project_ix: usize,
-    worktree: &PathBuf,
-    canonical: &PathBuf,
-    theme: &Theme,
-    cx: &mut Context<Self>,
-  ) -> Option<gpui::AnyElement> {
-    let workspace = self.workspaces.get(canonical)?.clone();
-    let is_active_card = *canonical == self.active_canonical;
-    let active_tab = workspace.read(cx).active;
+  /// The one agent line a worktree row gets: a session still working wins over
+  /// a finished one, because that is the row's live state.
+  fn agent_summary(&self, canonical: &PathBuf, cx: &App) -> Option<(String, AgentStatus)> {
+    let workspace = self.workspaces.get(canonical)?;
 
-    let rows: Vec<_> = workspace
+    let sessions: Vec<(String, AgentStatus)> = workspace
       .read(cx)
       .terminals()
       .filter(|(_, view)| view.read(cx).agent_kind() == SessionKind::ClaudeCode)
-      .map(|(tab_ix, view)| {
+      .map(|(_, view)| {
         let view = view.read(cx);
-        let status = view.status();
-        let title = helix_agents::strip_spinner(&view.title).to_string();
-        let ago = view.activity_ago();
-        let is_tab_active = tab_ix == active_tab && is_active_card;
 
-        let status_element: gpui::AnyElement = match status {
-          AgentStatus::Running | AgentStatus::Waiting | AgentStatus::Thinking => pulsing_dot(
-            SharedString::from(format!("agent-dot-{project_ix}-{tab_ix}")),
-            theme.claude,
-          )
-          .into_any_element(),
-          AgentStatus::Error => div()
-            .flex_none()
-            .text_color(theme.red)
-            .child(Icon::new(IconName::CircleX).size(px(12.0)))
-            .into_any_element(),
-          AgentStatus::Idle | AgentStatus::Finished => div()
-            .flex_none()
-            .text_color(theme.green)
-            .child(Icon::new(IconName::Check).size(px(12.0)))
-            .into_any_element(),
-        };
+        (
+          helix_agents::strip_spinner(&view.title).to_string(),
+          view.status(),
+        )
+      })
+      .collect();
 
-        let ws = workspace.clone();
-        let wt_root = worktree.clone();
-        let switch_first = !is_active_card;
+    sessions
+      .iter()
+      .find(|(_, status)| {
+        matches!(
+          status,
+          AgentStatus::Running | AgentStatus::Waiting | AgentStatus::Thinking
+        )
+      })
+      .or_else(|| sessions.first())
+      .cloned()
+  }
 
+  /// The second line of a worktree row: what its agent is doing, or which pull
+  /// request it carries. With neither, the row stays one line — the design never
+  /// writes "no PR".
+  fn worktree_detail(
+    &self,
+    project_ix: usize,
+    ix: usize,
+    row: &WorktreeRow,
+    review: Option<&BranchReview>,
+    theme: &Theme,
+    cx: &App,
+  ) -> Option<gpui::AnyElement> {
+    let line = div()
+      .flex()
+      .items_center()
+      .gap(px(7.0))
+      .mt(px(3.0))
+      .pl(px(19.0))
+      .text_size(px(SMALL));
+
+    if let Some((title, status)) = self.agent_summary(&row.canonical, cx) {
+      let working = matches!(
+        status,
+        AgentStatus::Running | AgentStatus::Waiting | AgentStatus::Thinking
+      );
+
+      let trailing: gpui::AnyElement = if working {
+        pulsing_dot(
+          SharedString::from(format!("agent-dot-{project_ix}-{ix}")),
+          theme.claude,
+        )
+        .into_any_element()
+      } else if status == AgentStatus::Error {
         div()
-          .id(SharedString::from(format!("agent-{project_ix}-{tab_ix}")))
-          .flex()
-          .items_center()
-          .gap(px(7.0))
-          .h(px(27.0))
-          .px(px(6.0))
-          .rounded(px(7.0))
-          .cursor_pointer()
-          .when(is_tab_active, |el| el.bg(theme.hover))
-          .when(!is_tab_active, |el| el.hover(|s| s.bg(theme.hover)))
-          .on_click(cx.listener(move |_, _, window, cx| {
-            if switch_first {
-              cx.emit(ProjectPanelEvent::OpenProject(wt_root.clone()));
-            }
+          .flex_none()
+          .text_color(theme.red)
+          .child(Icon::new(IconName::CircleX).size(px(11.0)))
+          .into_any_element()
+      } else {
+        div()
+          .flex_none()
+          .text_color(theme.green)
+          .child(Icon::new(IconName::Check).size(px(11.0)))
+          .into_any_element()
+      };
 
-            ws.update(cx, |workspace, cx| {
-              workspace.activate(tab_ix, window, cx);
-            });
-          }))
-          .child(claude_icon(theme.claude, 13.0))
+      return Some(
+        line
+          .child(claude_icon(theme.claude, 11.0))
           .child(
             div()
               .flex_1()
               .min_w_0()
-              .text_size(px(BODY))
-              .text_color(theme.text)
+              .text_color(if working {
+                theme.text_muted
+              } else {
+                theme.text_dim
+              })
               .overflow_hidden()
               .whitespace_nowrap()
               .text_ellipsis()
               .child(title),
           )
-          .child(
-            div()
-              .flex_none()
-              .text_size(px(META))
-              .text_color(theme.text_dim)
-              .child(ago),
-          )
-          .child(status_element)
-      })
-      .collect();
-
-    if rows.is_empty() {
-      return None;
+          .child(trailing)
+          .into_any_element(),
+      );
     }
 
+    let reference = review
+      .map(|review| format!("#{}", review.number))
+      .or_else(|| row.pr.as_deref().map(helix_github::short_ref))
+      .or_else(|| row.issue.as_deref().map(helix_github::short_ref))?;
+
     Some(
-      div()
-        .flex()
-        .flex_col()
-        .gap(px(1.0))
-        .py(px(2.0))
-        .pl(px(14.0))
-        .children(rows)
+      line
+        .child(
+          div()
+            .flex_none()
+            .font_family(theme.font_mono.clone())
+            .text_size(px(TINY))
+            .text_color(theme.text_dim)
+            .child(reference),
+        )
         .into_any_element(),
     )
   }
 
-  fn worktree_block(
+  fn worktree_row(
     &self,
     project_ix: usize,
     ix: usize,
@@ -377,170 +390,128 @@ impl ProjectPanel {
       .display_name
       .clone()
       .unwrap_or_else(|| wt.branch.clone());
-    let is_active_card = row.canonical == self.active_canonical;
+    let is_active = row.canonical == self.active_canonical;
 
-    let review = review_color(
-      self
-        .reviews
-        .get(project_root)
-        .and_then(|states| states.get(&wt.branch))
-        .copied(),
-      theme,
-    );
+    let review = self
+      .reviews
+      .get(project_root)
+      .and_then(|found| found.get(&wt.branch));
 
-    let any_running = self
-      .workspaces
-      .get(&row.canonical)
-      .is_some_and(|workspace| {
-        workspace.read(cx).terminals().any(|(_, view)| {
-          let view = view.read(cx);
-
-          view.agent_kind() == SessionKind::ClaudeCode && view.status() == AgentStatus::Running
-        })
-      });
-
-    let branch_icon: gpui::AnyElement = if any_running {
-      spinner(
-        SharedString::from(format!("branch-spin-{project_ix}-{ix}")),
-        theme.claude,
-      )
-      .into_any_element()
-    } else {
-      git_branch_icon(if is_active_card {
-        theme.text_muted
-      } else {
-        review
-      })
-      .into_any_element()
-    };
-
+    let detail = self.worktree_detail(project_ix, ix, row, review, theme, cx);
     let click_root = wt.path.clone();
-    let mut branch_row = div()
+
+    let element = div()
       .id(SharedString::from(format!("branch-{project_ix}-{ix}")))
       .flex()
-      .items_center()
-      .gap(px(7.0))
-      .h(px(28.0))
-      .px(px(6.0))
-      .mt(px(1.0))
-      .rounded(px(7.0))
+      .flex_col()
+      .px(px(8.0))
+      .py(px(7.0))
+      .rounded(px(8.0))
       .cursor_pointer()
-      .when(is_active_card, |el| el.bg(theme.active))
-      .when(!is_active_card, |el| el.hover(|s| s.bg(theme.hover)))
+      .when(is_active, |el| el.bg(theme.active))
+      .when(!is_active, |el| el.hover(|s| s.bg(theme.hover)))
       .on_click(cx.listener(move |_, _, _, cx| {
         cx.emit(ProjectPanelEvent::OpenProject(click_root.clone()));
       }))
-      .child(branch_icon)
       .child(
         div()
-          .flex_1()
-          .min_w_0()
-          .text_size(px(BODY))
-          .font_weight(gpui::FontWeight::MEDIUM)
-          .text_color(if is_active_card {
-            theme.text
-          } else {
-            theme.text_muted
-          })
-          .overflow_hidden()
-          .whitespace_nowrap()
-          .text_ellipsis()
-          .child(label.clone()),
-      );
+          .flex()
+          .items_center()
+          .gap(px(7.0))
+          .child(
+            div()
+              .flex_none()
+              .text_color(checks_color(review, theme))
+              .child(Icon::new(crate::icons::HelixIcon::GitBranch).size(px(12.0))),
+          )
+          .child(
+            div()
+              .flex_1()
+              .min_w_0()
+              .text_size(px(BODY))
+              .font_weight(if is_active {
+                gpui::FontWeight::SEMIBOLD
+              } else {
+                gpui::FontWeight::MEDIUM
+              })
+              .text_color(theme.text)
+              .overflow_hidden()
+              .whitespace_nowrap()
+              .text_ellipsis()
+              .child(label.clone()),
+          ),
+      )
+      .children(detail);
 
     if wt.is_primary {
-      branch_row = branch_row.child(pill("primary", theme.text_muted, theme.active, MICRO));
+      return element.into_any_element();
     }
 
-    for reference in [row.issue.as_ref(), row.pr.as_ref()].into_iter().flatten() {
-      branch_row = branch_row.child(
-        div()
-          .flex_none()
-          .text_size(px(TINY))
-          .text_color(theme.text_dim)
-          .child(short_ref(reference)),
-      );
-    }
+    let owner = project_root.clone();
+    let path = wt.path.clone();
 
-    let branch_element: gpui::AnyElement = if wt.is_primary {
-      branch_row.into_any_element()
-    } else {
-      let owner = project_root.clone();
-      let path = wt.path.clone();
-      let menu_label = label;
+    element
+      .context_menu(move |menu, window, cx| {
+        let owner = owner.clone();
+        let path = path.clone();
 
-      branch_row
-        .context_menu(move |menu, window, cx| {
-          let owner = owner.clone();
-          let path = path.clone();
+        menu
+          .label(label.clone())
+          .menu_with_icon(
+            "Edit Worktree",
+            Icon::new(IconName::Settings2),
+            Box::new(EditWorktreeAction {
+              owner: owner.clone(),
+              path: path.clone(),
+            }),
+          )
+          .separator()
+          .submenu_with_icon(
+            Some(Icon::new(IconName::FolderOpen)),
+            "Open in",
+            window,
+            cx,
+            {
+              let path = path.clone();
 
-          menu
-            .label(menu_label.clone())
-            .menu_with_icon(
-              "Edit Worktree",
-              Icon::new(IconName::Settings2),
-              Box::new(EditWorktreeAction {
-                owner: owner.clone(),
-                path: path.clone(),
-              }),
-            )
-            .separator()
-            .submenu_with_icon(
-              Some(Icon::new(IconName::FolderOpen)),
-              "Open in",
-              window,
-              cx,
-              {
-                let path = path.clone();
-
-                move |menu, _, _| {
-                  menu
-                    .menu_with_icon(
-                      "Zed",
-                      Icon::new(IconName::ExternalLink),
-                      Box::new(OpenInZedAction { path: path.clone() }),
-                    )
-                    .menu_with_icon(
-                      "Finder",
-                      Icon::new(IconName::Folder),
-                      Box::new(OpenInFinderAction { path: path.clone() }),
-                    )
-                }
-              },
-            )
-            .menu_with_icon(
-              "Copy Path",
-              Icon::new(IconName::Copy),
-              Box::new(CopyPathAction { path: path.clone() }),
-            )
-            .separator()
-            .menu_with_icon(
-              "Remove from Sidebar",
-              Icon::new(IconName::CircleX),
-              Box::new(RemoveWorktreeAction {
-                owner: owner.clone(),
-                path: path.clone(),
-              }),
-            )
-            .menu_with_icon(
-              "Delete Worktree",
-              Icon::new(IconName::Delete),
-              Box::new(DeleteWorktreeAction {
-                owner: owner.clone(),
-                path: path.clone(),
-              }),
-            )
-        })
-        .into_any_element()
-    };
-
-    let agents = self.agent_rows(project_ix, &wt.path, &row.canonical, theme, cx);
-
-    div()
-      .flex()
-      .flex_col()
-      .child(branch_element)
-      .children(agents)
+              move |menu, _, _| {
+                menu
+                  .menu_with_icon(
+                    "Zed",
+                    Icon::new(IconName::ExternalLink),
+                    Box::new(OpenInZedAction { path: path.clone() }),
+                  )
+                  .menu_with_icon(
+                    "Finder",
+                    Icon::new(IconName::Folder),
+                    Box::new(OpenInFinderAction { path: path.clone() }),
+                  )
+              }
+            },
+          )
+          .menu_with_icon(
+            "Copy Path",
+            Icon::new(IconName::Copy),
+            Box::new(CopyPathAction { path: path.clone() }),
+          )
+          .separator()
+          .menu_with_icon(
+            "Remove from Sidebar",
+            Icon::new(IconName::CircleX),
+            Box::new(RemoveWorktreeAction {
+              owner: owner.clone(),
+              path: path.clone(),
+            }),
+          )
+          .menu_with_icon(
+            "Delete Worktree",
+            Icon::new(IconName::Delete),
+            Box::new(DeleteWorktreeAction {
+              owner: owner.clone(),
+              path: path.clone(),
+            }),
+          )
+      })
       .into_any_element()
   }
 }
@@ -626,23 +597,7 @@ impl Render for ProjectPanel {
       .overflow_y_scroll()
       .px(px(10.0))
       .pt(px(6.0))
-      .pb(px(10.0))
-      .child(
-        div()
-          .flex()
-          .items_center()
-          .px(px(4.0))
-          .pt(px(8.0))
-          .pb(px(6.0))
-          .child(div().flex_1().child(section_label("PROJECTS", &theme)))
-          .child(
-            icon_button("project-add", IconName::Plus, &theme)
-              .tooltip("Add a project or worktree")
-              .on_click(cx.listener(|_, _, _, cx| {
-                cx.emit(ProjectPanelEvent::RequestAdd);
-              })),
-          ),
-      );
+      .pb(px(10.0));
 
     for (project_ix, entry) in self.projects.iter().enumerate() {
       let project_root = entry.info.root.clone();
@@ -658,28 +613,19 @@ impl Render for ProjectPanel {
       let expanded = self.expanded.contains(&project_root);
       let closing = self.closing.contains(&project_root);
 
-      let avatar = project_avatar(
-        &entry.info.name,
-        if is_active_project {
-          None
-        } else {
-          entry.accent.as_deref()
-        },
-        &theme,
-      );
-
       let toggle_root = project_root.clone();
       // A project whose worktrees have not been described yet has nothing to
-      // expand into, so clicking it opens it rather than toggling an empty card.
+      // expand into, so clicking it opens it rather than toggling an empty group.
       let opens_directly = worktree_list.is_empty();
-      let mut project_row = div()
+
+      let project_header = div()
         .id(SharedString::from(format!("project-row-{project_ix}")))
         .flex()
         .items_center()
         .gap_2()
         .h(px(30.0))
-        .rounded(px(if expanded { 7.0 } else { 8.0 }))
-        .px(px(if expanded { 6.0 } else { 10.0 }))
+        .px(px(8.0))
+        .rounded(px(8.0))
         .cursor_pointer()
         .hover(|s| s.bg(theme.hover))
         .on_click(cx.listener(move |this, _, _, cx| {
@@ -689,37 +635,53 @@ impl Render for ProjectPanel {
             this.toggle_project(toggle_root.clone(), cx);
           }
         }))
-        .child(avatar)
+        .child(
+          div().flex_none().text_color(theme.text_dim).child(
+            Icon::new(if expanded {
+              IconName::ChevronDown
+            } else {
+              IconName::ChevronRight
+            })
+            .size(px(10.0)),
+          ),
+        )
+        .child(project_avatar(
+          &entry.info.name,
+          if is_active_project {
+            None
+          } else {
+            entry.accent.as_deref()
+          },
+          &theme,
+        ))
         .child(
           div()
             .flex_1()
             .min_w_0()
-            .text_size(px(TITLE))
-            .when(expanded, |el| {
+            .text_size(px(BODY))
+            .when(is_active_project, |el| {
               el.font_weight(gpui::FontWeight::SEMIBOLD)
                 .text_color(theme.text)
             })
-            .when(!expanded, |el| el.text_color(theme.text_muted))
+            .when(!is_active_project, |el| el.text_color(theme.text_muted))
             .overflow_hidden()
             .whitespace_nowrap()
             .text_ellipsis()
             .child(entry.info.name.clone()),
-        );
-
-      project_row = project_row.child(
-        div().flex_none().text_color(theme.text_dim).child(
-          Icon::new(if expanded {
-            IconName::ChevronDown
-          } else {
-            IconName::ChevronRight
-          })
-          .size(px(11.0)),
-        ),
-      );
+        )
+        .when(expanded && !worktree_list.is_empty(), |el| {
+          el.child(
+            div()
+              .flex_none()
+              .text_size(px(TINY))
+              .text_color(theme.text_dim)
+              .child(worktree_list.len().to_string()),
+          )
+        });
 
       let ctx_root = project_root.clone();
       let ctx_name = entry.info.name.clone();
-      let project_row = project_row.context_menu(move |menu, window, cx| {
+      let project_header = project_header.context_menu(move |menu, window, cx| {
         let root = ctx_root.clone();
 
         menu
@@ -766,41 +728,32 @@ impl Render for ProjectPanel {
           )
       });
 
-      if !expanded && !closing {
-        tree = tree.child(div().mb(px(1.0)).child(project_row));
+      tree = tree.child(project_header);
 
+      if !expanded && !closing {
         continue;
       }
 
-      let (primary, others): (Vec<_>, Vec<_>) = worktree_list
-        .iter()
-        .enumerate()
-        .partition(|(_, row)| row.entry.is_primary);
+      // The rule down the left is the only thing grouping these rows: no card,
+      // no box.
+      let group = div()
+        .flex()
+        .flex_col()
+        .gap(px(1.0))
+        .mt(px(2.0))
+        .mb(px(4.0))
+        .ml(px(5.0))
+        .pl(px(8.0))
+        .border_l_1()
+        .border_color(theme.panel_border)
+        .children(
+          worktree_list
+            .iter()
+            .enumerate()
+            .map(|(ix, row)| self.worktree_row(project_ix, ix, &project_root, row, &theme, cx)),
+        );
 
-      let mut body = div().flex().flex_col();
-
-      for (ix, row) in primary {
-        body = body.child(self.worktree_block(project_ix, ix, &project_root, row, &theme, cx));
-      }
-
-      if !others.is_empty() {
-        let mut rest = div()
-          .flex()
-          .flex_col()
-          .gap(px(1.0))
-          .pt(px(2.0))
-          .mt(px(2.0))
-          .border_t_1()
-          .border_color(theme.panel_border);
-
-        for (ix, row) in others {
-          rest = rest.child(self.worktree_block(project_ix, ix, &project_root, row, &theme, cx));
-        }
-
-        body = body.child(rest);
-      }
-
-      let body = body.with_animation(
+      tree = tree.child(group.with_animation(
         SharedString::from(format!(
           "worktrees-{project_ix}-{}",
           if expanded { "open" } else { "closed" }
@@ -814,25 +767,7 @@ impl Render for ProjectPanel {
             .relative()
             .top(px(-6.0 * (1.0 - progress)))
         },
-      );
-
-      // The card surface marks which project is being worked in. Another project
-      // can still be expanded to reach its worktrees, but it stays flat.
-      tree = tree.child(
-        div()
-          .mb(px(6.0))
-          .p(px(4.0))
-          .rounded(px(10.0))
-          .border_1()
-          .when(is_active_project, |el| {
-            el.bg(theme.panel).border_color(theme.panel_border)
-          })
-          .when(!is_active_project, |el| {
-            el.border_color(gpui::transparent_black())
-          })
-          .child(project_row)
-          .child(body),
-      );
+      ));
     }
 
     div()

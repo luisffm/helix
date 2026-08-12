@@ -18,6 +18,7 @@ pub enum SearchTarget {
   Tab(usize),
   NewTerminal,
   NewClaude,
+  AddWorktree,
 }
 
 impl SearchTarget {
@@ -26,7 +27,7 @@ impl SearchTarget {
       SearchTarget::Worktree(_) => "WORKTREES",
       SearchTarget::Tab(_) => "OPEN TABS",
       SearchTarget::Project(_) => "PROJECTS",
-      SearchTarget::NewTerminal | SearchTarget::NewClaude => "ACTIONS",
+      SearchTarget::NewTerminal | SearchTarget::NewClaude | SearchTarget::AddWorktree => "ACTIONS",
     }
   }
 
@@ -37,7 +38,7 @@ impl SearchTarget {
       SearchTarget::Worktree(_) => 0,
       SearchTarget::Tab(_) => 1,
       SearchTarget::Project(_) => 2,
-      SearchTarget::NewTerminal | SearchTarget::NewClaude => 3,
+      SearchTarget::NewTerminal | SearchTarget::NewClaude | SearchTarget::AddWorktree => 3,
     }
   }
 
@@ -48,6 +49,7 @@ impl SearchTarget {
       SearchTarget::Project(_) => IconName::Folder,
       SearchTarget::NewTerminal => IconName::SquareTerminal,
       SearchTarget::NewClaude => IconName::Plus,
+      SearchTarget::AddWorktree => IconName::GalleryVerticalEnd,
     }
   }
 

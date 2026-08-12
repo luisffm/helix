@@ -75,16 +75,29 @@ impl HostedReview {
   }
 }
 
-/// The sidebar draws one row per branch, so a listing collapses to the state
-/// of the newest review each branch has.
-pub fn states_by_branch(reviews: Vec<HostedReview>) -> HashMap<String, ReviewState> {
-  let mut states = HashMap::new();
+/// What the sidebar draws for a branch: its number, its state, and how its
+/// checks came out. The branch icon is coloured by the checks alone, so the
+/// rollup travels with the state rather than being fetched again per row.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct BranchReview {
+  pub number: u64,
+  pub state: ReviewState,
+  pub checks: CheckStatus,
+}
+
+/// A listing collapses to the newest review each branch has.
+pub fn by_branch(reviews: Vec<HostedReview>) -> HashMap<String, BranchReview> {
+  let mut found = HashMap::new();
 
   for review in reviews {
-    states.entry(review.head_ref).or_insert(review.state);
+    found.entry(review.head_ref).or_insert(BranchReview {
+      number: review.number,
+      state: review.state,
+      checks: review.checks,
+    });
   }
 
-  states
+  found
 }
 
 #[derive(Deserialize)]
@@ -452,14 +465,26 @@ mod tests {
 
   #[test]
   fn a_branch_keeps_the_first_review_listed() {
-    let states = states_by_branch(vec![
+    let found = by_branch(vec![
       review("feature", ReviewState::Open),
       review("feature", ReviewState::Closed),
       review("other", ReviewState::Merged),
     ]);
 
-    assert_eq!(states.get("feature"), Some(&ReviewState::Open));
-    assert_eq!(states.get("other"), Some(&ReviewState::Merged));
+    assert_eq!(found["feature"].state, ReviewState::Open);
+    assert_eq!(found["other"].state, ReviewState::Merged);
+  }
+
+  #[test]
+  fn a_branch_carries_its_check_rollup() {
+    let mut failing = review("feature", ReviewState::Open);
+    failing.checks = CheckStatus::Failing;
+    failing.number = 214;
+
+    let found = by_branch(vec![failing]);
+
+    assert_eq!(found["feature"].checks, CheckStatus::Failing);
+    assert_eq!(found["feature"].number, 214);
   }
 
   #[test]

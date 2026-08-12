@@ -107,9 +107,6 @@ impl HelixRoot {
         ProjectPanelEvent::OpenProject(path) => {
           this.switch_project(path.clone(), window, cx);
         }
-        ProjectPanelEvent::RequestAdd => {
-          this.open_add_dialog(true, window, cx);
-        }
       },
     )
     .detach();
@@ -435,7 +432,7 @@ impl HelixRoot {
 
           let Ok(reviews) = listed else { return };
 
-          let states = helix_github::review::states_by_branch(reviews);
+          let states = helix_github::review::by_branch(reviews);
 
           root_view.project_panel.update(cx, |panel, cx| {
             panel.set_reviews(owner, states, cx);
@@ -1226,6 +1223,13 @@ impl HelixRoot {
       target: SearchTarget::NewClaude,
     });
 
+    items.push(SearchItem {
+      label: "New Worktree".to_string(),
+      detail: "Branch off, or add a workspace".to_string(),
+      badge: "action".to_string(),
+      target: SearchTarget::AddWorktree,
+    });
+
     let dialog = cx.new(|cx| SearchDialog::new(items, window, cx));
 
     cx.subscribe_in(&dialog, window, |this, _, event, window, cx| match event {
@@ -1270,6 +1274,9 @@ impl HelixRoot {
           workspace.open_tab(SessionKind::ClaudeCode, window, cx);
         });
       }
+      SearchTarget::AddWorktree => {
+        self.open_add_dialog(true, window, cx);
+      }
     }
   }
 
@@ -1305,7 +1312,6 @@ impl HelixRoot {
       .h(px(STATUS_HEIGHT))
       .px(px(14.0))
       .gap(px(14.0))
-      .bg(theme.side)
       .border_t_1()
       .border_color(theme.panel_border)
       .text_size(px(META))
@@ -1400,7 +1406,6 @@ impl HelixRoot {
           .flex_none()
           .h_full()
           .overflow_hidden()
-          .bg(theme.side)
           .border_r_1()
           .border_color(theme.panel_border)
           .child(
@@ -1429,7 +1434,6 @@ impl HelixRoot {
           .flex_none()
           .h_full()
           .overflow_hidden()
-          .bg(theme.side)
           .border_l_1()
           .border_color(theme.panel_border)
           .child(

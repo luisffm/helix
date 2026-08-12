@@ -105,7 +105,7 @@ pub fn project_accent(name: Option<&str>, theme: &Theme) -> (Hsla, Hsla) {
   }
 }
 
-/// The 18px rounded square carrying a project's initial.
+/// The 16px rounded square carrying a project's initial.
 pub fn project_avatar(label: &str, accent: Option<&str>, theme: &Theme) -> Div {
   let (fg, bg) = project_accent(accent, theme);
   let initial = label
@@ -115,14 +115,14 @@ pub fn project_avatar(label: &str, accent: Option<&str>, theme: &Theme) -> Div {
     .unwrap_or_default();
 
   div()
-    .size(px(18.0))
+    .size(px(16.0))
     .flex_none()
     .flex()
     .items_center()
     .justify_center()
-    .rounded(px(5.0))
+    .rounded(px(4.0))
     .bg(bg)
-    .text_size(px(MICRO))
+    .text_size(px(9.5))
     .font_weight(gpui::FontWeight::SEMIBOLD)
     .text_color(fg)
     .child(initial)
