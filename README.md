@@ -18,9 +18,9 @@ arquivo giram em torno dele — numa janela só.
 </div>
 
 <div align="center">
-  <img src="assets/screenshots/overview.png" width="960" alt="Helix — diff e controle de versão" />
+  <img src="assets/screenshots/overview.png" width="960" alt="Helix — projetos, worktrees e sessões de agente" />
   <br />
-  <sub>Dois agentes na <code>main</code>, três worktrees esperando, um diff contra a working tree aberto, e a divisão staged/changes/untracked à direita.</sub>
+  <sub>Quatro projetos e seus worktrees: as linhas somadas de cada um, o ícone da branch na cor do estado do PR, e a sessão de agente de cada worktree com o que ela está esperando — trabalhando, com uma pergunta aberta, ou concluída. À direita, o PR da branch em foco.</sub>
 </div>
 
 ---
@@ -101,13 +101,12 @@ sobre `libgit2`, um PTY de verdade e a CLI do `gh`.
 - Usa seu login shell (fish, zsh, bash…) detectado por `getpwuid`, com fallback para
   `$SHELL`
 
-## Sessões de agente
+### Sessões de agente
 
-<div align="center">
-  <img src="assets/screenshots/claude.png" width="960" alt="Sessão do Claude Code dentro do Helix" />
-  <br />
-  <sub>Claude Code num PTY de verdade, uma aba por sessão, cada uma rastreada na sidebar com seu próprio status e tempo decorrido.</sub>
-</div>
+- Claude Code num PTY de verdade, uma aba por sessão
+- Cada sessão é rastreada na sidebar do seu worktree: o que ela está fazendo, há
+  quanto tempo, e se está esperando alguém — uma pergunta aberta ganha um `?`, uma
+  resposta pronta ganha um marcador, e o badge só sai quando você abre a sessão
 
 ## Build
 
