@@ -171,8 +171,6 @@ pub struct AccountsPage {
   /// Which device's logins are shown; `None` = this device (no passthrough).
   /// Retargeted by the page-header device switcher (helix parity: the
   /// accounts RPCs are relay-forwardable, CLI logins are per-device).
-  target_device: Option<String>,
-  device_menu: popover::Popup<()>,
   snapshot: Loadable<AgentAccountsSnapshot>,
   /// Account id with an in-flight Switch/Forget.
   busy_account: Option<String>,
@@ -197,8 +195,6 @@ impl AccountsPage {
     });
     let mut page = Self {
       state,
-      target_device: None,
-      device_menu: popover::Popup::default(),
       snapshot: Loadable::Idle,
       busy_account: None,
       login: None,
@@ -219,205 +215,8 @@ impl AccountsPage {
     page
   }
 
-  /// Retarget the page at another device's logins: every accounts RPC is
-  /// relay-forwardable, so the whole page — list, usage probes, switch,
-  /// forget, login flows — follows the passthrough.
-  fn close_device_menu(&mut self, cx: &mut Context<Self>) {
-    if self.device_menu.begin_close() {
-      popover::reap_popup(cx, |page: &mut Self| &mut page.device_menu);
-      cx.notify();
-    }
-  }
-
-  fn set_target_device(&mut self, target: Option<String>, cx: &mut Context<Self>) {
-    self.close_device_menu(cx);
-    if self.target_device == target {
-      cx.notify();
-      return;
-    }
-    self.target_device = target;
-    // A different device = a different accounts world: drop in-flight
-    // login/action state and reload with a forced usage probe (the new
-    // device's cache is cold).
-    self.login = None;
-    self.busy_account = None;
-    self.error = None;
-    self.load(force_usage_for(LoadTrigger::Mount), cx);
-  }
-
-  /// Params with the `targetDeviceId` passthrough merged in.
   fn params(&self, value: serde_json::Value) -> serde_json::Value {
-    let mut value = value;
-    if let (Some(target), Some(object)) = (&self.target_device, value.as_object_mut()) {
-      object.insert("targetDeviceId".into(), serde_json::json!(target));
-    }
     value
-  }
-
-  /// The page-header device switcher (helix device-switcher.tsx): a quiet
-  /// trigger — platform glyph · name · presence dot · sort glyph — opening a
-  /// dropdown of every registered device. Selecting one retargets the page.
-  fn render_device_switcher(&mut self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
-    use crate::icons::{self, icon};
-    let (mut devices, local_id) = {
-      let s = self.state.read(cx);
-      (s.devices.clone(), s.local_device_id.clone())
-    };
-    // Stable row order (registration time, then id) — helix's switcher
-    // sorts the same way so rows never reshuffle on heartbeats.
-    devices.sort_by(|a, b| {
-      a.created_at
-        .cmp(&b.created_at)
-        .then_with(|| a.id.cmp(&b.id))
-    });
-    let effective = self.target_device.clone().or_else(|| local_id.clone());
-    let selected = devices
-      .iter()
-      .find(|d| Some(d.id.as_str()) == effective.as_deref())
-      .cloned();
-    let platform_glyph = |platform: &str| match platform {
-      "macos" | "darwin" => icons::LAPTOP,
-      "ios" | "android" => icons::SMARTPHONE,
-      _ => icons::MONITOR,
-    };
-    let trigger_glyph = platform_glyph(
-      selected
-        .as_ref()
-        .map(|d| d.platform.as_str())
-        .unwrap_or("macos"),
-    );
-    let trigger_label: SharedString = selected
-      .as_ref()
-      .map(|d| d.name.clone().into())
-      .unwrap_or_else(|| SharedString::from("This device"));
-    let emerald = theme.success;
-    let open = self.device_menu.is_open();
-
-    let mut trigger = div()
-      .id("accounts-device-switcher")
-      .flex_none()
-      .h(px(28.0))
-      .px(px(8.0))
-      .rounded(px(6.0))
-      .flex()
-      .flex_row()
-      .items_center()
-      .gap(px(6.0))
-      .cursor_pointer()
-      .bg(if open {
-        crate::theme::ink(0.06)
-      } else {
-        gpui::transparent_black()
-      })
-      .when(!open, |el| el.hover(|s| s.bg(crate::theme::ink(0.04))))
-      .on_mouse_down(
-        gpui::MouseButton::Left,
-        cx.listener(|this, _, _, _| this.device_menu.note_trigger_press()),
-      )
-      .on_click(cx.listener(|this, _, _, cx| {
-        // A press that found the menu open closes it (the card's
-        // mouse-down-out already began the close) — never reopen.
-        if this.device_menu.take_press_was_open() {
-          this.close_device_menu(cx);
-        } else {
-          this.device_menu.open(());
-        }
-        cx.notify();
-      }))
-      .child(
-        icon(trigger_glyph)
-          .size(px(16.0))
-          .flex_none()
-          .text_color(theme.text_muted),
-      )
-      .child(
-        div()
-          .min_w_0()
-          .truncate()
-          .text_size(px(12.5))
-          .font_weight(gpui::FontWeight::MEDIUM)
-          .text_color(theme.text)
-          .child(trigger_label),
-      )
-      .child(
-        div()
-          .size(px(6.0))
-          .rounded_full()
-          .flex_none()
-          .bg(if effective == local_id {
-            emerald
-          } else {
-            crate::theme::ink(0.2)
-          }),
-      )
-      .child(
-        icon(icons::SORT_VERTICAL)
-          .size(px(14.0))
-          .flex_none()
-          .text_color(theme.text_muted.opacity(if open { 0.9 } else { 0.4 })),
-      );
-
-    if self.device_menu.get().is_some() {
-      let closing = self.device_menu.closing_since();
-      let menu = popover::popover_card(theme)
-        .w(px(220.0))
-        .on_mouse_down_out(cx.listener(|this, _, _, cx| {
-          this.close_device_menu(cx);
-        }))
-        .flex()
-        .flex_col()
-        .gap(px(2.0))
-        .child(popover::menu_heading(theme, "Devices"))
-        .children(devices.into_iter().enumerate().map(|(ix, d)| {
-          let is_active = Some(d.id.as_str()) == effective.as_deref();
-          let is_local = local_id.as_deref() == Some(d.id.as_str());
-          let glyph = platform_glyph(&d.platform);
-          let name: SharedString = d.name.clone().into();
-          let pick_local = is_local;
-          let pick_id = d.id.clone();
-          popover::menu_row(theme, is_active, format!("accounts-device-row-{ix}"))
-            .id(("accounts-device-row", ix))
-            .on_click(cx.listener(move |this, _, _, cx| {
-              // Local device = no passthrough (calls stay direct).
-              let target = (!pick_local).then(|| pick_id.clone());
-              this.set_target_device(target, cx);
-            }))
-            .child(
-              icon(glyph)
-                .size(px(16.0))
-                .flex_none()
-                .text_color(theme.text_muted),
-            )
-            .child(div().flex_1().min_w_0().truncate().child(name))
-            .when(is_local, |el| {
-              el.child(
-                div()
-                  .flex_none()
-                  .text_size(px(10.5))
-                  .text_color(theme.text_muted.opacity(0.35))
-                  .child(SharedString::from("You")),
-              )
-            })
-            .child(
-              div()
-                .size(px(6.0))
-                .rounded_full()
-                .flex_none()
-                .bg(if is_local {
-                  emerald
-                } else {
-                  crate::theme::ink(0.2)
-                }),
-            )
-        }))
-        .into_any_element();
-      trigger = trigger.child(popover::anchored_menu(
-        "accounts-device-menu",
-        menu,
-        closing,
-      ));
-    }
-    trigger.into_any_element()
   }
 
   fn load(&mut self, force_usage: bool, cx: &mut Context<Self>) {
@@ -1403,7 +1202,6 @@ impl Render for AccountsPage {
                                     )
                                     .child(SharedString::from("Refresh")),
                             )
-                            .child(self.render_device_switcher(&theme, cx)),
                     )
                     .child(widgets::page_subtitle(
                         &theme,

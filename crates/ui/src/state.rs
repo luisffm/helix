@@ -26,7 +26,7 @@ use serde::de::DeserializeOwned;
 
 use helix_doc::{SessionMessageEntry, TranscriptDesync, TranscriptFrame};
 use helix_engine::{Engine, EngineConfig, EngineRuntime, InstanceLock};
-use helix_proto::{Chat, ChatIndicator, Device, EngineInfo, HarnessId, Session, Space};
+use helix_proto::{Chat, ChatIndicator, EngineInfo, HarnessId, Session, Space};
 use helix_rpc::{RpcClient, RpcService, memory_client, methods};
 
 // ---------------------------------------------------------------------------
@@ -136,7 +136,6 @@ pub const PENDING_SEND_TTL_MS: i64 = 30_000;
 /// glue ([`Self::bootstrap`], [`Self::select_chat`]) layers subscriptions on top.
 pub struct AppState {
   pub connection: ConnectionStatus,
-  pub devices: Vec<Device>,
   /// Sorted (see [`sort_spaces`]).
   pub spaces: Vec<Space>,
   /// Sorted (see [`sort_chats`]); includes archived rows — views filter.
@@ -151,10 +150,6 @@ pub struct AppState {
   /// [`Self::selected_space_row`] reads as `None` — healing must NOT
   /// re-select a project underneath it.
   pub no_project: bool,
-  /// The composer's device pick — where project-less sessions run, and the
-  /// device whose projects the project picker lists. `None` falls back to
-  /// the local device.
-  pub selected_device: Option<String>,
   pub selected_chat: Option<String>,
   /// Boot auto-select happened (or a manual selection superseded it).
   pub auto_selected: bool,
@@ -192,13 +187,11 @@ impl AppState {
   pub fn new() -> Self {
     Self {
       connection: ConnectionStatus::Connecting,
-      devices: Vec::new(),
       spaces: Vec::new(),
       chats: Vec::new(),
       sessions: Vec::new(),
       selected_space: None,
       no_project: false,
-      selected_device: None,
       selected_chat: None,
       transcript: Vec::new(),
       echoes: HashMap::new(),
@@ -238,22 +231,20 @@ impl AppState {
     sort_spaces(&mut spaces);
     self.spaces = spaces;
     self.spaces_synced = true;
-    // Heal a vanished selection (project deleted elsewhere): fall back to
-    // the first project; its chats died with it, so a matching chat
-    // selection is healed by the accompanying chats frame (`apply_chats`).
-    // The picker lists projects per-device, so healing prefers one on the
-    // picked device — a global fallback would silently re-aim the canvas
-    // at another machine.
+    // Heal a vanished selection (project deleted): fall back to the first
+    // project; its chats died with it, so a matching chat selection is
+    // healed by the accompanying chats frame (`apply_chats`).
+    let first_space = self.spaces_sorted().first().map(|s| s.id.clone());
     if let Some(selected) = &self.selected_space
       && !self.spaces.iter().any(|s| &s.id == selected)
     {
-      self.selected_space = self.first_space_on_picked_device();
+      self.selected_space = first_space.clone();
     }
     // First frame with no selection yet: pick the first project so the
     // canvas never boots project-less by accident — unless the user
     // deliberately opted out.
     if self.selected_space.is_none() && !self.no_project {
-      self.selected_space = self.first_space_on_picked_device();
+      self.selected_space = first_space;
     }
   }
 
@@ -264,33 +255,6 @@ impl AppState {
     if let Some(chat) = self.chats.iter_mut().find(|c| c.id == chat_id) {
       chat.config = Some(config);
     }
-  }
-
-  pub fn apply_devices(&mut self, mut devices: Vec<Device>) {
-    // Keep the engine's legacy sentinel out of the UI while preserving real
-    // hostnames and user-assigned device names.
-    if let Some(local_id) = self.local_device_id.as_deref()
-      && let Some(device) = devices.iter_mut().find(|device| device.id == local_id)
-      && device.name == "unknown-device"
-    {
-      device.name = "Local".to_string();
-    }
-    self.devices = devices;
-  }
-
-  /// First project on the composer's picked device (falling back through
-  /// the local device, then any project at all — better a cross-device
-  /// project than a surprise project-less canvas). Display order.
-  fn first_space_on_picked_device(&self) -> Option<String> {
-    let device = self
-      .selected_device
-      .as_deref()
-      .or(self.local_device_id.as_deref());
-    let sorted = self.spaces_sorted();
-    device
-      .and_then(|d| sorted.iter().find(|s| s.device_id == d).copied())
-      .or_else(|| sorted.first().copied())
-      .map(|s| s.id.clone())
   }
 
   pub fn apply_transcript(&mut self, entries: Vec<SessionMessageEntry>) {
@@ -419,40 +383,6 @@ impl AppState {
     self.spaces.iter().find(|s| s.id == id)
   }
 
-  /// The device the new-session canvas targets: the picked project's host
-  /// when one is selected, else the explicit device pick, else this device.
-  pub fn effective_device_id(&self) -> Option<String> {
-    if let Some(space) = self.selected_space_row() {
-      return Some(space.device_id.clone());
-    }
-    self
-      .selected_device
-      .clone()
-      .or_else(|| self.local_device_id.clone())
-  }
-
-  /// Pick the composer's target device. Keeps the project pick consistent:
-  /// a project on another device can't survive the switch — fall back to
-  /// the first project on the new device, else "no project".
-  pub fn select_device(&mut self, device_id: String, cx: &mut Context<Self>) {
-    let project_moves = self
-      .selected_space_row()
-      .is_some_and(|s| s.device_id != device_id);
-    if project_moves {
-      let first = self
-        .spaces_sorted()
-        .iter()
-        .find(|s| s.device_id == device_id)
-        .map(|s| s.id.clone());
-      self.no_project = first.is_none();
-      if first.is_some() {
-        self.selected_space = first;
-      }
-    }
-    self.selected_device = Some(device_id);
-    cx.notify();
-  }
-
   pub fn space_row(&self, space_id: &str) -> Option<&Space> {
     self.spaces.iter().find(|s| s.id == space_id)
   }
@@ -479,40 +409,6 @@ impl AppState {
       .collect();
     sort_tabs(&mut chats);
     chats
-  }
-
-  pub fn device_name(&self, device_id: &str) -> Option<&str> {
-    self
-      .devices
-      .iter()
-      .find(|d| d.id == device_id)
-      .map(|d| d.name.as_str())
-  }
-
-  /// Host-presence check: is this device's 15s presence heartbeat fresh?
-  /// Distinguishes "host offline" (its queued work syncs when it returns)
-  /// from slow sync. The local device is trivially online; unknown devices
-  /// get the benefit of the doubt (no evidence — don't cry wolf).
-  pub fn device_online(&self, device_id: &str, now: DateTime<Utc>) -> bool {
-    if self.local_device_id.as_deref() == Some(device_id) {
-      return true;
-    }
-    match self.devices.iter().find(|d| d.id == device_id) {
-      Some(d) => crate::settings::devices::device_online(d.last_seen_at, now),
-      None => true,
-    }
-  }
-
-  /// The "@ device" tag for a space — shared by the space pickers' rows,
-  /// the sidebar filter trigger, and the composer's space chip. Returns
-  /// `(tag, offline)`; staleness renders as a disconnected GLYPH at the
-  /// call sites (user request), never words in the tag.
-  pub fn space_device_tag(&self, space: &Space, now: DateTime<Utc>) -> (String, bool) {
-    let offline = !self.device_online(&space.device_id, now);
-    let device = self
-      .device_name(&space.device_id)
-      .unwrap_or("Unknown device");
-    (format!("@ {device}"), offline)
   }
 
   /// Does the selected space's folder have git? Drives the branch picker and
@@ -578,13 +474,11 @@ impl AppState {
     self.watch_tasks.clear();
     self.transcript_task = None;
     self.connection = ConnectionStatus::Connecting;
-    self.devices.clear();
     self.spaces.clear();
     self.chats.clear();
     self.sessions.clear();
     self.selected_space = None;
     self.no_project = false;
-    self.selected_device = None;
     self.selected_chat = None;
     self.auto_selected = false;
     self.chats_synced = false;
@@ -646,12 +540,6 @@ impl AppState {
       spawn_watch(
         cx,
         handle.clone(),
-        methods::WATCH_DEVICES,
-        AppState::apply_devices,
-      ),
-      spawn_watch(
-        cx,
-        handle.clone(),
         methods::WATCH_SPACES,
         AppState::apply_spaces,
       ),
@@ -691,10 +579,7 @@ impl AppState {
             self.selected_space = Some(space_id);
             self.no_project = false;
           }
-          None => {
-            self.no_project = true;
-            self.selected_device = Some(chat.device_id.clone());
-          }
+          None => self.no_project = true,
         }
       }
       self.mark_chat_seen(id, cx);
@@ -706,16 +591,10 @@ impl AppState {
   }
 
   /// Select a project; the caller (shell) decides which chat to land on.
-  /// `Some` clears a "Don't work in a project" opt-out and re-aims the
-  /// device pick at the project's host; `None` IS that opt-out.
+  /// `Some` clears a "Don't work in a project" opt-out; `None` IS that opt-out.
   pub fn select_space(&mut self, space_id: Option<String>, cx: &mut Context<Self>) {
     match &space_id {
-      Some(id) => {
-        self.no_project = false;
-        if let Some(device) = self.space_row(id).map(|s| s.device_id.clone()) {
-          self.selected_device = Some(device);
-        }
-      }
+      Some(_) => self.no_project = false,
       None => self.no_project = true,
     }
     if self.selected_space == space_id && space_id.is_some() {
@@ -1075,34 +954,6 @@ mod tests {
       status: None,
       continuation_of: None,
     }
-  }
-
-  fn device(id: &str, name: &str) -> Device {
-    Device {
-      id: id.into(),
-      name: name.into(),
-      platform: "macos".into(),
-      last_seen_at: None,
-      created_at: None,
-      version: None,
-    }
-  }
-
-  #[test]
-  fn local_workspace_hides_the_unknown_device_sentinel() {
-    let mut state = AppState::new();
-    state.local_device_id = Some("local".into());
-
-    state.apply_devices(vec![
-      device("local", "unknown-device"),
-      device("remote", "unknown-device"),
-    ]);
-
-    assert_eq!(state.device_name("local"), Some("Local"));
-    assert_eq!(state.device_name("remote"), Some("unknown-device"));
-
-    state.apply_devices(vec![device("local", "José's MacBook Pro")]);
-    assert_eq!(state.device_name("local"), Some("José's MacBook Pro"));
   }
 
   #[test]

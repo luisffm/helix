@@ -957,11 +957,6 @@ pub struct Changes {
   diffs: Vec<CheckoutDiff>,
   started: bool,
   error: Option<SharedString>,
-  /// Device the running watch targets: `None` = the connected engine itself,
-  /// `Some(id)` = a remote chat's host (relay-forwarded). The stream only
-  /// carries the TARGET device's checkouts, so a selection change onto a
-  /// chat hosted elsewhere tears the watch down and re-subscribes.
-  watch_target: Option<String>,
   watch_task: Option<Task<()>>,
   parsed: Option<ParsedDiff>,
   parse_task: Option<Task<()>>,
@@ -1018,7 +1013,6 @@ impl Changes {
       diffs: Vec::new(),
       started: false,
       error: None,
-      watch_target: None,
       watch_task: None,
       parsed: None,
       parse_task: None,
@@ -1077,50 +1071,25 @@ impl Changes {
     gpui::SharedString::from(self.scope.label())
   }
 
-  /// The selected chat's host device when it differs from the connected
-  /// engine's own — diffs are produced where the checkout lives, so a
-  /// remote chat's watch must relay-forward (`targetDeviceId`) to its host.
-  /// Without this the local stream simply never carries the remote checkout
-  /// and the pane sits on "Preparing diff…" forever (user report).
-  fn desired_target(&self, cx: &App) -> Option<String> {
-    let state = self.state.read(cx);
-    let device = state.selected_chat_row()?.device_id.clone();
-    (state.local_device_id.as_deref() != Some(device.as_str())).then_some(device)
-  }
-
   /// Start the `WatchCheckoutDiffs` subscription (idempotent per target).
   /// Retries with a flat 2 s delay if the stream fails or ends; the last
   /// content stays visible under an error banner meanwhile.
   pub fn ensure_watch(&mut self, cx: &mut Context<Self>) {
-    let target = self.desired_target(cx);
-    if self.started && self.watch_target == target {
+    if self.started {
       return;
     }
     let Some(engine) = self.state.read(cx).engine().cloned() else {
       // Engine still booting — retry on the next state change via sync().
       return;
     };
-    // Retarget: the old task (and its stream) drop; rows from the previous
-    // device would resolve against the wrong checkouts, so clear them.
-    if self.started {
-      self.diffs.clear();
-      self.error = None;
-    }
     self.started = true;
-    self.watch_target = target.clone();
-    self.watch_task = Some(Self::spawn_watch(engine, target, cx));
+    self.watch_task = Some(Self::spawn_watch(engine, cx));
   }
 
-  fn spawn_watch(engine: EngineHandle, target: Option<String>, cx: &mut Context<Self>) -> Task<()> {
+  fn spawn_watch(engine: EngineHandle, cx: &mut Context<Self>) -> Task<()> {
     cx.spawn(async move |this, cx| {
       loop {
-        let mut params = serde_json::Map::new();
-        if let Some(target) = &target {
-          params.insert(
-            "targetDeviceId".into(),
-            serde_json::Value::String(target.clone()),
-          );
-        }
+        let params = serde_json::Map::new();
         let subscribed = engine
           .client()
           .subscribe(
@@ -1226,8 +1195,7 @@ impl Changes {
     let Some(cwd) = self.scoped_cwd(cx) else {
       return;
     };
-    let target = self.desired_target(cx);
-    let key = format!("{}:{}", target.as_deref().unwrap_or("local"), cwd);
+    let key = cwd.clone();
     if self.branches_for.as_deref() == Some(key.as_str()) {
       return;
     }
@@ -1238,9 +1206,6 @@ impl Changes {
     self.branches_task = Some(cx.spawn(async move |this, cx| {
       let mut params = serde_json::Map::new();
       params.insert("repoPath".into(), serde_json::Value::String(cwd));
-      if let Some(target) = target {
-        params.insert("targetDeviceId".into(), serde_json::Value::String(target));
-      }
       let result = engine
         .client()
         .call(methods::LIST_BRANCHES, serde_json::Value::Object(params))
@@ -1316,10 +1281,8 @@ impl Changes {
       },
       _ => None,
     };
-    let target = self.desired_target(cx);
     let context = format!(
-      "{}|{}|{}|{}|{}|{}",
-      target.as_deref().unwrap_or("local"),
+      "{}|{}|{}|{}|{}",
       chat_id,
       cwd,
       self.scope.mode(),
@@ -1356,9 +1319,6 @@ impl Changes {
       }
       if let Some(sha) = commit_sha {
         params.insert("commitSha".into(), serde_json::Value::String(sha));
-      }
-      if let Some(target) = target {
-        params.insert("targetDeviceId".into(), serde_json::Value::String(target));
       }
       let result = engine
         .client()
@@ -1862,7 +1822,6 @@ impl Changes {
 
     let active = self.active_diff(cx);
     let engine = self.state.read(cx).engine().cloned();
-    let target = self.desired_target(cx);
     let chat_id = self
       .state
       .read(cx)
@@ -1887,13 +1846,10 @@ impl Changes {
           commit_sha,
           diff_checksum: diff.checksum,
         };
-        let mut params = serde_json::to_value(request)
+        let params = serde_json::to_value(request)
           .ok()
           .and_then(|value| value.as_object().cloned())
           .unwrap_or_default();
-        if let Some(target) = target {
-          params.insert("targetDeviceId".into(), serde_json::Value::String(target));
-        }
         let response = engine
           .client()
           .call(
@@ -2891,27 +2847,24 @@ impl Render for Changes {
     // GetCheckoutDiff (a still-running daemon after an app update, or a
     // remote device behind on releases) — say that instead of leaking
     // the raw RPC error (user report).
-    let scoped_notice: Option<(SharedString, bool)> = (!no_chat
-            && scope != DiffScope::WorkingTree)
-            .then(|| self.scoped_error.clone())
-            .flatten()
-            .map(|message| {
-                if message.contains("no turn recorded") {
-                    (
-                        SharedString::from("No turn recorded yet — send a message first"),
-                        false,
-                    )
-                } else if message.contains("unknown method") {
-                    (
-                        SharedString::from(
-                            "This chat's device is running an older Helix — update it to view branch and turn diffs",
-                        ),
-                        false,
-                    )
-                } else {
-                    (message, true)
-                }
-            });
+    let scoped_notice: Option<(SharedString, bool)> = (!no_chat && scope != DiffScope::WorkingTree)
+      .then(|| self.scoped_error.clone())
+      .flatten()
+      .map(|message| {
+        if message.contains("no turn recorded") {
+          (
+            SharedString::from("No turn recorded yet — send a message first"),
+            false,
+          )
+        } else if message.contains("unknown method") {
+          (
+            SharedString::from("This build can't produce branch and turn diffs"),
+            false,
+          )
+        } else {
+          (message, true)
+        }
+      });
 
     let content: AnyElement = if let Some((message, warn)) = scoped_notice {
       div()

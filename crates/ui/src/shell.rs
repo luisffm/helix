@@ -33,7 +33,6 @@ use crate::rail;
 use crate::settings::accounts::AccountsPage;
 use crate::settings::appearance::AppearancePage;
 use crate::settings::archived::ArchivedPage;
-use crate::settings::devices::DevicesPage;
 use crate::settings::harnesses::HarnessesPage;
 use crate::settings::notifications::{NotificationsEvent, NotificationsPage};
 use crate::settings::shortcuts::{ShortcutsEvent, ShortcutsPage};
@@ -53,7 +52,13 @@ use spaces::{AddSpaceFlow, RenameSpaceDialog};
 
 actions!(
   shell,
-  [ToggleSidebar, ToggleChanges, AddSpacePalette, NewSession]
+  [
+    ToggleSidebar,
+    ToggleChanges,
+    AddSpacePalette,
+    NewSession,
+    OpenSettings
+  ]
 );
 
 // ---------------------------------------------------------------------------
@@ -141,13 +146,15 @@ pub fn apply_keymap(cx: &mut App, keymap: &KeymapConfig) {
     // Fixed: ⌘K summons the add-space palette (the ⌘K chip in its search
     // bar); pressing it again dismisses.
     KeyBinding::new(&platform_combo("mod-k"), AddSpacePalette, None),
+    // Fixed: ⌘, opens Settings, the platform convention — and, with the
+    // account footer gone, the only way in.
+    KeyBinding::new(&platform_combo("mod-,"), OpenSettings, None),
   ]);
 }
 
 /// The settings sections (feature-inventory §1.5 routes).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SettingsSection {
-  Devices,
   /// Which harnesses the composer offers (enable/disable toggles).
   Harnesses,
   /// Per-provider CLI accounts (login, usage) — labeled "Accounts".
@@ -159,8 +166,7 @@ pub enum SettingsSection {
 }
 
 impl SettingsSection {
-  pub const ALL: [SettingsSection; 7] = [
-    SettingsSection::Devices,
+  pub const ALL: [SettingsSection; 6] = [
     SettingsSection::Harnesses,
     SettingsSection::Agents,
     SettingsSection::Appearance,
@@ -173,7 +179,6 @@ impl SettingsSection {
   /// `settingsTitle` — the same strings in both places).
   pub fn label(self) -> &'static str {
     match self {
-      SettingsSection::Devices => "Devices",
       SettingsSection::Harnesses => "Agents",
       SettingsSection::Agents => "Accounts",
       SettingsSection::Appearance => "Appearance",
@@ -528,7 +533,6 @@ pub struct Shell {
   route: Route,
   /// Route history behind the titlebar back/forward buttons (§ nav history).
   nav: NavHistory,
-  devices_page: Option<Entity<DevicesPage>>,
   archived_page: Option<Entity<ArchivedPage>>,
   appearance_page: Option<Entity<AppearancePage>>,
   notifications_page: Option<Entity<NotificationsPage>>,
@@ -563,7 +567,6 @@ pub struct Shell {
   /// Last seen session status per chat — the chime trigger compares against
   /// it (a row's FIRST appearance never chimes, so boot stays silent).
   sound_prev: std::collections::HashMap<String, helix_proto::SessionStatus>,
-  user_menu: popover::Popup<()>,
   /// Inline sidebar error strip (mutation failures); click dismisses.
   sidebar_notice: Option<SharedString>,
   mutate_task: Option<Task<()>>,
@@ -682,7 +685,7 @@ impl Shell {
     // straight into a settings section — these pages have no deep link and
     // synthetic input can't reach them on headless compositors.
     let route = match std::env::var("HELIX_OPEN_ROUTE").ok().as_deref() {
-      Some("settings") | Some("settings/devices") => Route::Settings(SettingsSection::Devices),
+      Some("settings") => Route::Settings(SettingsSection::Harnesses),
       Some("settings/agents") => Route::Settings(SettingsSection::Agents),
       Some("settings/harnesses") => Route::Settings(SettingsSection::Harnesses),
       Some("settings/appearance") => Route::Settings(SettingsSection::Appearance),
@@ -726,7 +729,6 @@ impl Shell {
       right_tab_scroll: gpui::ScrollHandle::new(),
       route,
       nav,
-      devices_page: None,
       archived_page: None,
       appearance_page: None,
       notifications_page: None,
@@ -747,7 +749,6 @@ impl Shell {
       sidebar_scroll: gpui::ScrollHandle::new(),
       space_boot_applied: false,
       sound_prev: std::collections::HashMap::new(),
-      user_menu: popover::Popup::default(),
       sidebar_notice: None,
       mutate_task: None,
       boot,
@@ -786,7 +787,7 @@ impl Shell {
 
   fn on_state_changed(&mut self, state: &Entity<AppState>, cx: &mut Context<Self>) {
     // Capture knob: the add-space palette needs only the device registry.
-    if self.debug_dialog.as_deref() == Some("add-space") && !state.read(cx).devices.is_empty() {
+    if self.debug_dialog.as_deref() == Some("add-space") && !state.read(cx).spaces.is_empty() {
       self.debug_dialog = None;
       self.open_add_space(cx);
     }
@@ -1417,14 +1418,6 @@ impl Shell {
 
   // ---- routes / settings ----
 
-  /// Close the user menu through the exit animation (no-op when closed).
-  fn close_user_menu(&mut self, cx: &mut Context<Self>) {
-    if self.user_menu.begin_close() {
-      popover::reap_popup(cx, |shell: &mut Self| &mut shell.user_menu);
-      cx.notify();
-    }
-  }
-
   /// Close the session-row context menu through the exit animation.
   fn close_chat_menu(&mut self, cx: &mut Context<Self>) {
     if self.chat_menu.begin_close() {
@@ -1441,7 +1434,6 @@ impl Shell {
     }
     self.route = Route::Settings(section);
     self.nav.push(NavEntry::Settings(section));
-    self.close_user_menu(cx);
     self.close_chat_menu(cx);
     cx.notify();
   }
@@ -1482,7 +1474,6 @@ impl Shell {
         self.route = Route::Settings(section);
       }
     }
-    self.close_user_menu(cx);
     self.close_chat_menu(cx);
     cx.notify();
   }
@@ -1490,16 +1481,6 @@ impl Shell {
   /// Lazily create the entity for a settings section and return it renderable.
   fn settings_outlet(&mut self, section: SettingsSection, cx: &mut Context<Self>) -> AnyElement {
     match section {
-      SettingsSection::Devices => {
-        if self.devices_page.is_none() {
-          let state = self.state.clone();
-          self.devices_page = Some(cx.new(|cx| DevicesPage::new(state, cx)));
-        }
-        match &self.devices_page {
-          Some(page) => page.clone().into_any_element(),
-          None => Empty.into_any_element(),
-        }
-      }
       SettingsSection::Harnesses => {
         if self.harnesses_page.is_none() {
           let state = self.state.clone();
@@ -2001,7 +1982,6 @@ impl Shell {
     cx: &mut Context<Self>,
   ) -> AnyElement {
     let section_icon = |item: SettingsSection| match item {
-      SettingsSection::Devices => icons::MONITOR,
       SettingsSection::Harnesses => icons::WIDGET,
       SettingsSection::Agents => icons::KEY_MINIMALISTIC,
       SettingsSection::Appearance => icons::TUNING,
@@ -2452,14 +2432,6 @@ impl Shell {
     // t3code's archived accordion, below the active list.
     let archived_section = self.render_archived_section(theme, cx);
 
-    let user_menu = self.render_user_menu(
-      SharedString::from("Local only"),
-      None,
-      SharedString::from("Stored on this device"),
-      theme,
-      cx,
-    );
-
     // The space filter lives ABOVE the scroll region (fixed) so its
     // dropdown can float without being clipped by the list's overflow.
     let filter_row = self.render_spaces_filter(theme, cx);
@@ -2542,154 +2514,7 @@ impl Shell {
                         .child(notice),
                 )
             })
-            .child(div().p(px(Theme::SPACE_SM)).flex_none().child(user_menu))
             .into_any_element()
-  }
-
-  /// Scope-aware sidebar identity and account menu. Local runtimes advertise
-  /// their storage boundary and offer sync; synced runtimes offer sign-out.
-  fn render_user_menu(
-    &mut self,
-    user_line: SharedString,
-    trigger_subline: Option<SharedString>,
-    menu_identity: SharedString,
-    theme: &Theme,
-    cx: &mut Context<Self>,
-  ) -> AnyElement {
-    let open = self.user_menu.is_open();
-    // Bottom-of-sidebar identity: avatar circle + scope/account label and
-    // its secondary status line.
-    let initial: SharedString = user_line
-      .chars()
-      .next()
-      .map(|c| c.to_uppercase().to_string())
-      .unwrap_or_else(|| "?".into())
-      .into();
-    let mut trigger = div()
-            .id("user-menu")
-            .flex_none()
-            .rounded(px(8.0))
-            .px(px(Theme::SPACE_SM))
-            .py(px(Theme::SPACE_SM))
-            .flex()
-            .flex_row()
-            .items_center()
-            .gap(px(10.0))
-            .cursor_pointer()
-            // user-menu.tsx trigger: hover `bg-white/[0.04]`, open state
-            // (`data-[state=open]`) the slightly stronger `bg-white/[0.06]`;
-            // the hover wash fades over `transition-colors`.
-            .bg(if open {
-                theme.glass_hover()
-            } else {
-                motion::hover_blend(
-                    "user-menu-trigger",
-                    theme.glass_hover().opacity(0.0),
-                    theme.glass_hover().opacity(0.8),
-                )
-            })
-            .on_hover(motion::hover_listener("user-menu-trigger"))
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(|this, _, _, _| this.user_menu.note_trigger_press()),
-            )
-            .on_click(cx.listener(|this, _, _, cx| {
-                // A press that found the menu open closes it (the card's
-                // mouse-down-out already began the close) — never reopen.
-                if this.user_menu.take_press_was_open() {
-                    this.close_user_menu(cx);
-                } else {
-                    this.user_menu.open(());
-                }
-                cx.notify();
-            }))
-            .child(
-                // Avatar: white circle, initial in near-black (helix user-menu.tsx).
-                div()
-                    .size(px(28.0))
-                    .flex_none()
-                    .rounded_full()
-                    .bg(theme.text)
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .text_size(px(12.0))
-                    .font_weight(gpui::FontWeight::SEMIBOLD)
-                    .text_color(theme.bg)
-                    .child(initial),
-            )
-            .child(
-                // Name with an optional status line underneath — no chip on the right.
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .flex()
-                    .flex_col()
-                    .child(
-                        div()
-                            .text_size(px(13.0))
-                            .line_height(px(17.0))
-                            .font_weight(gpui::FontWeight::MEDIUM)
-                            .text_color(theme.text)
-                            .truncate()
-                            .child(user_line.clone()),
-                    )
-                    .when_some(trigger_subline, |identity, subline| {
-                        identity.child(
-                            div()
-                                .text_size(px(11.0))
-                                .line_height(px(15.0))
-                                .text_color(theme.text_muted)
-                                .child(subline),
-                        )
-                    }),
-            );
-    if self.user_menu.get().is_some() {
-      let closing = self.user_menu.closing_since();
-      // user-menu.tsx content: `w-[--radix-dropdown-menu-trigger-width]`
-      // (exactly as wide as the trigger row — sidebar minus its p-2
-      // gutters), `flex-col gap-0.5`, then: one small muted email line
-      // (`px-2 pb-1 pt-1.5 text-[11px] text-muted-foreground/70`),
-      // the action selected by the runtime scope, then "Settings".
-      let menu = popover::popover_card(theme)
-        .w(px(self.settings.sidebar_width - 2.0 * Theme::SPACE_SM))
-        .on_mouse_down_out(cx.listener(|this, _, _, cx| {
-          this.close_user_menu(cx);
-        }))
-        .flex()
-        .flex_col()
-        .gap(px(2.0))
-        .child(
-          div()
-            .px(px(8.0))
-            .pt(px(6.0))
-            .pb(px(4.0))
-            .text_size(px(11.0))
-            .text_color(theme.text_muted.opacity(0.7))
-            .truncate()
-            .child(menu_identity),
-        )
-        .child(
-          popover::menu_row(theme, false, "user-menu-settings")
-            .id("user-menu-settings")
-            .on_click(
-              cx.listener(|this, _, _, cx| this.open_settings(SettingsSection::Devices, cx)),
-            )
-            .child(
-              icon(icons::SETTINGS_MINIMALISTIC)
-                .size(px(16.0))
-                .text_color(theme.text_muted),
-            )
-            .child(SharedString::from("Settings")),
-        )
-        .into_any_element();
-      trigger = trigger.child(popover::anchored_menu_above(
-        "user-menu-popover",
-        menu,
-        closing,
-      ));
-    }
-    trigger.into_any_element()
   }
 
   /// Floating layers owned by the shell: context menus, edit dialogs, and
@@ -2964,9 +2789,7 @@ impl Shell {
                 .mt(px(6.0))
                 .text_size(px(13.0))
                 .text_color(theme.text_muted.opacity(0.7))
-                .child(SharedString::from(
-                  "A project is a folder on one of your devices.",
-                )),
+                .child(SharedString::from("A project is a folder on this machine.")),
             )
             .child(
               popover::btn_primary(&theme_owned, "Add a project")
@@ -4320,6 +4143,12 @@ impl Render for Shell {
                 }
             }))
             .on_action(cx.listener(|this, _: &ToggleSidebar, _, cx| this.toggle_sidebar(cx)))
+            .on_action(cx.listener(|this, _: &OpenSettings, _, cx| {
+                match this.route {
+                    Route::Settings(_) => this.close_settings(cx),
+                    Route::Chat => this.open_settings(SettingsSection::Harnesses, cx),
+                }
+            }))
             // New session works from anywhere — `open_new_session` routes back
             // to chat itself, so Settings is not a dead spot.
             .on_action(cx.listener(|this, _: &NewSession, _, cx| this.open_new_session(cx)))
@@ -4714,7 +4543,7 @@ mod tests {
   fn nav_push_then_back_and_forward() {
     let mut nav = NavHistory::new(chat("a"));
     nav.push(chat("b"));
-    nav.push(NavEntry::Settings(SettingsSection::Devices));
+    nav.push(NavEntry::Settings(SettingsSection::Harnesses));
     assert!(nav.can_back());
     assert!(!nav.can_forward());
 
@@ -4733,7 +4562,7 @@ mod tests {
     assert_eq!(nav.forward(), Some(chat("b")));
     assert_eq!(
       nav.forward(),
-      Some(NavEntry::Settings(SettingsSection::Devices))
+      Some(NavEntry::Settings(SettingsSection::Harnesses))
     );
     assert!(!nav.can_forward());
     assert_eq!(nav.forward(), None);
@@ -4782,12 +4611,12 @@ mod tests {
   #[test]
   fn nav_settings_sections_are_distinct_entries() {
     let mut nav = NavHistory::new(chat("a"));
-    nav.push(NavEntry::Settings(SettingsSection::Devices));
+    nav.push(NavEntry::Settings(SettingsSection::Harnesses));
     nav.push(NavEntry::Settings(SettingsSection::Shortcuts));
     assert_eq!(nav.len(), 3, "section changes are navigations");
     assert_eq!(
       nav.back(),
-      Some(NavEntry::Settings(SettingsSection::Devices))
+      Some(NavEntry::Settings(SettingsSection::Harnesses))
     );
     assert_eq!(nav.back(), Some(chat("a")));
   }

@@ -11,7 +11,7 @@
 use super::*;
 use crate::pickers::{breadcrumbs, browser_rows, completion_prefix_len, parent_path};
 use gpui::FocusHandle;
-use helix_proto::{ChatIndicator, Device, FolderListing, Space};
+use helix_proto::{ChatIndicator, FolderListing, Space};
 
 /// The space-filter dropdown, `Some` while open. The same searchable-menu
 /// recipe as the composer's ref picker: filter input on top
@@ -41,8 +41,6 @@ pub(super) enum SpacesMenuRow {
 /// kbd-hint footer. One surface — picking a device in the rail rebrowses in
 /// place, no step wizard.
 pub(super) struct AddSpaceFlow {
-  /// The device currently browsed (the highlighted rail row).
-  device: Option<Device>,
   /// Filter input; Enter descends into the highlighted folder. Carries the
   /// tab-completion ghost (the faint suffix ⇥ accepts), and a trailing `/`
   /// on a folder-naming query descends immediately.
@@ -275,19 +273,11 @@ impl Shell {
     cx: &mut Context<Self>,
   ) -> AnyElement {
     let filter = self.settings.space_filter.clone();
-    // Name + the dropdown rows' "@ device" tag on the trigger itself, so
-    // the filtered space's host reads without opening the picker.
-    let (label, device_tag): (SharedString, Option<(SharedString, bool)>) = {
+    let label: SharedString = {
       let state = self.state.read(cx);
       match filter.as_deref().and_then(|id| state.space_row(id)) {
-        Some(space) => {
-          let (tag, offline) = state.space_device_tag(space, Utc::now());
-          (
-            space.display_name().to_string().into(),
-            Some((tag.into(), offline)),
-          )
-        }
-        None => (SharedString::from("All projects"), None),
+        Some(space) => space.display_name().to_string().into(),
+        None => SharedString::from("All projects"),
       }
     };
     let open = self.spaces_menu.is_open();
@@ -352,25 +342,6 @@ impl Shell {
                     .items_center()
                     .gap(px(6.0))
                     .child(div().min_w_0().truncate().child(label))
-                    .when_some(device_tag, |el, (tag, offline)| {
-                        el.child(
-                            div()
-                                .flex_none()
-                                .text_size(px(10.0))
-                                .font_weight(gpui::FontWeight::NORMAL)
-                                .text_color(theme.text_muted.opacity(0.45))
-                                .child(tag),
-                        )
-                        // Disconnected glyph, not the word (user request).
-                        .when(offline, |el| {
-                            el.child(
-                                icon(icons::WIFI_OFF)
-                                    .size(px(12.0))
-                                    .flex_none()
-                                    .text_color(theme.warning.opacity(0.8)),
-                            )
-                        })
-                    }),
             )
             .child(
                 icon(icons::ALT_ARROW_DOWN)
@@ -447,9 +418,6 @@ impl Shell {
     };
     let rows = self.spaces_menu_rows(cx);
     let filter = self.settings.space_filter.clone();
-    let now = Utc::now();
-    // (name, device tag) per space row — presence reuses the session
-    // rows' heartbeat signal.
     let details: Vec<(SpacesMenuRow, SharedString, Option<SharedString>, bool)> = {
       let state = self.state.read(cx);
       rows
@@ -457,15 +425,12 @@ impl Shell {
         .map(|row| match row {
           SpacesMenuRow::All => (row.clone(), SharedString::from("All projects"), None, false),
           SpacesMenuRow::Space(id) => match state.space_row(id) {
-            Some(space) => {
-              let (tag, offline) = state.space_device_tag(space, now);
-              (
-                row.clone(),
-                space.display_name().to_string().into(),
-                Some(tag.into()),
-                offline,
-              )
-            }
+            Some(space) => (
+              row.clone(),
+              space.display_name().to_string().into(),
+              None,
+              false,
+            ),
             None => (row.clone(), SharedString::from("?"), None, false),
           },
           SpacesMenuRow::AddSpace => (row.clone(), SharedString::from("New project…"), None, false),
@@ -591,15 +556,11 @@ impl Shell {
           // Line 1 is "project @ device" (t3code's project row);
           // project-less sessions read as their home-dir cwd `~`.
           let space = state.space_for_chat(chat);
-          let mut folder = match (space, chat.space_id.as_deref()) {
+          let folder = match (space, chat.space_id.as_deref()) {
             (Some(space), _) => space.display_name().to_string(),
             (None, None) => "~".to_string(),
             (None, Some(_)) => "?".to_string(),
           };
-          // Unknown device → no fragment, same as the archived list.
-          if let Some(device) = state.device_name(&chat.device_id) {
-            folder = format!("{folder} @ {device}");
-          }
           // The branch shows whenever the engine has stamped one —
           // main-checkout sessions included, not just worktrees.
           let branch = chat
@@ -886,14 +847,6 @@ impl Shell {
   // ---- add-space flow (the ⌘K palette) ----
 
   pub(super) fn open_add_space(&mut self, cx: &mut Context<Self>) {
-    let devices: Vec<Device> = self.state.read(cx).devices.clone();
-    let local = self.state.read(cx).local_device_id.clone();
-    // Land on this device's tab (else the first registered device).
-    let device = devices
-      .iter()
-      .find(|d| local.as_deref() == Some(d.id.as_str()))
-      .or_else(|| devices.first())
-      .cloned();
     // "PaletteSearch" context: navigation keys stay unbound so ↑↓/←/→/⏎
     // bubble to the palette frame (`add_space_key`) instead of moving the
     // text caret — Enter and ⌘Enter are both handled there.
@@ -913,9 +866,7 @@ impl Shell {
         cx.notify();
       }
     });
-    let has_device = device.is_some();
     self.add_space = Some(AddSpaceFlow {
-      device,
       search,
       browser: Loadable::Idle,
       browser_path: None,
@@ -931,29 +882,6 @@ impl Shell {
       submit_task: None,
       _search_events: search_events,
     });
-    if has_device {
-      self.load_space_folders(None, cx);
-    }
-    cx.notify();
-  }
-
-  /// Devices-rail click: rebrowse the same palette on another device.
-  fn add_space_pick_device(&mut self, device: Device, cx: &mut Context<Self>) {
-    let Some(flow) = self.add_space.as_mut() else {
-      return;
-    };
-    if flow.device.as_ref().is_some_and(|d| d.id == device.id) {
-      return;
-    }
-    flow.device = Some(device);
-    flow.browser = Loadable::Idle;
-    flow.browser_path = None;
-    flow.home = None;
-    flow.browser_repo = false;
-    flow.active = 0;
-    flow.error = None;
-    let search = flow.search.clone();
-    search.update(cx, |input, cx| input.set_text("", cx));
     self.load_space_folders(None, cx);
     cx.notify();
   }
@@ -1084,16 +1012,14 @@ impl Shell {
     self.load_space_folders(Some(full), cx);
   }
 
-  /// ListFolders on the flow's device (relay-forwarded when remote).
+  /// ListFolders under this machine's home.
   pub(super) fn load_space_folders(&mut self, path: Option<String>, cx: &mut Context<Self>) {
     let Some(engine) = self.state.read(cx).engine().cloned() else {
       return;
     };
-    let local = self.state.read(cx).local_device_id.clone();
     let Some(flow) = self.add_space.as_mut() else {
       return;
     };
-    let device_id = flow.device.as_ref().map(|d| d.id.clone());
     let went_home = path.is_none();
     flow.browser_path = path.clone();
     flow.browser = Loadable::Loading;
@@ -1103,15 +1029,6 @@ impl Shell {
       let mut params = serde_json::Map::new();
       if let Some(p) = &path {
         params.insert("path".into(), serde_json::Value::String(p.clone()));
-      }
-      // Only target remote devices — local calls skip the relay.
-      if let (Some(target), local) = (&device_id, &local)
-        && local.as_deref() != Some(target.as_str())
-      {
-        params.insert(
-          "targetDeviceId".into(),
-          serde_json::Value::String(target.clone()),
-        );
       }
       let result = engine
         .client()
@@ -1153,23 +1070,26 @@ impl Shell {
     if flow.submit_busy {
       return;
     }
-    let Some(device) = flow.device.clone() else {
-      return;
-    };
     let Some(listing) = flow.browser.ready() else {
       return;
     };
     let path = listing.path.clone();
     let git_detected = flow.browser_repo;
-    // Same (device, folder) already has a space → just switch to it. The
-    // engine dedupes this case too (a createSpace for a duplicate pair
-    // no-ops), so creating would leave the minted id dangling.
+    let device_id = self
+      .state
+      .read(cx)
+      .local_device_id
+      .clone()
+      .unwrap_or_else(|| "local".to_string());
+    // The folder already has a space → just switch to it. The engine
+    // dedupes this case too (a createSpace for a duplicate no-ops), so
+    // creating would leave the minted id dangling.
     if let Some(existing) = self
       .state
       .read(cx)
       .spaces
       .iter()
-      .find(|s| s.device_id == device.id && s.path == path)
+      .find(|s| s.path == path)
       .map(|s| s.id.clone())
     {
       self.add_space = None;
@@ -1186,7 +1106,7 @@ impl Shell {
     // by id (apply_spaces re-sorts; same-id upsert is idempotent).
     let space = Space {
       id: space_id.clone(),
-      device_id: device.id.clone(),
+      device_id: device_id.clone(),
       path: path.clone(),
       name: None,
       git_detected,
@@ -1203,7 +1123,7 @@ impl Shell {
     let params = serde_json::json!({
         "op": "createSpace",
         "spaceId": space_id,
-        "deviceId": device.id,
+        "deviceId": device_id,
         "path": path,
         "gitDetected": git_detected,
     });
@@ -1340,7 +1260,6 @@ impl Shell {
       }
     }
     let (
-      device,
       search,
       error,
       submit_busy,
@@ -1354,7 +1273,6 @@ impl Shell {
     ) = {
       let flow = self.add_space.as_ref()?;
       (
-        flow.device.clone(),
         flow.search.clone(),
         flow.error.clone(),
         flow.submit_busy,
@@ -1367,7 +1285,6 @@ impl Shell {
         flow.home.clone(),
       )
     };
-    let devices = self.state.read(cx).devices.clone();
     let rows = self.add_space_filtered(cx);
     // Push the completion preview into the input — the faint suffix ahead
     // of the caret that ⇥ accepts. Recomputed every render (query, active
@@ -1378,21 +1295,6 @@ impl Shell {
     search.update(cx, |input, cx| input.set_ghost(ghost, cx));
     let query_empty = search.read(cx).is_empty();
     let hairline = crate::theme::hairline(0.06);
-    let now = Utc::now();
-    // (browsed device name, online) per rail row — presence is the same
-    // signal the sidebar space rows use.
-    let device_presence: Vec<bool> = {
-      let state = self.state.read(cx);
-      devices
-        .iter()
-        .map(|d| state.device_online(&d.id, now))
-        .collect()
-    };
-    let device_name: SharedString = device
-      .as_ref()
-      .map(|d| d.name.clone())
-      .unwrap_or_else(|| "This device".to_string())
-      .into();
 
     // A quiet mono key-cap chip ("⌘K" / "esc") for the search bar ends.
     let key_chip = |theme: &Theme| {
@@ -1514,12 +1416,12 @@ impl Shell {
           .font_family(theme.font_mono.clone())
           .child({
             let crumb = div()
-              .id("add-space-crumb-device")
+              .id("add-space-crumb-home")
               .px(px(3.0))
               .rounded(px(4.0))
-              .child(device_name.clone());
+              .child(SharedString::from("Home"));
             if at_home {
-              // Standing at home — the device crumb IS the
+              // Standing at home — the home crumb IS the
               // current folder.
               crumb
                 .text_color(theme.text.opacity(0.85))
@@ -1602,11 +1504,7 @@ impl Shell {
         ))
         .into_any_element()
     } else if let Some(message) = load_error {
-      let device_line = device
-        .as_ref()
-        .map(|d| format!("{} didn't respond — is it online?", d.name))
-        .unwrap_or(message);
-      popover::error_row(&theme, &device_line)
+      popover::error_row(&theme, &message)
         .px(px(14.0))
         .py(px(10.0))
         .child(
@@ -1700,134 +1598,18 @@ impl Shell {
         .into_any_element()
     };
 
-    // ── devices rail (mock right column): platform glyph + name +
-    //    presence dot per row, an info line naming the browsed device.
-    //    Rows are the tab recipe (h-28 rounded-8 washes), vertical.
-    let rail = div()
-      .w(px(196.0))
-      .flex_none()
-      .border_l_1()
-      .border_color(hairline)
-      .px(px(8.0))
-      .py(px(8.0))
-      .flex()
-      .flex_col()
-      .gap(px(2.0))
-      .child(
-        div()
-          .px(px(8.0))
-          .pt(px(2.0))
-          .pb(px(4.0))
-          .text_size(px(11.0))
-          .font_weight(gpui::FontWeight::MEDIUM)
-          .text_color(theme.text_muted.opacity(0.6))
-          .child(SharedString::from("Devices")),
-      )
-      .children(devices.into_iter().enumerate().map(|(ix, dev)| {
-        let is_active = device.as_ref().is_some_and(|d| d.id == dev.id);
-        let online = device_presence.get(ix).copied().unwrap_or(false);
-        // The Devices-page platform mapping (settings::devices).
-        let platform_icon = match dev.platform.as_str() {
-          "macos" | "darwin" => icons::LAPTOP,
-          "web" => icons::GLOBAL,
-          "ios" | "android" => icons::SMARTPHONE,
-          _ => icons::MONITOR,
-        };
-        let name: SharedString = dev.name.clone().into();
-        let pick = dev.clone();
-        div()
-          .id(("add-space-device", ix))
-          .h(px(28.0))
-          .px(px(8.0))
-          .rounded(px(8.0))
-          .flex()
-          .flex_row()
-          .items_center()
-          .gap(px(8.0))
-          .text_size(px(12.5))
-          .cursor_pointer()
-          .when(is_active, |el| {
-            // The floating-card selection language: wash +
-            // ring-only inset outline.
-            el.bg(crate::theme::card_selected_bg())
-              .shadow(crate::theme::card_selected_shadows())
-              .text_color(theme.text)
-          })
-          .when(!is_active, |el| {
-            el.text_color(theme.text_muted.opacity(0.7))
-              .hover(|s| s.bg(theme.element_hover))
-          })
-          .on_click(cx.listener(move |this, _, _, cx| {
-            this.add_space_pick_device(pick.clone(), cx);
-          }))
-          .child(
-            icon(platform_icon)
-              .size(px(14.0))
-              .flex_none()
-              .text_color(theme.text_muted.opacity(0.8)),
-          )
-          .child(div().flex_1().min_w_0().truncate().child(name))
-          .child(
-            div()
-              .size(px(5.0))
-              .rounded_full()
-              .flex_none()
-              .when(online, |el| {
-                // The Devices-page presence emerald, soft glow
-                // included.
-                let emerald = theme.success;
-                el.bg(emerald.opacity(0.9)).shadow(vec![gpui::BoxShadow {
-                  color: emerald.opacity(0.55),
-                  offset: gpui::point(px(0.0), px(0.0)),
-                  blur_radius: px(6.0),
-                  spread_radius: px(0.0),
-                  inset: false,
-                }])
-              })
-              .when(!online, |el| el.bg(crate::theme::ink(0.22))),
-          )
-      }))
-      .child(div().h(px(1.0)).mx(px(2.0)).my(px(6.0)).bg(hairline))
-      .child(
-        div()
-          .px(px(8.0))
-          .flex()
-          .flex_row()
-          .items_start()
-          .gap(px(6.0))
-          .text_size(px(11.0))
-          .line_height(px(15.0))
-          .text_color(theme.text_muted.opacity(0.5))
-          .child(
-            icon(icons::INFO_CIRCLE)
-              .size(px(12.0))
-              .flex_none()
-              .mt(px(1.0))
-              .text_color(theme.text_muted.opacity(0.5)),
-          )
-          .child(div().min_w_0().child(SharedString::from(format!(
-            "Showing folders from {device_name} only"
-          )))),
-      );
-
-    // ── body: folder column (crumbs + list) beside the devices rail.
-    //    FIXED height — sparse folders, loading skeletons, and device
-    //    switches must not resize the card (the list fills and scrolls).
-    let body = div()
-      .h(px(330.0))
-      .flex()
-      .flex_row()
-      .items_stretch()
-      .child(
-        div()
-          .flex_1()
-          .min_w_0()
-          .flex()
-          .flex_col()
-          .child(crumbs)
-          .child(list),
-      )
-      .child(rail);
+    // ── body: the folder column (crumbs + list). FIXED height — sparse
+    //    folders and loading skeletons must not resize the card (the list
+    //    fills and scrolls).
+    let body = div().h(px(330.0)).flex().flex_row().items_stretch().child(
+      div()
+        .flex_1()
+        .min_w_0()
+        .flex()
+        .flex_col()
+        .child(crumbs)
+        .child(list),
+    );
 
     // ── footer: the shared key-cap legend voice (popover::key_hint).
     let footer = div()
@@ -2065,28 +1847,20 @@ impl Shell {
     }
 
     if let Some(space_id) = self.delete_space_confirm.clone() {
-      let (name, device, count) = {
+      let (name, count) = {
         let state = self.state.read(cx);
         let space = state.space_row(&space_id);
         (
           space
             .map(|s| s.display_name().to_string())
             .unwrap_or_else(|| "this project".into()),
-          space
-            .and_then(|s| state.device_name(&s.device_id))
-            .unwrap_or("its device")
-            .to_string(),
           state.chats_in_space(&space_id).len(),
         )
       };
       let copy = if count == 1 {
-        format!(
-          "Removing “{name}” permanently deletes its 1 session on {device}. This can’t be undone."
-        )
+        format!("Removing “{name}” permanently deletes its 1 session. This can’t be undone.")
       } else {
-        format!(
-          "Removing “{name}” permanently deletes its {count} sessions on {device}. This can’t be undone."
-        )
+        format!("Removing “{name}” permanently deletes its {count} sessions. This can’t be undone.")
       };
       let card = popover::dialog_card(&theme)
         .child(popover::dialog_title(&theme, "Remove project?"))

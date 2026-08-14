@@ -368,9 +368,6 @@ pub enum PickerKind {
   /// re-keys everything project-derived (refs, harness/model catalogs) via
   /// the state observer.
   Space,
-  /// New-session canvas only: the device project-less sessions run on (a
-  /// project pick implies its own host and overrides this).
-  Device,
 }
 
 pub struct Pickers {
@@ -504,7 +501,6 @@ impl Pickers {
       Some("branch") => Some(PickerKind::Branch),
       Some("checkout") => Some(PickerKind::Checkout),
       Some("project") => Some(PickerKind::Space),
-      Some("device") => Some(PickerKind::Device),
       _ => None,
     };
     let mut open = popover::Popup::default();
@@ -518,18 +514,14 @@ impl Pickers {
       .as_deref()
       .map(ComposerDefaults::load)
       .unwrap_or_default();
-    // Restore the last device/project picks (the canvas's "defaults to
-    // last selected" rule). Vanished rows heal in `apply_spaces`. A
-    // remembered "Don't work in a project" opt-out is deliberately NOT
-    // restored: the menu row is gone, so a stale saved opt-out would
-    // strand the canvas in a state the picker can no longer express.
+    // Restore the last project pick (the canvas's "defaults to last
+    // selected" rule). Vanished rows heal in `apply_spaces`. A remembered
+    // "Don't work in a project" opt-out is deliberately NOT restored: the
+    // menu row is gone, so a stale saved opt-out would strand the canvas in
+    // a state the picker can no longer express.
     {
-      let device = defaults.device.clone();
       let project = defaults.project.clone();
       state.update(cx, |s, _| {
-        if s.selected_device.is_none() {
-          s.selected_device = device;
-        }
         if s.selected_space.is_none() {
           s.selected_space = project;
         }
@@ -595,12 +587,6 @@ impl Pickers {
   /// the agents (the CLIs live there; the viewer may have neither claude
   /// nor codex installed — user report: "can't load codex models/traits
   /// anywhere" from a Mac without codex).
-  fn space_target(&self, cx: &App) -> Option<String> {
-    let state = self.state.read(cx);
-    let device = state.selected_space_row()?.device_id.clone();
-    (state.local_device_id.as_deref() != Some(device.as_str())).then_some(device)
-  }
-
   /// Effective harness: picked, or the chat's config, or the first listed.
   fn effective_harness(&self, cx: &App) -> Option<HarnessId> {
     if let Some(harness) = self.config.harness {
@@ -802,7 +788,6 @@ impl Pickers {
       PickerKind::Branch => self.selected_ref_index(cx),
       PickerKind::HarnessModel | PickerKind::Traits => self.selected_model_index(cx),
       PickerKind::Space => self.selected_space_index(cx),
-      PickerKind::Device => self.selected_device_index(cx),
     };
     if kind == PickerKind::HarnessModel {
       self.model_scroll.set_offset(gpui::Point::default());
@@ -827,13 +812,6 @@ impl Pickers {
         });
         window.focus(&handle, cx);
       }
-      PickerKind::Device => {
-        let handle = self.search.read(cx).focus_handle(cx);
-        self.search.update(cx, |input, cx| {
-          input.set_placeholder("Search devices…", cx);
-        });
-        window.focus(&handle, cx);
-      }
       PickerKind::HarnessModel => {
         let handle = self.search.read(cx).focus_handle(cx);
         self.search.update(cx, |input, cx| {
@@ -855,8 +833,8 @@ impl Pickers {
         self.ensure_harnesses(true, cx);
         self.prefetch_models(cx);
       }
-      // Projects and devices are already synced state — nothing to load.
-      PickerKind::Space | PickerKind::Device => {}
+      // Projects are already local state — nothing to load.
+      PickerKind::Space => {}
     }
     cx.notify();
   }
@@ -883,18 +861,11 @@ impl Pickers {
     let Some(engine) = self.engine(cx) else {
       return;
     };
-    let target = self.space_target(cx);
     if !matches!(self.harnesses, Loadable::Ready(_)) {
       self.harnesses = Loadable::Loading;
     }
     self.load_task = Some(cx.spawn(async move |this, cx| {
-      let mut params = serde_json::Map::new();
-      if let Some(target) = &target {
-        params.insert(
-          "targetDeviceId".into(),
-          serde_json::Value::String(target.clone()),
-        );
-      }
+      let params = serde_json::Map::new();
       let result = engine
         .client()
         .call(methods::LIST_HARNESSES, serde_json::Value::Object(params))
@@ -950,16 +921,9 @@ impl Pickers {
     let Some(engine) = self.engine(cx) else {
       return;
     };
-    let target = self.space_target(cx);
     self.models.insert(harness, Loadable::Loading);
     cx.spawn(async move |this, cx| {
-      let mut params = serde_json::json!({ "harness": harness });
-      if let (Some(target), Some(object)) = (&target, params.as_object_mut()) {
-        object.insert(
-          "targetDeviceId".into(),
-          serde_json::Value::String(target.clone()),
-        );
-      }
+      let params = serde_json::json!({ "harness": harness });
       let result = engine.client().call(methods::LIST_MODELS, params).await;
       this
         .update(cx, |pickers, cx| {
@@ -1023,7 +987,6 @@ impl Pickers {
     let Some(engine) = self.engine(cx) else {
       return;
     };
-    let local = self.state.read(cx).local_device_id.clone();
     // Stale-while-revalidate: a forced refresh of an already-loaded space
     // keeps the current rows on screen while the reload runs — a send that
     // just minted a worktree (or a terminal-side branch) appears on the
@@ -1038,12 +1001,6 @@ impl Pickers {
         "repoPath".into(),
         serde_json::Value::String(space.path.clone()),
       );
-      if local.as_deref() != Some(space.device_id.as_str()) {
-        params.insert(
-          "targetDeviceId".into(),
-          serde_json::Value::String(space.device_id.clone()),
-        );
-      }
       let result = engine
         .client()
         .call(methods::LIST_REFS, serde_json::Value::Object(params))
@@ -1111,7 +1068,6 @@ impl Pickers {
     let Some(engine) = self.engine(cx) else {
       return;
     };
-    let local = self.state.read(cx).local_device_id.clone();
     self.switch_error = None;
     self.switching = Some(row.name.clone());
     let ref_name = row.name.clone();
@@ -1125,12 +1081,6 @@ impl Pickers {
         "refName".into(),
         serde_json::Value::String(ref_name.clone()),
       );
-      if local.as_deref() != Some(space.device_id.as_str()) {
-        params.insert(
-          "targetDeviceId".into(),
-          serde_json::Value::String(space.device_id.clone()),
-        );
-      }
       let result = engine
         .client()
         .call(methods::SWITCH_REF, serde_json::Value::Object(params))
@@ -1591,20 +1541,13 @@ impl Pickers {
 
   // ---- the space picker (new-session canvas) ----
 
-  /// The picker's project rows: scoped to the canvas's device — the device
-  /// switcher narrows the list, projects on other devices don't show
-  /// (pick the device first, then its project). Unscoped only while the
-  /// device is still unknown (pre-probe boot).
+  /// The picker's project rows.
   fn scoped_space_rows(&self, cx: &App) -> Vec<Space> {
-    let state = self.state.read(cx);
-    let device = state.effective_device_id();
-    state
+    self
+      .state
+      .read(cx)
       .spaces_sorted()
       .into_iter()
-      .filter(|s| match device.as_deref() {
-        Some(d) => s.device_id == d,
-        None => true,
-      })
       .cloned()
       .collect()
   }
@@ -1651,23 +1594,11 @@ impl Pickers {
     self.close(cx);
   }
 
-  fn pick_device(&mut self, device_id: String, cx: &mut Context<Self>) {
-    self
-      .state
-      .update(cx, |s, cx| s.select_device(device_id, cx));
-    self.remember_target(cx);
-    self.close(cx);
-  }
-
-  /// Persist the device/project picks — the "last selected" defaults the
-  /// next boot's canvas restores.
+  /// Persist the project pick — the "last selected" default the next boot's
+  /// canvas restores.
   fn remember_target(&mut self, cx: &App) {
     {
       let state = self.state.read(cx);
-      self.defaults.device = state
-        .selected_device
-        .clone()
-        .or_else(|| state.local_device_id.clone());
       self.defaults.project = state.selected_space.clone();
       self.defaults.no_project = state.no_project;
     }
@@ -1676,128 +1607,6 @@ impl Pickers {
         tracing::warn!(error = %err, "composer-defaults save failed");
       }
     }
-  }
-
-  /// Devices in picker order: this device first, then by name.
-  fn device_rows(&self, cx: &App) -> Vec<helix_proto::Device> {
-    let state = self.state.read(cx);
-    let local = state.local_device_id.clone();
-    let mut devices: Vec<helix_proto::Device> = state.devices.clone();
-    devices.sort_by_key(|d| {
-      (
-        local.as_deref() != Some(d.id.as_str()),
-        d.name.to_lowercase(),
-        d.id.clone(),
-      )
-    });
-    devices
-  }
-
-  /// [`Self::device_rows`] filtered by the search box (same ranked
-  /// substring match as the project rows).
-  fn filtered_device_rows(&self, cx: &App) -> Vec<helix_proto::Device> {
-    let query = self.search.read(cx).text().to_string();
-    let rows = self.device_rows(cx);
-    let names: Vec<String> = rows.iter().map(|d| d.name.clone()).collect();
-    popover::filter_indices(&query, &names)
-      .into_iter()
-      .map(|ix| rows[ix].clone())
-      .collect()
-  }
-
-  fn selected_device_index(&self, cx: &App) -> usize {
-    let effective = self.state.read(cx).effective_device_id();
-    self
-      .device_rows(cx)
-      .iter()
-      .position(|d| Some(d.id.as_str()) == effective.as_deref())
-      .unwrap_or(0)
-  }
-
-  /// The device popover: search + one row per device (name, muted "offline"
-  /// tag, check on the canvas's effective device).
-  fn render_device_popover(&mut self, cx: &mut Context<Self>) -> AnyElement {
-    let theme = Theme::of(cx).clone();
-    let now = chrono::Utc::now();
-    let rows = self.filtered_device_rows(cx);
-    let (effective, local, online): (Option<String>, Option<String>, Vec<bool>) = {
-      let state = self.state.read(cx);
-      (
-        state.effective_device_id(),
-        state.local_device_id.clone(),
-        rows
-          .iter()
-          .map(|d| state.device_online(&d.id, now))
-          .collect(),
-      )
-    };
-    let active = self.active;
-    let body: AnyElement = if rows.is_empty() {
-      div()
-        .p(px(Theme::SPACE_SM))
-        .text_size(px(12.0))
-        .text_color(theme.text_faint)
-        .child(SharedString::from("No devices match."))
-        .into_any_element()
-    } else {
-      div()
-        .id("device-list")
-        .flex()
-        .flex_col()
-        .gap(px(2.0))
-        .max_h(px(224.0))
-        .overflow_y_scroll()
-        .children(
-          rows
-            .into_iter()
-            .zip(online)
-            .enumerate()
-            .map(|(ix, (device, online))| {
-              let is_local = local.as_deref() == Some(device.id.as_str());
-              let label: SharedString = device.name.clone().into();
-              let is_selected = effective.as_deref() == Some(device.id.as_str());
-              let pick_id = device.id.clone();
-              popover::menu_row_nav(
-                                &theme,
-                                is_selected,
-                                ix == active,
-                                format!("device-row-{ix}"),
-                            )
-                            .id(("device-row", ix))
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.pick_device(pick_id.clone(), cx);
-                            }))
-                            .child(div().flex_1().min_w_0().truncate().child(label))
-                            // The local device wears a muted right-aligned "You"
-                            // instead of a "(this device)" suffix in the name.
-                            .when(is_local, |el| {
-                                el.child(
-                                    div()
-                                        .flex_none()
-                                        .text_size(px(10.0))
-                                        .text_color(theme.text_muted.opacity(0.45))
-                                        .child(SharedString::from("You")),
-                                )
-                            })
-                            // Disconnected glyph, not the word (user request).
-                            .when(!online, |el| {
-                                el.child(
-                                    crate::icons::icon(crate::icons::WIFI_OFF)
-                                        .size(px(12.0))
-                                        .flex_none()
-                                        .text_color(theme.warning.opacity(0.8)),
-                                )
-                            })
-            }),
-        )
-        .into_any_element()
-    };
-    div()
-      .flex()
-      .flex_col()
-      .child(self.search_box(&theme))
-      .child(body)
-      .into_any_element()
   }
 
   /// The project popover: search + one row per project on the picked device
@@ -1817,7 +1626,7 @@ impl Pickers {
       // Distinguish "the filter ate everything" from "this device has
       // no projects yet" — the scoped list makes the latter common.
       let empty: &str = if self.search.read(cx).text().is_empty() {
-        "No projects on this device."
+        "No projects yet."
       } else {
         "No projects match."
       };
@@ -1901,11 +1710,6 @@ impl Pickers {
     {
       self.pick_space(space.id, cx);
     }
-    if self.open_kind() == Some(PickerKind::Device)
-      && let Some(device) = self.filtered_device_rows(cx).into_iter().nth(self.active)
-    {
-      self.pick_device(device.id, cx);
-    }
     // The model search box submits the highlighted row (Enter reaches
     // here via the input's Submitted event while it holds focus).
     if self.open_kind() == Some(PickerKind::HarnessModel) {
@@ -1952,7 +1756,6 @@ impl Pickers {
           Some(PickerKind::HarnessModel) => self.model_rows_len(cx),
           Some(PickerKind::Traits) => 0, // merged into HarnessModel
           Some(PickerKind::Space) => self.filtered_space_rows(cx).len(),
-          Some(PickerKind::Device) => self.filtered_device_rows(cx).len(),
           None => 0,
         };
         let current = (self.active != NO_ACTIVE_ROW).then_some(self.active);
@@ -2004,7 +1807,6 @@ impl Pickers {
       PickerKind::HarnessModel => "picker-model",
       PickerKind::Traits => "picker-traits",
       PickerKind::Space => "picker-space",
-      PickerKind::Device => "picker-device",
     };
     let open = self.open_kind() == Some(kind);
     // Ghost pill (helix composer/styles.tsx `pill`): `h-8 rounded-lg px-2.5
@@ -2167,41 +1969,15 @@ impl Pickers {
         let content = self.render_space_popover(cx);
         Some((PickerKind::Space, self.popover_frame(280.0, content, cx)))
       }
-      Some(PickerKind::Device) => {
-        let content = self.render_device_popover(cx);
-        Some((PickerKind::Device, self.popover_frame(224.0, content, cx)))
-      }
       _ => None,
     };
-    let (device_label, project_label, offline) = {
-      let state = self.state.read(cx);
-      let device_id = state.effective_device_id();
-      let device_label: SharedString = device_id
-        .as_deref()
-        .and_then(|id| state.device_name(id))
-        .map(str::to_string)
-        .unwrap_or_else(|| "This device".to_string())
-        .into();
-      let offline = device_id
-        .as_deref()
-        .is_some_and(|id| !state.device_online(id, chrono::Utc::now()));
-      let project_label: SharedString = state
-        .selected_space_row()
-        .map(|s| s.display_name().to_string())
-        .unwrap_or_else(|| "No project".to_string())
-        .into();
-      (device_label, project_label, offline)
-    };
-    let device_chip = self
-      .footer_chip(
-        PickerKind::Device,
-        "picker-device",
-        crate::icons::MONITOR,
-        device_label,
-        &theme,
-        cx,
-      )
-      .when(offline, |el| el.text_color(theme.warning.opacity(0.8)));
+    let project_label: SharedString = self
+      .state
+      .read(cx)
+      .selected_space_row()
+      .map(|s| s.display_name().to_string())
+      .unwrap_or_else(|| "No project".to_string())
+      .into();
     let project_chip = self.footer_chip(
       PickerKind::Space,
       "picker-project",
@@ -2216,13 +1992,6 @@ impl Pickers {
       .items_center()
       .gap(px(4.0))
       .child(attach_overlay_below(
-        device_chip,
-        &mut overlay,
-        PickerKind::Device,
-        "device-popover",
-        closing,
-      ))
-      .child(attach_overlay_below(
         project_chip,
         &mut overlay,
         PickerKind::Space,
@@ -2233,9 +2002,8 @@ impl Pickers {
   }
 
   /// The composer footer row: checkout-kind + ref, LEFT-aligned, only when
-  /// the picked (or session's) project has git. Device + project moved to
-  /// the new-session canvas ([`Self::render_target_selectors`]); sessions
-  /// name their target in the titlebar.
+  /// the picked (or session's) project has git. The project pick lives on
+  /// the new-session canvas ([`Self::render_target_selectors`]).
   pub fn render_footer(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
     let theme = Theme::of(cx).clone();
     // A selected chat whose workspace row hasn't synced yet (the moment
@@ -2456,8 +2224,8 @@ impl Pickers {
               this.models.clear();
               this.ensure_harnesses(false, cx);
             }
-            // Projects/devices load nothing; no retry surface exists.
-            PickerKind::Space | PickerKind::Device => {}
+            // Projects load nothing; no retry surface exists.
+            PickerKind::Space => {}
           }))
           .child(SharedString::from("Retry")),
       )
@@ -3510,10 +3278,7 @@ impl Render for Pickers {
     let closing = self.open.closing_since();
     let mut overlay: Option<(PickerKind, AnyElement)> = match self.mounted_kind() {
       // Footer-row pickers — their popovers mount down there.
-      Some(PickerKind::Branch)
-      | Some(PickerKind::Checkout)
-      | Some(PickerKind::Space)
-      | Some(PickerKind::Device) => None,
+      Some(PickerKind::Branch) | Some(PickerKind::Checkout) | Some(PickerKind::Space) => None,
       Some(PickerKind::HarnessModel) => {
         let content = self.render_harness_model_popover(cx);
         Some((

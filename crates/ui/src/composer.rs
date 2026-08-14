@@ -3239,10 +3239,8 @@ fn mention_response_is_current(state: &FileMentionState, request: u64) -> bool {
 /// search works for local sessions.
 fn mention_error_message(err: &RpcError) -> SharedString {
   match err {
-    RpcError::UnknownMethod(_) => {
-      "The session's device runs an older helix — update it to search its files".into()
-    }
-    RpcError::Transport(_) | RpcError::Closed => "The session's device is unreachable".into(),
+    RpcError::UnknownMethod(_) => "This build can't search the session's files".into(),
+    RpcError::Transport(_) | RpcError::Closed => "The engine is unreachable".into(),
     RpcError::BadParams(_) | RpcError::Failed(_) => "File search failed".into(),
   }
 }
@@ -3250,10 +3248,8 @@ fn mention_error_message(err: &RpcError) -> SharedString {
 /// A failed command discovery, translated for the popup.
 fn slash_error_message(err: &RpcError) -> SharedString {
   match err {
-    RpcError::UnknownMethod(_) => {
-      "The session's device runs an older helix — update it to list commands".into()
-    }
-    RpcError::Transport(_) | RpcError::Closed => "The session's device is unreachable".into(),
+    RpcError::UnknownMethod(_) => "This build can't list the session's commands".into(),
+    RpcError::Transport(_) | RpcError::Closed => "The engine is unreachable".into(),
     RpcError::BadParams(_) | RpcError::Failed(_) => "Couldn't load this agent's commands".into(),
   }
 }
@@ -3746,9 +3742,6 @@ impl Composer {
       } else {
         None
       };
-      if let Some(target) = &target {
-        params.insert("targetDeviceId".into(), target.clone().into());
-      }
       (serde_json::Value::Object(params), target)
     };
     if target.is_none() {
@@ -4009,19 +4002,9 @@ impl Composer {
       self.slash.loading = false;
       return;
     };
-    let target = {
-      let state = self.state.read(cx);
-      state
-        .selected_chat_row()
-        .map(|chat| chat.device_id.clone())
-        .or_else(|| state.selected_space_row().map(|s| s.device_id.clone()))
-    };
     let request = self.slash.request;
     self.slash_task = Some(cx.spawn(async move |this, cx| {
-      let mut params = serde_json::json!({ "harness": harness });
-      if let (Some(target), Some(object)) = (&target, params.as_object_mut()) {
-        object.insert("targetDeviceId".into(), target.clone().into());
-      }
+      let params = serde_json::json!({ "harness": harness });
       let result = engine.client().call(methods::LIST_COMMANDS, params).await;
       this
         .update(cx, |composer, cx| {
@@ -4395,44 +4378,19 @@ impl Composer {
       .read(cx)
       .selected_chat_row()
       .and_then(|c| c.cwd.clone());
-    // The PROJECT fixes the new chat's device + base folder — sessions are
-    // minted onto the project's device, not necessarily this one. With no
-    // project ("Don't work in a project") the composer's device pick is
-    // the host and the session runs from `~` there.
+    // The PROJECT fixes the new chat's base folder; with no project ("Don't
+    // work in a project") the session runs from `~`.
     let space = self.state.read(cx).selected_space_row().cloned();
     let local_device_id = self.state.read(cx).local_device_id.clone();
-    let target_device_id = self.state.read(cx).effective_device_id();
-    let device_id = if is_new {
-      target_device_id
-        .clone()
-        .unwrap_or_else(|| "local".to_string())
-    } else {
-      self
-        .state
-        .read(cx)
-        .selected_chat_row()
-        .map(|c| c.device_id.clone())
-        .or_else(|| local_device_id.clone())
-        .unwrap_or_else(|| "local".to_string())
-    };
-    // Uploads/read-backs target the chat's HOST device (forwardable RPCs);
-    // for a new chat that's the target device (None when it's local).
-    let host_device_id = if is_new {
-      target_device_id
-        .clone()
-        .filter(|id| local_device_id.as_deref() != Some(id.as_str()))
-    } else {
-      self
-        .state
-        .read(cx)
-        .selected_chat_row()
-        .map(|c| c.device_id.clone())
-    };
+    let device_id = self
+      .state
+      .read(cx)
+      .selected_chat_row()
+      .map(|c| c.device_id.clone())
+      .or_else(|| local_device_id.clone())
+      .unwrap_or_else(|| "local".to_string());
     let space_id = space.as_ref().map(|s| s.id.clone());
     let space_path = space.as_ref().map(|s| s.path.clone());
-    let space_remote = space
-      .as_ref()
-      .is_some_and(|s| local_device_id.as_deref() != Some(s.device_id.as_str()));
     // Snapshot-and-clear NOW (use-attachments.ts takeAttachments): the
     // strip empties the instant you hit send; a failure hands the files
     // back into the chat's stash.
@@ -4540,18 +4498,10 @@ impl Composer {
                         crate::pickers::CheckoutPlan::NewWorktree { base } => {
                             chat_branch = base.clone();
                             if let (Some(repo_path), Some(base)) = (&space_path, base) {
-                                let mut params = serde_json::json!({
+                                let params = serde_json::json!({
                                     "repoPath": repo_path,
                                     "branch": base,
                                 });
-                                if space_remote
-                                    && let Some(object) = params.as_object_mut()
-                                {
-                                    object.insert(
-                                        "targetDeviceId".into(),
-                                        serde_json::Value::String(device_id.clone()),
-                                    );
-                                }
                                 let value = engine
                                     .client()
                                     .call(methods::CREATE_WORKTREE, params)
@@ -4627,7 +4577,6 @@ impl Composer {
                         match attachments::upload_attachment(
                             &engine,
                             cx.background_executor(),
-                            host_device_id.as_deref(),
                             att,
                         )
                         .await
@@ -4635,22 +4584,15 @@ impl Composer {
                             Ok(path) => attachment_paths.push(path),
                             Err(err) => {
                                 tracing::warn!(name = %att.name, error = %err, "attachment upload failed");
-                                return Err(
-                                    "Couldn't upload the attachment — the device may be offline."
-                                        .to_string(),
-                                );
+                                return Err("Couldn't upload the attachment.".to_string());
                             }
                         }
                     }
                     // Seed the transcript cache from local bytes so the sent
                     // bubble's thumbnails never round-trip (seedTranscript-
                     // Attachment in the original send path).
-                    let seed_device = host_device_id.clone().unwrap_or_else(|| device_id.clone());
                     for (path, att) in attachment_paths.iter().zip(&staged) {
-                        attachments::seed_attachment(&seed_device, path, &att.name, att.image.clone());
-                        if seed_device != device_id {
-                            attachments::seed_attachment(&device_id, path, &att.name, att.image.clone());
-                        }
+                        attachments::seed_attachment(&device_id, path, &att.name, att.image.clone());
                     }
                     content = attachments::with_attachments(&text, &attachment_paths);
                     // Refresh the echo in place with the attachment refs

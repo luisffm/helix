@@ -73,15 +73,9 @@ impl Render for ArchivedPage {
     use crate::settings::widgets;
     let theme = Theme::of(cx).clone();
     let now = chrono::Utc::now();
-    let (rows, device_names): (Vec<Chat>, std::collections::HashMap<String, String>) = {
+    let rows: Vec<Chat> = {
       let state = self.state.read(cx);
-      let rows = archived_chats(&state.chats).into_iter().cloned().collect();
-      let names = state
-        .devices
-        .iter()
-        .map(|d| (d.id.clone(), d.name.clone()))
-        .collect();
-      (rows, names)
+      archived_chats(&state.chats).into_iter().cloned().collect()
     };
     let busy = self.busy.clone();
     let count = rows.len();
@@ -95,10 +89,6 @@ impl Render for ArchivedPage {
           .clone()
           .unwrap_or_else(|| "Untitled session".into())
           .into();
-        // Unknown device → no fragment at all (helix renders the
-        // device span only when the name resolves).
-        let device: Option<SharedString> =
-          device_names.get(&chat.device_id).cloned().map(Into::into);
         let time_ago: SharedString =
           crate::state::format_time_ago(chat.last_message_at.unwrap_or(chat.created_at), now)
             .into();
@@ -183,13 +173,6 @@ impl Render for ArchivedPage {
                   .gap(px(6.0))
                   .text_size(px(11.0))
                   .text_color(theme.text_muted.opacity(0.55));
-                let both = device.is_some() && location.is_some();
-                if let Some(device) = device {
-                  meta = meta.child(device);
-                }
-                if both {
-                  meta = meta.child(SharedString::from("·"));
-                }
                 if let Some(location) = location {
                   meta = meta.child(div().min_w_0().truncate().child(location));
                 }
@@ -283,29 +266,29 @@ impl Render for ArchivedPage {
       .size_full()
       .overflow_y_scroll()
       .child(
-      widgets::page_column()
-        .child(widgets::page_header(
-          &theme,
-          "Archived sessions",
-          (count > 0).then_some(count),
-        ))
-        .child(widgets::page_subtitle(
-          &theme,
-          "Hidden from the sidebar, never deleted. Unarchiving puts a session back on its device.",
-        ))
-        .when_some(self.error.clone(), |el, message| {
-          el.child(
-            widgets::error_strip(&theme, message)
-              .id("archived-error")
-              .cursor_pointer()
-              .on_click(cx.listener(|this, _, _, cx| {
-                this.error = None;
-                cx.notify();
-              })),
-          )
-        })
-        .child(body),
-    )
+        widgets::page_column()
+          .child(widgets::page_header(
+            &theme,
+            "Archived sessions",
+            (count > 0).then_some(count),
+          ))
+          .child(widgets::page_subtitle(
+            &theme,
+            "Hidden from the sidebar, never deleted. Unarchiving puts a session back in the list.",
+          ))
+          .when_some(self.error.clone(), |el, message| {
+            el.child(
+              widgets::error_strip(&theme, message)
+                .id("archived-error")
+                .cursor_pointer()
+                .on_click(cx.listener(|this, _, _, cx| {
+                  this.error = None;
+                  cx.notify();
+                })),
+            )
+          })
+          .child(body),
+      )
   }
 }
 
