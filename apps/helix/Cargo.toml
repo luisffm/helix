@@ -1,0 +1,19 @@
+[package]
+name = "helix"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "helix"
+path = "src/main.rs"
+
+[dependencies]
+helix-ui.workspace = true
+mimalloc.workspace = true
+libc.workspace = true
+tracing-subscriber.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

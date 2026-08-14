@@ -1,7 +1,0 @@
-[package]
-name = "helix-commands"
-version.workspace = true
-edition.workspace = true
-
-[dependencies]
-gpui.workspace = true

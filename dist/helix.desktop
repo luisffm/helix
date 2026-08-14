@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Helix
+GenericName=Coding Agent Controller
+Comment=Multi-device controller for coding agents
+Exec=helix
+TryExec=helix
+Icon=helix
+Terminal=false
+Categories=Development;Utility;
+Keywords=agent;claude;codex;ai;coding;
+StartupWMClass=helix
