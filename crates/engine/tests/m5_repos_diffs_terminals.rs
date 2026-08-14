@@ -848,6 +848,67 @@ async fn diff_sync_publishes_and_updates_chat_branch() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn diff_sync_publishes_branch_stats_matching_the_full_capture() {
+  let tmp = tempfile::tempdir().expect("tempdir");
+  let repo_dir = tmp.path().join("repo");
+  init_repo(&repo_dir).await;
+
+  // A branch that commits a file, edits a tracked one, and leaves an
+  // untracked one behind — the three sources branch stats must add up.
+  git(&repo_dir, &["checkout", "-b", "feature"]).await;
+  std::fs::write(repo_dir.join("c.txt"), "committed\non\nfeature\n").expect("write c.txt");
+  git(&repo_dir, &["add", "."]).await;
+  git(&repo_dir, &["commit", "-m", "feature work"]).await;
+  std::fs::write(repo_dir.join("a.txt"), "one\nedited\n").expect("edit a.txt");
+  std::fs::write(repo_dir.join("u.txt"), "untracked\n").expect("write u.txt");
+
+  let core = assemble(&tmp.path().join("data"));
+  core
+    .workspace
+    .create_space(
+      "space-stats",
+      &core.device_id,
+      &repo_dir.to_string_lossy(),
+      None,
+      true,
+    )
+    .expect("space row");
+  core
+    .workspace
+    .create_chat("chat-stats", Some("space-stats"), None, None, None)
+    .expect("chat row");
+  core.diff_sync.reconcile_now().await;
+
+  let mut stats_rx = core.diff_sync.watch_stats();
+  let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+  let stats = loop {
+    {
+      let stats = stats_rx.borrow().clone();
+      if let Some(stats) = stats.first() {
+        break stats.clone();
+      }
+    }
+    tokio::time::timeout_at(deadline, stats_rx.changed())
+      .await
+      .expect("stats published before timeout")
+      .expect("watch alive");
+  };
+  assert_eq!(stats.device_id, core.device_id);
+  assert_eq!(stats.base_ref.as_deref(), Some("main"));
+
+  // The cheap numstat + untracked path must agree with the authoritative
+  // branch capture the Changes pane uses.
+  let base = merge_base(&repo_dir, "main").await.expect("merge base");
+  let full = capture_diff_against(&core.repos, &repo_dir, Some(&base))
+    .await
+    .expect("branch capture");
+  assert_eq!(stats.additions, full.additions);
+  assert_eq!(stats.deletions, full.deletions);
+  assert!(stats.additions > 0 && stats.deletions > 0);
+  core.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn checkout_file_diff_text_rpc_fits_the_default_worker_stack() {
   let tmp = tempfile::tempdir().expect("tempdir");
   let repo_dir = tmp.path().join("repo");

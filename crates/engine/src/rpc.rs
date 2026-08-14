@@ -784,6 +784,9 @@ impl RpcService for EngineRpc {
       methods::WATCH_CHECKOUT_DIFFS => {
         Ok(RpcReply::Stream(watch_stream(self.diff_sync.watch_diffs())))
       }
+      methods::WATCH_CHECKOUT_STATS => {
+        Ok(RpcReply::Stream(watch_stream(self.diff_sync.watch_stats())))
+      }
       // One-shot scoped capture for the Changes pane: `branch` diffs the
       // working tree against merge-base(baseRef, HEAD); `turn` diffs the
       // turn-start tree snapshot against the current tree; anything else

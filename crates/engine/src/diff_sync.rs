@@ -32,7 +32,7 @@ use tokio::io::AsyncReadExt;
 use tokio::sync::{mpsc, watch};
 use tokio_util::sync::CancellationToken;
 
-use helix_proto::{Chat, CheckoutDiff, DiffFileSummary};
+use helix_proto::{Chat, CheckoutDiff, CheckoutStats, DiffFileSummary};
 
 use crate::EngineError;
 use crate::repos::{CheckoutIdentity, Repos};
@@ -63,6 +63,10 @@ pub struct DiffSnapshot {
   pub files: Vec<DiffFileSummary>,
   pub additions: u32,
   pub deletions: u32,
+  /// The share of `additions` contributed by untracked files. Untracked files
+  /// are new relative to ANY committed base, so the branch-stat pass adds this
+  /// to its tracked numstat instead of reading the files a second time.
+  pub untracked_additions: u32,
   pub truncated: bool,
   pub checksum: String,
 }
@@ -82,6 +86,12 @@ struct CheckoutEntry {
   chats: Mutex<Vec<Chat>>,
   /// Last published checksum — unchanged snapshots publish nothing.
   checksum: Mutex<Option<String>>,
+  /// Resolved branch-stat base: (branch it was resolved for, comparison ref).
+  /// Re-resolves on a branch switch, since the default branch can't compare
+  /// against itself.
+  base_ref: Mutex<Option<(String, String)>>,
+  /// Last published branch stats — unchanged totals publish nothing.
+  stats: Mutex<Option<(Option<String>, u32, u32)>>,
   /// Kick channel into the entry's debounce/sync task.
   kick_tx: mpsc::UnboundedSender<()>,
   /// Keeps the recursive fs watchers alive; dropped on entry close.
@@ -106,6 +116,7 @@ struct DiffSyncInner {
   device_id: String,
   entries: Mutex<HashMap<String, Arc<CheckoutEntry>>>,
   diffs_tx: watch::Sender<Vec<CheckoutDiff>>,
+  stats_tx: watch::Sender<Vec<CheckoutStats>>,
   /// chat_id → turn-start tree (see [`TurnSnapshot`]).
   turn_trees: Mutex<HashMap<String, TurnSnapshot>>,
   /// The tasks hold `Weak` refs, but an in-flight iteration holds an
@@ -128,6 +139,7 @@ impl CheckoutDiffSync {
   /// 2-minute repair tick. Requires a tokio runtime.
   pub fn start(repos: Repos, workspace: WorkspaceHost, device_id: &str) -> Self {
     let (diffs_tx, _) = watch::channel(Vec::new());
+    let (stats_tx, _) = watch::channel(Vec::new());
     let sync = Self {
       inner: Arc::new(DiffSyncInner {
         repos,
@@ -135,6 +147,7 @@ impl CheckoutDiffSync {
         device_id: device_id.to_string(),
         entries: Mutex::new(HashMap::new()),
         diffs_tx,
+        stats_tx,
         turn_trees: Mutex::new(HashMap::new()),
         cancel: CancellationToken::new(),
         supervisor: Mutex::new(None),
@@ -164,6 +177,12 @@ impl CheckoutDiffSync {
   /// `WatchCheckoutDiffs` source: every tracked checkout's latest diff.
   pub fn watch_diffs(&self) -> watch::Receiver<Vec<CheckoutDiff>> {
     self.inner.diffs_tx.subscribe()
+  }
+
+  /// `WatchCheckoutStats` source: every tracked checkout's branch-scope line
+  /// totals, patch-free.
+  pub fn watch_stats(&self) -> watch::Receiver<Vec<CheckoutStats>> {
+    self.inner.stats_tx.subscribe()
   }
 
   /// Regroup this device's chats by checkout identity, then (re)build watchers.
@@ -268,6 +287,7 @@ async fn reconcile(inner: &Arc<DiffSyncInner>, chats: Vec<Chat>) {
   };
   if !removed.is_empty() {
     publish_watch(inner);
+    publish_stats_with(inner, None);
   }
 
   // Update surviving entries; add new ones (initial sync kicked on add).
@@ -388,6 +408,8 @@ fn add_entry(inner: &Arc<DiffSyncInner>, identity: CheckoutIdentity, chats: Vec<
     identity,
     chats: Mutex::new(chats),
     checksum: Mutex::new(None),
+    base_ref: Mutex::new(None),
+    stats: Mutex::new(None),
     kick_tx: kick_tx.clone(),
     _watchers: watchers,
   });
@@ -455,6 +477,11 @@ async fn sync_entry(inner: &Arc<DiffSyncInner>, entry: &Arc<CheckoutEntry>) {
     }
   }
 
+  // Branch stats ride their own gate: a fetch that advances the comparison
+  // ref moves the merge-base without touching this tree, so the working-tree
+  // checksum below would have swallowed the change.
+  sync_branch_stats(inner, entry, &snapshot).await;
+
   if lock(&entry.checksum).as_deref() == Some(snapshot.checksum.as_str()) {
     return; // unchanged — publish nothing
   }
@@ -479,6 +506,165 @@ async fn sync_entry(inner: &Arc<DiffSyncInner>, entry: &Arc<CheckoutEntry>) {
     }
   }
   publish_watch_with(inner, Some(diff));
+}
+
+/// Branch-scope totals for the entry, published on change. Everything the
+/// checked-out branch adds over `merge-base(base_ref, HEAD)`, working tree
+/// included: the tracked numstat against that base plus the snapshot's
+/// untracked additions. A checkout with no usable base (no commits, a lone
+/// branch, unrelated histories) publishes nothing — the sidebar then shows no
+/// counts rather than the working tree's.
+async fn sync_branch_stats(
+  inner: &Arc<DiffSyncInner>,
+  entry: &Arc<CheckoutEntry>,
+  snapshot: &DiffSnapshot,
+) {
+  let root = entry.identity.root.as_path();
+  let cached = lock(&entry.base_ref).clone();
+  let base_ref = match cached {
+    Some((branch, base_ref)) if branch == snapshot.branch => base_ref,
+    _ => {
+      let branches = inner.repos.branches(root).await.unwrap_or_default();
+      let Some(base_ref) = default_base_ref(&branches, &snapshot.branch) else {
+        *lock(&entry.base_ref) = None;
+        publish_stats_for(inner, entry, None);
+        return;
+      };
+      *lock(&entry.base_ref) = Some((snapshot.branch.clone(), base_ref.clone()));
+      base_ref
+    }
+  };
+  let base = match merge_base(root, &base_ref).await {
+    Ok(base) => base,
+    Err(err) => {
+      tracing::debug!(checkout = %root.display(), base = %base_ref, error = %err,
+                "diff-sync: no merge base for branch stats");
+      // Stale ref (deleted branch, fresh clone): re-resolve next pass.
+      *lock(&entry.base_ref) = None;
+      publish_stats_for(inner, entry, None);
+      return;
+    }
+  };
+  let nums = match capture_git(
+    root,
+    &["diff", "--numstat", "-z", "--find-renames", &base, "--"],
+    2 * 1024 * 1024,
+  )
+  .await
+  {
+    Ok(nums) => nums,
+    Err(err) => {
+      tracing::debug!(checkout = %root.display(), error = %err,
+                "diff-sync: branch numstat failed");
+      return;
+    }
+  };
+  let (additions, deletions) = sum_numstat(&nums.stdout);
+  publish_stats_for(
+    inner,
+    entry,
+    Some((
+      Some(base_ref),
+      additions + snapshot.untracked_additions,
+      deletions,
+    )),
+  );
+}
+
+/// Publish `totals` for the entry when they differ from the last published set.
+fn publish_stats_for(
+  inner: &Arc<DiffSyncInner>,
+  entry: &Arc<CheckoutEntry>,
+  totals: Option<(Option<String>, u32, u32)>,
+) {
+  if *lock(&entry.stats) == totals {
+    return;
+  }
+  *lock(&entry.stats) = totals.clone();
+  let updated = totals.map(|(base_ref, additions, deletions)| CheckoutStats {
+    checkout_id: entry.identity.id.clone(),
+    device_id: inner.device_id.clone(),
+    cwd: entry.identity.root.to_string_lossy().to_string(),
+    base_ref,
+    additions,
+    deletions,
+    updated_at: chrono::Utc::now(),
+  });
+  match updated {
+    Some(updated) => publish_stats_with(inner, Some(updated)),
+    // Base went away: drop this checkout's row.
+    None => {
+      let id = entry.identity.id.clone();
+      inner.stats_tx.send_modify(|stats| {
+        stats.retain(|s| s.checkout_id != id);
+      });
+    }
+  }
+}
+
+/// The comparison ref branch stats diff against: the repo's default branch
+/// ([`Repos::branches`] puts it first) — but a branch can't compare against
+/// itself, so a checkout that IS on the default falls back to `main`/`master`,
+/// then to any other branch.
+fn default_base_ref(branches: &[String], current: &str) -> Option<String> {
+  let first = branches.first()?;
+  if first != current {
+    return Some(first.clone());
+  }
+  for candidate in ["main", "master"] {
+    if branches.iter().any(|b| b == candidate) && candidate != current {
+      return Some(candidate.to_string());
+    }
+  }
+  branches.iter().find(|b| *b != current).cloned()
+}
+
+/// Line totals over a `git diff --numstat -z` capture. Binary files report `-`
+/// and count as zero; a rename record carries its paths in the two records
+/// that follow.
+fn sum_numstat(value: &[u8]) -> (u32, u32) {
+  let records: Vec<String> = value
+    .split(|b| *b == 0)
+    .map(|part| String::from_utf8_lossy(part).to_string())
+    .collect();
+  let (mut additions, mut deletions) = (0u32, 0u32);
+  let mut i = 0usize;
+  while i < records.len() {
+    let record = &records[i];
+    if record.is_empty() {
+      i += 1;
+      continue;
+    }
+    let mut parts = record.splitn(3, '\t');
+    let adds = parts.next().unwrap_or_default();
+    let dels = parts.next().unwrap_or_default();
+    if parts.next().unwrap_or_default().is_empty() {
+      i += 2; // rename: the old and new paths are their own records
+    }
+    i += 1;
+    additions += adds.parse::<u32>().unwrap_or(0);
+    deletions += dels.parse::<u32>().unwrap_or(0);
+  }
+  (additions, deletions)
+}
+
+/// Re-emit the stats channel from the current entries, replacing (or
+/// inserting) `updated`.
+fn publish_stats_with(inner: &Arc<DiffSyncInner>, updated: Option<CheckoutStats>) {
+  let live: HashSet<String> = lock(&inner.entries).keys().cloned().collect();
+  inner.stats_tx.send_modify(|stats| {
+    stats.retain(|s| live.contains(&s.checkout_id));
+    if let Some(updated) = updated {
+      match stats
+        .iter_mut()
+        .find(|s| s.checkout_id == updated.checkout_id)
+      {
+        Some(slot) => *slot = updated,
+        None => stats.push(updated),
+      }
+    }
+    stats.sort_by(|a, b| a.checkout_id.cmp(&b.checkout_id));
+  });
 }
 
 /// Re-emit the watch channel from the current entries' cached diffs, replacing (or
@@ -969,6 +1155,7 @@ pub async fn capture_diff_against(
   }
   untracked.sort();
 
+  let mut untracked_additions = 0u32;
   for path in untracked {
     let full = root.join(&path);
     let binary;
@@ -1005,6 +1192,7 @@ pub async fn capture_diff_against(
         Err(_) => continue, // vanished between status and read
       }
     }
+    untracked_additions += additions;
     files.push(DiffFileSummary {
       path,
       old_path: None,
@@ -1033,6 +1221,7 @@ pub async fn capture_diff_against(
   Ok(DiffSnapshot {
     branch,
     head_sha: (!head.is_empty()).then_some(head),
+    untracked_additions,
     patch,
     files,
     additions,
@@ -1125,6 +1314,7 @@ pub async fn capture_commit_diff(
   Ok(DiffSnapshot {
     branch,
     head_sha: Some(sha.to_string()),
+    untracked_additions: 0,
     patch,
     files,
     additions,
@@ -1280,6 +1470,7 @@ pub async fn capture_turn_diff(
   Ok(DiffSnapshot {
     branch,
     head_sha: (!head.is_empty()).then_some(head),
+    untracked_additions: 0,
     patch,
     files,
     additions,
@@ -1291,7 +1482,10 @@ pub async fn capture_turn_diff(
 
 #[cfg(test)]
 mod watch_budget_tests {
-  use super::{CheckoutIdentity, MAX_WATCH_DIRS, exceeds_watch_budget, watch_targets};
+  use super::{
+    CheckoutIdentity, MAX_WATCH_DIRS, default_base_ref, exceeds_watch_budget, sum_numstat,
+    watch_targets,
+  };
 
   #[test]
   fn small_tree_is_watchable() {
@@ -1374,5 +1568,36 @@ mod watch_budget_tests {
     // A self-referential symlink cycle must not send the walk into a spin.
     std::os::unix::fs::symlink(root.join("real"), root.join("real/inner/loop")).unwrap();
     assert!(!exceeds_watch_budget(root)); // terminates, under budget
+  }
+
+  #[test]
+  fn base_ref_never_compares_a_branch_with_itself() {
+    let branches =
+      |names: &[&str]| -> Vec<String> { names.iter().map(|n| n.to_string()).collect() };
+    // Off the default: the default (first) branch is the base.
+    assert_eq!(
+      default_base_ref(&branches(&["main", "feature"]), "feature"),
+      Some("main".into())
+    );
+    // ON the default: fall back to main/master, then to any other branch.
+    assert_eq!(
+      default_base_ref(&branches(&["develop", "main"]), "develop"),
+      Some("main".into())
+    );
+    assert_eq!(
+      default_base_ref(&branches(&["develop", "topic"]), "develop"),
+      Some("topic".into())
+    );
+    // A lone branch has nothing to compare against.
+    assert_eq!(default_base_ref(&branches(&["main"]), "main"), None);
+    assert_eq!(default_base_ref(&[], "main"), None);
+  }
+
+  #[test]
+  fn numstat_totals_skip_binaries_and_rename_paths() {
+    // `-z` records: plain, binary, then a rename whose paths follow it.
+    let value = b"3\t1\ta.txt\0-\t-\timage.png\0\x32\t\x30\t\0old.txt\0new.txt\0";
+    assert_eq!(sum_numstat(value), (5, 1));
+    assert_eq!(sum_numstat(b""), (0, 0));
   }
 }

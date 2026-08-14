@@ -543,7 +543,13 @@ impl Shell {
   ) -> Vec<(String, f32, AnyElement)> {
     let now = Utc::now();
     let filter = self.settings.space_filter.clone();
-    let rows: Vec<(ChatIndicator, helix_proto::Chat, String, Option<String>)> = {
+    let rows: Vec<(
+      ChatIndicator,
+      helix_proto::Chat,
+      String,
+      Option<String>,
+      Option<(u32, u32)>,
+    )> = {
       let state = self.state.read(cx);
       state
         .overview_chats(now)
@@ -569,14 +575,15 @@ impl Shell {
             .map(str::trim)
             .filter(|b| !b.is_empty())
             .map(str::to_string);
-          (status, chat.clone(), folder, branch)
+          let branch_stats = state.branch_stats_for(chat);
+          (status, chat.clone(), folder, branch, branch_stats)
         })
         .collect()
     };
     let selected = self.state.read(cx).selected_chat.clone();
     rows
       .into_iter()
-      .map(|(status, chat, folder, branch)| {
+      .map(|(status, chat, folder, branch, branch_stats)| {
         let time_ago: SharedString =
           format_time_ago(chat.last_message_at.unwrap_or(chat.created_at), now).into();
         let is_selected = selected.as_deref() == Some(chat.id.as_str());
@@ -589,6 +596,7 @@ impl Shell {
           time_ago,
           folder.into(),
           branch.map(SharedString::from),
+          branch_stats,
           harness,
           status,
           is_selected,

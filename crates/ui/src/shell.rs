@@ -2094,6 +2094,7 @@ impl Shell {
     time_ago: SharedString,
     space_name: SharedString,
     branch: Option<SharedString>,
+    branch_stats: Option<(u32, u32)>,
     harness: Option<helix_proto::HarnessId>,
     status: helix_proto::ChatIndicator,
     selected: bool,
@@ -2355,16 +2356,44 @@ impl Shell {
                                 .child(branch),
                         )
                     })
+                    // Everything after the branch name is pinned right.
+                    .child(div().flex_1())
                     // Working rows animate the spinner at the row's
                     // bottom-right (the status word keeps its dot up top).
                     .when(status == helix_proto::ChatIndicator::Working, |el| {
-                        el.child(div().flex_1())
-                            .child(loaders::mini_gradient_spinner(
-                                format!("chat-working-{id}"),
-                                2.0,
-                                cx.entity_id(),
-                                cx,
-                            ))
+                        el.child(loaders::mini_gradient_spinner(
+                            format!("chat-working-{id}"),
+                            2.0,
+                            cx.entity_id(),
+                            cx,
+                        ))
+                    })
+                    // Branch-scope totals (vs the merge-base with the repo's
+                    // default branch) close the line, one step below the
+                    // branch name's size — the stats never shrink, the name
+                    // truncates into them.
+                    .when_some(branch_stats, |el, (additions, deletions)| {
+                        el.child(
+                            div()
+                                .flex_none()
+                                .flex()
+                                .flex_row()
+                                .items_center()
+                                .gap(px(3.0))
+                                .font_family(theme.font_mono.clone())
+                                .text_size(px(9.0))
+                                .line_height(px(14.0))
+                                .child(
+                                    div()
+                                        .text_color(theme.diff_add.opacity(0.75))
+                                        .child(SharedString::from(format!("+{additions}"))),
+                                )
+                                .child(
+                                    div()
+                                        .text_color(theme.diff_del.opacity(0.75))
+                                        .child(SharedString::from(format!("−{deletions}"))),
+                                ),
+                        )
                     }),
             )
             .into_any_element()

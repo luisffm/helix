@@ -319,6 +319,25 @@ pub struct CheckoutDiff {
   pub updated_at: DateTime<Utc>,
 }
 
+/// Branch-scope line totals for a checkout — everything the checked-out branch
+/// adds over `merge-base(base_ref, HEAD)`, working tree included. Streamed
+/// separately from [`CheckoutDiff`] so always-on surfaces (the sidebar rows)
+/// never carry the patch.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CheckoutStats {
+  pub checkout_id: String,
+  pub device_id: String,
+  pub cwd: String,
+  /// The comparison ref the merge-base came from; `None` when the repo has no
+  /// usable base (no commits, single branch).
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  pub base_ref: Option<String>,
+  pub additions: u32,
+  pub deletions: u32,
+  pub updated_at: DateTime<Utc>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GetCheckoutFileDiffTextRequest {

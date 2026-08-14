@@ -26,7 +26,7 @@ use serde::de::DeserializeOwned;
 
 use helix_doc::{SessionMessageEntry, TranscriptDesync, TranscriptFrame};
 use helix_engine::{Engine, EngineConfig, EngineRuntime, InstanceLock};
-use helix_proto::{Chat, ChatIndicator, EngineInfo, HarnessId, Session, Space};
+use helix_proto::{Chat, ChatIndicator, CheckoutStats, EngineInfo, HarnessId, Session, Space};
 use helix_rpc::{RpcClient, RpcService, memory_client, methods};
 
 // ---------------------------------------------------------------------------
@@ -141,6 +141,10 @@ pub struct AppState {
   /// Sorted (see [`sort_chats`]); includes archived rows — views filter.
   pub chats: Vec<Chat>,
   pub sessions: Vec<Session>,
+  /// Branch-scope line totals per checkout (`WatchCheckoutStats`) — the
+  /// sidebar rows' `+n −n`. Patch-free, so this watch stays on for the whole
+  /// session while the Changes pane's own diff watch stays lazy.
+  pub checkout_stats: Vec<CheckoutStats>,
   /// The project the new-session canvas mints into. Healed by
   /// [`Self::apply_spaces`] when the row vanishes; selecting a chat implies
   /// its project.
@@ -190,6 +194,7 @@ impl AppState {
       spaces: Vec::new(),
       chats: Vec::new(),
       sessions: Vec::new(),
+      checkout_stats: Vec::new(),
       selected_space: None,
       no_project: false,
       selected_chat: None,
@@ -225,6 +230,32 @@ impl AppState {
 
   pub fn apply_sessions(&mut self, sessions: Vec<Session>) {
     self.sessions = sessions;
+  }
+
+  pub fn apply_checkout_stats(&mut self, stats: Vec<CheckoutStats>) {
+    self.checkout_stats = stats;
+  }
+
+  /// Branch-scope `(additions, deletions)` for a chat's checkout, resolved the
+  /// way the Changes pane resolves its diff: `checkout_id` first, then
+  /// device+cwd, then cwd alone.
+  pub fn branch_stats_for(&self, chat: &Chat) -> Option<(u32, u32)> {
+    let stats = if let Some(checkout_id) = chat.checkout_id.as_deref()
+      && let Some(stats) = self
+        .checkout_stats
+        .iter()
+        .find(|s| s.checkout_id == checkout_id)
+    {
+      stats
+    } else {
+      let cwd = chat.cwd.as_deref()?;
+      self
+        .checkout_stats
+        .iter()
+        .find(|s| s.device_id == chat.device_id && s.cwd == cwd)
+        .or_else(|| self.checkout_stats.iter().find(|s| s.cwd == cwd))?
+    };
+    Some((stats.additions, stats.deletions))
   }
 
   pub fn apply_spaces(&mut self, mut spaces: Vec<Space>) {
@@ -542,6 +573,12 @@ impl AppState {
         handle.clone(),
         methods::WATCH_SPACES,
         AppState::apply_spaces,
+      ),
+      spawn_watch(
+        cx,
+        handle.clone(),
+        methods::WATCH_CHECKOUT_STATS,
+        AppState::apply_checkout_stats,
       ),
       spawn_local_device_probe(cx, handle.clone()),
     ]);
@@ -911,6 +948,51 @@ mod tests {
       space_id: None,
       last_seen_at: None,
     }
+  }
+
+  fn stats(checkout_id: &str, device_id: &str, cwd: &str, adds: u32, dels: u32) -> CheckoutStats {
+    CheckoutStats {
+      checkout_id: checkout_id.into(),
+      device_id: device_id.into(),
+      cwd: cwd.into(),
+      base_ref: Some("main".into()),
+      additions: adds,
+      deletions: dels,
+      updated_at: DateTime::parse_from_rfc3339("2026-07-19T12:00:00Z")
+        .unwrap()
+        .to_utc(),
+    }
+  }
+
+  #[test]
+  fn branch_stats_resolve_by_checkout_then_device_cwd_then_cwd() {
+    let mut state = AppState::new();
+    state.apply_checkout_stats(vec![
+      stats("co-1", "dev", "/w/one", 100, 300),
+      stats("co-2", "other", "/w/two", 7, 8),
+    ]);
+
+    // checkoutId wins even when the cwd points elsewhere.
+    let mut by_checkout = chat("a", 0, None);
+    by_checkout.checkout_id = Some("co-1".into());
+    by_checkout.cwd = Some("/w/two".into());
+    assert_eq!(state.branch_stats_for(&by_checkout), Some((100, 300)));
+
+    // No checkoutId: device + cwd.
+    let mut by_cwd = chat("b", 0, None);
+    by_cwd.cwd = Some("/w/one".into());
+    assert_eq!(state.branch_stats_for(&by_cwd), Some((100, 300)));
+
+    // Another device's checkout still matches on cwd alone.
+    let mut cross_device = chat("c", 0, None);
+    cross_device.cwd = Some("/w/two".into());
+    assert_eq!(state.branch_stats_for(&cross_device), Some((7, 8)));
+
+    // Unknown checkout / no cwd: no counts rather than a wrong one.
+    let mut unknown = chat("d", 0, None);
+    unknown.cwd = Some("/w/three".into());
+    assert_eq!(state.branch_stats_for(&unknown), None);
+    assert_eq!(state.branch_stats_for(&chat("e", 0, None)), None);
   }
 
   fn space(id: &str, device_id: &str, path: &str, created_min: i64) -> Space {

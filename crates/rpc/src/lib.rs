@@ -74,6 +74,8 @@ pub mod methods {
   pub const CLOSE_TERMINAL: &str = "CloseTerminal";
   /// Checkout-diff stream for this device's chats (DataRpc).
   pub const WATCH_CHECKOUT_DIFFS: &str = "WatchCheckoutDiffs";
+  /// Patch-free branch-scope line totals for the same checkouts (sidebar rows).
+  pub const WATCH_CHECKOUT_STATS: &str = "WatchCheckoutStats";
   pub const GET_CHECKOUT_DIFF: &str = "GetCheckoutDiff";
   pub const GET_CHECKOUT_FILE_DIFF_TEXT: &str = "GetCheckoutFileDiffText";
   // Agent accounts (ControlRpc — CLI logins are per-device).
