@@ -1,4 +1,10 @@
-# Helix
+<p align="center">
+  <img src="assets/icon.png" width="96" alt="" />
+</p>
+
+<h1 align="center">Helix</h1>
+
+![The Helix window: session sidebar, transcript, and the diff pane](docs/screenshot.png)
 
 A native desktop app for driving coding agents (Claude Code, Codex, Cursor, Grok, Hermes, Pi)
 on your own machine. Rust end to end, [gpui](https://www.gpui.rs) for the UI.
